@@ -1,0 +1,36 @@
+# Example config for manade. Save it as config/config.yaml beside compose.yaml.
+# docs/configuration.md lists every key, its default and its limits.
+# manade reads this file once at start, so restart the container after a change.
+
+# The budget all runners share. Each runner reserves its profile's cpus and
+# memory while it lives, and the pool starts no runner past the budget.
+capacity:
+  cpus: 8
+  memory: 16GiB
+
+# The repositories the pool runs jobs for, each written as owner/name. A
+# personal account lists its repositories one by one. An organization is
+# "- org: <name>". Every repository must be private, or the pool refuses it.
+scopes:
+  - repo: your-account/your-repo
+  - repo: your-account/another-repo
+
+# The job network's addresses. The firewall rules in docs/firewall.md key on
+# the network's interface, not on this subnet. To change the subnet, stop
+# manade and remove its networks first, or the start refuses them.
+network:
+  subnet: 172.30.0.0/24
+
+# A workflow picks a profile by its name: "runs-on: default". Each profile
+# runs its jobs with no root, no extra capabilities and no Docker socket.
+profiles:
+  default:
+    runner_image: base  # base, build, browser or docker
+    cpus: 2
+    memory: 4GiB
+
+  build:
+    runner_image: build  # adds gcc and make, for cgo and go test -race
+    cpus: 4
+    memory: 8GiB
+    scopes: [your-account/your-repo]  # only these repositories may use it

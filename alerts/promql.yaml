@@ -1,0 +1,159 @@
+# Recommended PromQL alert rules for manade, for Prometheus, Mimir or vmalert.
+# Alternative to alerts/logql.yaml: the same alerts under the same names.
+# Load one of the two files, not both.
+# Set METRICS_LISTEN_ADDR and scrape it as job "manade"; ManadeDown reads that
+# job name. Every series is seeded at startup, so no rule waits for a first
+# event. The boot rules read the latest manade_booting of 10 minutes, which
+# outlasts a restart, and the rules on a pool's own loops wait while it reads
+# 1, per job and instance. Thresholds and severity labels are starting points.
+# docs/monitoring.md explains each rule.
+groups:
+  - name: manade
+    rules:
+      - alert: ManadeDown
+        expr: up{job="manade"} == 0 or absent(up{job="manade"})
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "manade is not answering its metrics scrape"
+          description: >
+            The scrape of manade failed or found no target, so nothing watches
+            the runner pool. The container stopped, restarts in a loop, or the
+            scrape job name differs from "manade".
+
+      - alert: ManadeBootStalled
+        expr: last_over_time(manade_booting[10m]) == 1
+        for: 30m
+        labels:
+          severity: critical
+        annotations:
+          summary: "manade has not finished starting in 30 minutes"
+          description: >
+            manade has not finished a start in 30 minutes: one start never
+            ends, or each start fails and restarts. A stalled registry pull or
+            a setting GitHub or Docker refuses is the usual cause, which the log
+            names.
+
+      - alert: ManadePollStalled
+        expr: >
+          time() - manade_poll_last_success_timestamp_seconds > 300
+          unless on (job, instance) last_over_time(manade_booting[10m]) == 1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "manade has not polled scale set {{ $labels.profile }} in {{ $labels.scope }}"
+          description: >
+            The last good poll of this scale set is over 5 minutes old, so
+            GitHub assigns it no jobs. GitHub may be unreachable, the
+            credential refused, or the scope not served.
+
+      - alert: ManadeScopeNotServing
+        expr: >
+          manade_scope_serving == 0
+          unless on (job, instance) last_over_time(manade_booting[10m]) == 1
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "manade stopped serving {{ $labels.scope }}"
+          description: >
+            The pool runs no jobs for this scope. The repository turned public,
+            a visibility or runner group read failed, or another pool holds the
+            scope's sessions. The pool logs which, naming the scope.
+
+      - alert: ManadeRunnerStartsFailing
+        expr: >
+          sum by (scope, profile) (increase(manade_runner_starts_total{result="error"}[15m])) > 0
+          unless on (scope, profile)
+          sum by (scope, profile) (increase(manade_runner_starts_total{result="ok"}[15m])) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "manade cannot start {{ $labels.profile }} runners in {{ $labels.scope }}"
+          description: >
+            Every runner start for this scale set failed in the last 15
+            minutes, so its jobs wait. Docker refused the image or the
+            container, or GitHub refused the runner's registration.
+
+      - alert: ManadeAssignedNotStarted
+        expr: manade_jobs_assigned_unstarted > 0
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "GitHub assigned {{ $labels.profile }} jobs in {{ $labels.scope }} that no runner took"
+          description: >
+            Jobs GitHub assigned to this scale set have waited 10 minutes for a
+            runner, past GitHub's two 5-minute reassignments. Runner starts are
+            failing, or a restart left more assigned jobs than the budget funds.
+
+      - alert: ManadeQueueBackedUp
+        expr: manade_queue_head_wait_seconds > 1800
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "The oldest job in manade's queue has waited over 30 minutes"
+          description: >
+            The budget is full and repository jobs wait their turn. Raise the
+            capacity budget or a profile's limits, or look for runners that
+            hang. Jobs of organization and enterprise scopes are not counted.
+
+      - alert: ManadeQueueReadsStale
+        expr: >
+          time() - manade_queue_read_last_success_timestamp_seconds > 300
+          unless on (job, instance) last_over_time(manade_booting[10m]) == 1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "manade cannot read the queued jobs of {{ $labels.scope }}"
+          description: >
+            The last complete read of this repository's queued jobs is over 5
+            minutes old, so the pool funds none of its new jobs. The usual
+            causes are a missing Actions read permission, a rate limit or a
+            GitHub outage.
+
+      - alert: ManadeRunnerOOMKilled
+        expr: increase(manade_runner_exits_total{reason="oom"}[1h]) > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "A {{ $labels.profile }} runner in {{ $labels.scope }} ran out of memory"
+          description: >
+            The kernel killed a runner of this profile at its memory limit in
+            the last hour, so its job ended early. Raise the profile's memory,
+            or make the job use less.
+
+      - alert: ManadeReconcileStalled
+        expr: >
+          time() - manade_reconcile_last_success_timestamp_seconds > 300
+          unless on (job, instance) last_over_time(manade_booting[10m]) == 1
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "manade's reconciler has not finished a pass in 5 minutes"
+          description: >
+            The reconciler removes ended runners and frees their budget every
+            30 seconds. While it fails, ended runners keep their reservations
+            and the pool starts fewer jobs. Docker may be unreachable.
+
+      - alert: ManadeImageStale
+        expr: >
+          time() - manade_image_checked_timestamp_seconds > 259200
+          unless on (job, instance) last_over_time(manade_booting[10m]) == 1
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "manade has no recent good check of profile {{ $labels.profile }}'s image"
+          description: >
+            The profile's image had no good pull or check in 72 hours, or none
+            since manade started. Its jobs run on an old image, or cannot run
+            at all. Check the registry, its credentials and the image
+            reference.

@@ -1,0 +1,771 @@
+# promtool test rules alerts/promql_test.yaml: one case or more per rule in
+# alerts/promql.yaml, each with a series that fires and one that must not.
+# time() starts at 0 here, so a timestamp series that holds 0 is one that
+# stopped moving at the start.
+rule_files:
+  - promql.yaml
+evaluation_interval: 1m
+tests:
+  - name: ManadeDown on a failing scrape
+    interval: 1m
+    input_series:
+      - series: up{job="manade", instance="pool:9100"}
+        values: 1 1 1 0x10
+    alert_rule_test:
+      - eval_time: 7m
+        alertname: ManadeDown
+        exp_alerts: []
+      - eval_time: 9m
+        alertname: ManadeDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: manade
+              instance: pool:9100
+            exp_annotations:
+              summary: "manade is not answering its metrics scrape"
+              description: >
+                The scrape of manade failed or found no target, so nothing
+                watches the runner pool. The container stopped, restarts in a
+                loop, or the scrape job name differs from "manade".
+
+  - name: ManadeDown on a missing target
+    interval: 1m
+    input_series:
+      - series: up{job="other", instance="other:9100"}
+        values: 1x10
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: ManadeDown
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: ManadeDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: manade
+            exp_annotations:
+              summary: "manade is not answering its metrics scrape"
+              description: >
+                The scrape of manade failed or found no target, so nothing watches the
+                runner pool. The container stopped, restarts in a loop, or the scrape
+                job name differs from "manade".
+
+  - name: ManadePollStalled
+    interval: 1m
+    input_series:
+      - series: manade_poll_last_success_timestamp_seconds{scope="acme/app", profile="small"}
+        values: 0x20
+      - series: manade_poll_last_success_timestamp_seconds{scope="acme/app", profile="large"}
+        values: 0+60x20
+    alert_rule_test:
+      # Over 300 s old from 6m, so the 5-minute hold ends at 11m.
+      - eval_time: 10m
+        alertname: ManadePollStalled
+        exp_alerts: []
+      - eval_time: 12m
+        alertname: ManadePollStalled
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              scope: acme/app
+              profile: small
+            exp_annotations:
+              summary: "manade has not polled scale set small in acme/app"
+              description: >
+                The last good poll of this scale set is over 5 minutes old, so
+                GitHub assigns it no jobs. GitHub may be unreachable, the
+                credential refused, or the scope not served.
+
+  - name: ManadeScopeNotServing
+    interval: 1m
+    input_series:
+      - series: manade_scope_serving{scope="acme/app"}
+        values: 0x15
+      - series: manade_scope_serving{scope="acme/web"}
+        values: 1x15
+      # Stopped for 5 minutes, then served again: shorter than the hold.
+      - series: manade_scope_serving{scope="acme/api"}
+        values: 0x5 1x10
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: ManadeScopeNotServing
+        exp_alerts: []
+      - eval_time: 11m
+        alertname: ManadeScopeNotServing
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              scope: acme/app
+            exp_annotations:
+              summary: "manade stopped serving acme/app"
+              description: >
+                The pool runs no jobs for this scope. The repository turned public, a
+                visibility or runner group read failed, or another pool holds the
+                scope's sessions. The pool logs which, naming the scope.
+
+  - name: ManadeRunnerStartsFailing
+    interval: 1m
+    input_series:
+      # Only errors: fires.
+      - series: manade_runner_starts_total{scope="acme/app", profile="small", result="error"}
+        values: 0+1x20
+      - series: manade_runner_starts_total{scope="acme/app", profile="small", result="ok"}
+        values: 0x20
+      # Errors beside good starts: the scale set still starts runners.
+      - series: manade_runner_starts_total{scope="acme/app", profile="large", result="error"}
+        values: 0+1x20
+      - series: manade_runner_starts_total{scope="acme/app", profile="large", result="ok"}
+        values: 0+1x20
+      # No starts at all: an idle scale set.
+      - series: manade_runner_starts_total{scope="acme", profile="small", result="error"}
+        values: 0x20
+      - series: manade_runner_starts_total{scope="acme", profile="small", result="ok"}
+        values: 0x20
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: ManadeRunnerStartsFailing
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              scope: acme/app
+              profile: small
+            exp_annotations:
+              summary: "manade cannot start small runners in acme/app"
+              description: >
+                Every runner start for this scale set failed in the last 15
+                minutes, so its jobs wait. Docker refused the image or the
+                container, or GitHub refused the runner's registration.
+
+  - name: ManadeRunnerStartsFailing clears after a good start
+    interval: 1m
+    input_series:
+      - series: manade_runner_starts_total{scope="acme/app", profile="small", result="error"}
+        values: 0+1x30
+      - series: manade_runner_starts_total{scope="acme/app", profile="small", result="ok"}
+        values: 0x20 1x10
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: ManadeRunnerStartsFailing
+        exp_alerts: []
+
+  - name: ManadeAssignedNotStarted
+    interval: 1m
+    input_series:
+      - series: manade_jobs_assigned_unstarted{scope="acme/app", profile="small"}
+        values: 1x15
+      # A runner took the job after 5 minutes.
+      - series: manade_jobs_assigned_unstarted{scope="acme/app", profile="large"}
+        values: 1x5 0x10
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: ManadeAssignedNotStarted
+        exp_alerts: []
+      - eval_time: 11m
+        alertname: ManadeAssignedNotStarted
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              scope: acme/app
+              profile: small
+            exp_annotations:
+              summary: "GitHub assigned small jobs in acme/app that no runner took"
+              description: >
+                Jobs GitHub assigned to this scale set have waited 10 minutes for a
+                runner, past GitHub's two 5-minute reassignments. Runner starts are
+                failing, or a restart left more assigned jobs than the budget funds.
+
+  - name: ManadeQueueBackedUp
+    interval: 1m
+    input_series:
+      - series: manade_queue_head_wait_seconds
+        values: 0+60x40
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: ManadeQueueBackedUp
+        exp_alerts: []
+      - eval_time: 31m
+        alertname: ManadeQueueBackedUp
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "The oldest job in manade's queue has waited over 30 minutes"
+              description: >
+                The budget is full and repository jobs wait their turn. Raise
+                the capacity budget or a profile's limits, or look for runners
+                that hang. Jobs of organization and enterprise scopes are not
+                counted.
+
+  - name: ManadeQueueReadsStale
+    interval: 1m
+    input_series:
+      - series: manade_queue_read_last_success_timestamp_seconds{scope="acme/app"}
+        values: 0x20
+      - series: manade_queue_read_last_success_timestamp_seconds{scope="acme/web"}
+        values: 0+60x20
+    alert_rule_test:
+      # Over 300 s old from 6m, so the 10-minute hold ends at 16m.
+      - eval_time: 15m
+        alertname: ManadeQueueReadsStale
+        exp_alerts: []
+      - eval_time: 17m
+        alertname: ManadeQueueReadsStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              scope: acme/app
+            exp_annotations:
+              summary: "manade cannot read the queued jobs of acme/app"
+              description: >
+                The last complete read of this repository's queued jobs is over 5
+                minutes old, so the pool funds none of its new jobs. The usual causes
+                are a missing Actions read permission, a rate limit or a GitHub
+                outage.
+
+  - name: ManadeRunnerOOMKilled
+    interval: 1m
+    input_series:
+      - series: manade_runner_exits_total{scope="acme/app", profile="small", reason="oom"}
+        values: 0x3 1x80
+      - series: manade_runner_exits_total{scope="acme/app", profile="small", reason="completed"}
+        values: 0+1x80
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: ManadeRunnerOOMKilled
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              scope: acme/app
+              profile: small
+              reason: oom
+            exp_annotations:
+              summary: "A small runner in acme/app ran out of memory"
+              description: >
+                The kernel killed a runner of this profile at its memory limit
+                in the last hour, so its job ended early. Raise the profile's
+                memory, or make the job use less.
+      # The kill at 3m is out of the hour's window by 70m.
+      - eval_time: 70m
+        alertname: ManadeRunnerOOMKilled
+        exp_alerts: []
+
+  - name: ManadeReconcileStalled
+    interval: 1m
+    input_series:
+      # Good passes until 5m, then none.
+      - series: manade_reconcile_last_success_timestamp_seconds
+        values: 0+60x5 300x15
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: ManadeReconcileStalled
+        exp_alerts: []
+      - eval_time: 12m
+        alertname: ManadeReconcileStalled
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "manade's reconciler has not finished a pass in 5 minutes"
+              description: >
+                The reconciler removes ended runners and frees their budget every 30
+                seconds. While it fails, ended runners keep their reservations and the
+                pool starts fewer jobs. Docker may be unreachable.
+
+  - name: ManadeImageStale
+    interval: 1m
+    input_series:
+      # Never pulled: the gauge holds 0.
+      - series: manade_image_checked_timestamp_seconds{profile="small"}
+        values: 0x4600
+      # Checked every minute.
+      - series: manade_image_checked_timestamp_seconds{profile="large"}
+        values: 0+60x4600
+      # Checked once at 2h, then never again: stale from 74h.
+      - series: manade_image_checked_timestamp_seconds{profile="browser"}
+        values: 0+60x120 7200x4480
+    alert_rule_test:
+      # 72 hours is 4320 minutes; the 15-minute hold ends at 72h16m.
+      - eval_time: 72h10m
+        alertname: ManadeImageStale
+        exp_alerts: []
+      - eval_time: 72h20m
+        alertname: ManadeImageStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              profile: small
+            exp_annotations:
+              summary: "manade has no recent good check of profile small's image"
+              description: >
+                The profile's image had no good pull or check in 72 hours, or none
+                since manade started. Its jobs run on an old image, or cannot run
+                at all. Check the registry, its credentials and the image
+                reference.
+      - eval_time: 74h10m
+        alertname: ManadeImageStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              profile: small
+            exp_annotations:
+              summary: "manade has no recent good check of profile small's image"
+              description: >
+                The profile's image had no good pull or check in 72 hours, or none
+                since manade started. Its jobs run on an old image, or cannot run
+                at all. Check the registry, its credentials and the image
+                reference.
+      - eval_time: 74h20m
+        alertname: ManadeImageStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              profile: small
+            exp_annotations:
+              summary: "manade has no recent good check of profile small's image"
+              description: >
+                The profile's image had no good pull or check in 72 hours, or none
+                since manade started. Its jobs run on an old image, or cannot run
+                at all. Check the registry, its credentials and the image
+                reference.
+          - exp_labels:
+              severity: warning
+              profile: browser
+            exp_annotations:
+              summary: "manade has no recent good check of profile browser's image"
+              description: >
+                The profile's image had no good pull or check in 72 hours, or none
+                since manade started. Its jobs run on an old image, or cannot run
+                at all. Check the registry, its credentials and the image
+                reference.
+
+  - name: ManadeImageStale after a restart
+    interval: 1m
+    input_series:
+      # Checked every minute for 80 hours, then a restart: the gauge holds 0
+      # for 2 minutes until the check right after the start, as it does for
+      # a tag Docker already has.
+      - series: manade_image_checked_timestamp_seconds{profile="small"}
+        values: 0+60x4800 0x1 288180+60x60
+      # The same restart with a registry that refuses every check.
+      - series: manade_image_checked_timestamp_seconds{profile="large"}
+        values: 0+60x4800 0x62
+    alert_rule_test:
+      - eval_time: 80h20m
+        alertname: ManadeImageStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              profile: large
+            exp_annotations:
+              summary: "manade has no recent good check of profile large's image"
+              description: >
+                The profile's image had no good pull or check in 72 hours, or none
+                since manade started. Its jobs run on an old image, or cannot run
+                at all. Check the registry, its credentials and the image
+                reference.
+
+  - name: ManadeBootStalled
+    interval: 1m
+    input_series:
+      # A start stuck on a pull: the boot never ends.
+      - series: manade_booting
+        values: 1x40
+    alert_rule_test:
+      - eval_time: 29m
+        alertname: ManadeBootStalled
+        exp_alerts: []
+      - eval_time: 31m
+        alertname: ManadeBootStalled
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: "manade has not finished starting in 30 minutes"
+              description: >
+                manade has not finished a start in 30 minutes: one start never
+                ends, or each start fails and restarts. A stalled registry pull or
+                a setting GitHub or Docker refuses is the usual cause, which the log
+                names.
+
+  # A first start that pulls for 15 minutes, at 100h, so a seed of 0 reads as
+  # older than 72 hours as it does on a real clock. Every series holds its
+  # seed until the step that first moves it: images come into service at 12m
+  # and 15m, the visibility proof at 14m, boot's closing reconciler pass at
+  # 15m, the first poll at 16m and the first complete queue read at 17m. The
+  # browser image's pull fails.
+  - name: A cold boot of 15 minutes
+    interval: 1m
+    input_series:
+      - series: manade_booting
+        values: _x6000 1x14 0x25
+      - series: manade_poll_last_success_timestamp_seconds{scope="acme/app", profile="small"}
+        values: _x6000 360000x15 360960+60x24
+      - series: manade_scope_serving{scope="acme/app"}
+        values: _x6000 0x13 1x26
+      - series: manade_queue_read_last_success_timestamp_seconds{scope="acme/app"}
+        values: _x6000 360000x16 361020+60x23
+      - series: manade_reconcile_last_success_timestamp_seconds
+        values: _x6000 360000x14 360900+60x25
+      - series: manade_image_checked_timestamp_seconds{profile="small"}
+        values: _x6000 0x11 360720+60x28
+      - series: manade_image_checked_timestamp_seconds{profile="large"}
+        values: _x6000 0x14 360900+60x25
+      - series: manade_image_checked_timestamp_seconds{profile="browser"}
+        values: _x6000 0x40
+    alert_rule_test:
+      - eval_time: 100h14m
+        alertname: ManadeReconcileStalled
+        exp_alerts: []
+      - eval_time: 100h12m
+        alertname: ManadeScopeNotServing
+        exp_alerts: []
+      - eval_time: 100h14m
+        alertname: ManadePollStalled
+        exp_alerts: []
+      - eval_time: 100h15m
+        alertname: ManadeImageStale
+        exp_alerts: []
+      - eval_time: 100h16m
+        alertname: ManadeQueueReadsStale
+        exp_alerts: []
+      - eval_time: 100h20m
+        alertname: ManadePollStalled
+        exp_alerts: []
+      - eval_time: 100h20m
+        alertname: ManadeBootStalled
+        exp_alerts: []
+      - eval_time: 100h31m
+        alertname: ManadeBootStalled
+        exp_alerts: []
+      # The failed pull still fires, 15 minutes after the start finished.
+      - eval_time: 100h29m
+        alertname: ManadeImageStale
+        exp_alerts: []
+      - eval_time: 100h31m
+        alertname: ManadeImageStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              profile: browser
+            exp_annotations:
+              summary: "manade has no recent good check of profile browser's image"
+              description: >
+                The profile's image had no good pull or check in 72 hours, or none
+                since manade started. Its jobs run on an old image, or cannot run
+                at all. Check the registry, its credentials and the image
+                reference.
+
+  # Two pools under one scrape job: pool b is still starting, and pool a has
+  # started with every one of its loops stopped. Pool b's start must not hide
+  # pool a's alerts, while pool b's own alerts wait.
+  - name: One pool starting beside a stalled pool
+    interval: 1m
+    input_series:
+      - series: manade_booting{job="manade", instance="a:9100"}
+        values: 0x4400
+      - series: manade_booting{job="manade", instance="b:9100"}
+        values: 1x4400
+      - series: manade_poll_last_success_timestamp_seconds{job="manade", instance="a:9100", scope="acme/app", profile="small"}
+        values: 0x4400
+      - series: manade_poll_last_success_timestamp_seconds{job="manade", instance="b:9100", scope="acme/app", profile="small"}
+        values: 0x4400
+      - series: manade_scope_serving{job="manade", instance="a:9100", scope="acme/app"}
+        values: 0x4400
+      - series: manade_scope_serving{job="manade", instance="b:9100", scope="acme/app"}
+        values: 0x4400
+      - series: manade_queue_read_last_success_timestamp_seconds{job="manade", instance="a:9100", scope="acme/app"}
+        values: 0x4400
+      - series: manade_queue_read_last_success_timestamp_seconds{job="manade", instance="b:9100", scope="acme/app"}
+        values: 0x4400
+      - series: manade_reconcile_last_success_timestamp_seconds{job="manade", instance="a:9100"}
+        values: 0x4400
+      - series: manade_reconcile_last_success_timestamp_seconds{job="manade", instance="b:9100"}
+        values: 0x4400
+      - series: manade_image_checked_timestamp_seconds{job="manade", instance="a:9100", profile="small"}
+        values: 0x4400
+      - series: manade_image_checked_timestamp_seconds{job="manade", instance="b:9100", profile="small"}
+        values: 0x4400
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: ManadePollStalled
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: manade
+              instance: a:9100
+              scope: acme/app
+              profile: small
+            exp_annotations:
+              summary: "manade has not polled scale set small in acme/app"
+              description: >
+                The last good poll of this scale set is over 5 minutes old, so
+                GitHub assigns it no jobs. GitHub may be unreachable, the
+                credential refused, or the scope not served.
+      - eval_time: 20m
+        alertname: ManadeScopeNotServing
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: manade
+              instance: a:9100
+              scope: acme/app
+            exp_annotations:
+              summary: "manade stopped serving acme/app"
+              description: >
+                The pool runs no jobs for this scope. The repository turned public, a
+                visibility or runner group read failed, or another pool holds the
+                scope's sessions. The pool logs which, naming the scope.
+      - eval_time: 20m
+        alertname: ManadeQueueReadsStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: manade
+              instance: a:9100
+              scope: acme/app
+            exp_annotations:
+              summary: "manade cannot read the queued jobs of acme/app"
+              description: >
+                The last complete read of this repository's queued jobs is over 5
+                minutes old, so the pool funds none of its new jobs. The usual causes
+                are a missing Actions read permission, a rate limit or a GitHub
+                outage.
+      - eval_time: 20m
+        alertname: ManadeReconcileStalled
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: manade
+              instance: a:9100
+            exp_annotations:
+              summary: "manade's reconciler has not finished a pass in 5 minutes"
+              description: >
+                The reconciler removes ended runners and frees their budget every 30
+                seconds. While it fails, ended runners keep their reservations and the
+                pool starts fewer jobs. Docker may be unreachable.
+      - eval_time: 72h20m
+        alertname: ManadeImageStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: manade
+              instance: a:9100
+              profile: small
+            exp_annotations:
+              summary: "manade has no recent good check of profile small's image"
+              description: >
+                The profile's image had no good pull or check in 72 hours, or none
+                since manade started. Its jobs run on an old image, or cannot run
+                at all. Check the registry, its credentials and the image
+                reference.
+
+  # Every start fails within one scrape: Docker starts the container again a
+  # minute later, so each process is scraped once and goes stale. The streak
+  # counts from its first start at 0m, never from the current process, and the
+  # scrape alone never stays down for ManadeDown's 5 minutes.
+  - name: ManadeBootStalled through a loop of failed starts
+    interval: 1m
+    input_series:
+      - series: manade_booting{job="manade", instance="pool:9100"}
+        values: 1 stale stale 1 stale stale 1 stale stale 1 stale stale 1 stale stale 1 stale stale 1 stale stale 1 stale stale 1 stale stale 1 stale stale 1 stale stale 1 stale stale 1 stale stale 1 stale stale
+      - series: up{job="manade", instance="pool:9100"}
+        values: 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0
+    alert_rule_test:
+      - eval_time: 29m
+        alertname: ManadeBootStalled
+        exp_alerts: []
+      - eval_time: 31m
+        alertname: ManadeBootStalled
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: manade
+              instance: pool:9100
+            exp_annotations:
+              summary: "manade has not finished starting in 30 minutes"
+              description: >
+                manade has not finished a start in 30 minutes: one start never
+                ends, or each start fails and restarts. A stalled registry pull or
+                a setting GitHub or Docker refuses is the usual cause, which the log
+                names.
+      - eval_time: 31m
+        alertname: ManadeDown
+        exp_alerts: []
+
+  # A pool that served for 10 minutes, then every start fails from 11m: the
+  # streak counts from 11m.
+  - name: ManadeBootStalled after a serving pool falls into a loop of failed starts
+    interval: 1m
+    input_series:
+      - series: manade_booting{job="manade", instance="pool:9100"}
+        values: 0x10 1 stale stale 1 stale stale 1 stale stale 1 stale stale 1 stale stale 1 stale stale 1 stale stale 1 stale stale 1 stale stale 1 stale stale 1 stale stale 1 stale stale 1 stale stale
+    alert_rule_test:
+      - eval_time: 40m
+        alertname: ManadeBootStalled
+        exp_alerts: []
+      - eval_time: 42m
+        alertname: ManadeBootStalled
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: manade
+              instance: pool:9100
+            exp_annotations:
+              summary: "manade has not finished starting in 30 minutes"
+              description: >
+                manade has not finished a start in 30 minutes: one start never
+                ends, or each start fails and restarts. A stalled registry pull or
+                a setting GitHub or Docker refuses is the usual cause, which the log
+                names.
+
+  # A pool that served for 10 minutes, then stopped: its scrape fails and its
+  # series go stale. ManadeDown pages and the boot rule stays quiet.
+  - name: A serving pool that stops
+    interval: 1m
+    input_series:
+      - series: up{job="manade", instance="pool:9100"}
+        values: 1x10 0x40
+      - series: manade_booting{job="manade", instance="pool:9100"}
+        values: 0x10 stale
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: ManadeDown
+        exp_alerts: []
+      - eval_time: 17m
+        alertname: ManadeDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: manade
+              instance: pool:9100
+            exp_annotations:
+              summary: "manade is not answering its metrics scrape"
+              description: >
+                The scrape of manade failed or found no target, so nothing
+                watches the runner pool. The container stopped, restarts in a
+                loop, or the scrape job name differs from "manade".
+      - eval_time: 45m
+        alertname: ManadeBootStalled
+        exp_alerts: []
+
+  # A pool that served for 11 minutes, then restarted, and the new process
+  # stopped during its start. The start must not hold ManadeDown back.
+  - name: A serving pool that stops during a restart
+    interval: 1m
+    input_series:
+      - series: up{job="manade", instance="pool:9100"}
+        values: 1x11 0x30
+      - series: manade_booting{job="manade", instance="pool:9100"}
+        values: 0x10 1 stale
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: ManadeDown
+        exp_alerts: []
+      - eval_time: 17m
+        alertname: ManadeDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: manade
+              instance: pool:9100
+            exp_annotations:
+              summary: "manade is not answering its metrics scrape"
+              description: >
+                The scrape of manade failed or found no target, so nothing
+                watches the runner pool. The container stopped, restarts in a
+                loop, or the scrape job name differs from "manade".
+      - eval_time: 40m
+        alertname: ManadeBootStalled
+        exp_alerts: []
+
+  # A first start of 25 minutes on a loaded host, where the scrape at 10m
+  # fails. Nothing pages, during the start or after it.
+  - name: A first start of 25 minutes pages nothing
+    interval: 1m
+    input_series:
+      - series: up{job="manade", instance="pool:9100"}
+        values: 1x9 0 1x44
+      - series: manade_booting{job="manade", instance="pool:9100"}
+        values: 1x9 stale 1x13 0x30
+      - series: manade_scope_serving{job="manade", instance="pool:9100", scope="acme/app"}
+        values: 0x9 stale 0x13 1x30
+      - series: manade_poll_last_success_timestamp_seconds{job="manade", instance="pool:9100", scope="acme/app", profile="small"}
+        values: 0x9 stale 0x13 1500+60x30
+      - series: manade_queue_read_last_success_timestamp_seconds{job="manade", instance="pool:9100", scope="acme/app"}
+        values: 0x9 stale 0x13 1500+60x30
+      - series: manade_reconcile_last_success_timestamp_seconds{job="manade", instance="pool:9100"}
+        values: 0x9 stale 0x13 1500+60x30
+    alert_rule_test:
+      - eval_time: 24m
+        alertname: ManadeBootStalled
+        exp_alerts: []
+      - eval_time: 24m
+        alertname: ManadeScopeNotServing
+        exp_alerts: []
+      - eval_time: 24m
+        alertname: ManadePollStalled
+        exp_alerts: []
+      - eval_time: 24m
+        alertname: ManadeQueueReadsStale
+        exp_alerts: []
+      - eval_time: 24m
+        alertname: ManadeReconcileStalled
+        exp_alerts: []
+      - eval_time: 24m
+        alertname: ManadeDown
+        exp_alerts: []
+      - eval_time: 31m
+        alertname: ManadeBootStalled
+        exp_alerts: []
+      - eval_time: 40m
+        alertname: ManadeBootStalled
+        exp_alerts: []
+      - eval_time: 40m
+        alertname: ManadeScopeNotServing
+        exp_alerts: []
+      - eval_time: 40m
+        alertname: ManadePollStalled
+        exp_alerts: []
+
+  # Every start fails, and only one scrape in seven reaches a process. The
+  # scrape stays down long enough for ManadeDown, and each hit still holds
+  # the boot state across the gap, so ManadeBootStalled fires too.
+  - name: A loop of failed starts scraped every 7 minutes
+    interval: 1m
+    input_series:
+      - series: manade_booting{job="manade", instance="pool:9100"}
+        values: 1 stale _x5 1 stale _x5 1 stale _x5 1 stale _x5 1 stale _x5 1 stale _x5
+      - series: up{job="manade", instance="pool:9100"}
+        values: 1 0x5 1 0x5 1 0x5 1 0x5 1 0x5 1 0x5
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: ManadeDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: manade
+              instance: pool:9100
+            exp_annotations:
+              summary: "manade is not answering its metrics scrape"
+              description: >
+                The scrape of manade failed or found no target, so nothing
+                watches the runner pool. The container stopped, restarts in a
+                loop, or the scrape job name differs from "manade".
+      - eval_time: 29m
+        alertname: ManadeBootStalled
+        exp_alerts: []
+      - eval_time: 31m
+        alertname: ManadeBootStalled
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: manade
+              instance: pool:9100
+            exp_annotations:
+              summary: "manade has not finished starting in 30 minutes"
+              description: >
+                manade has not finished a start in 30 minutes: one start never
+                ends, or each start fails and restarts. A stalled registry pull or
+                a setting GitHub or Docker refuses is the usual cause, which the log
+                names.

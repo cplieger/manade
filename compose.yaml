@@ -1,0 +1,22 @@
+# Example compose for manade. See the README for all configuration options and hardening.
+services:
+  manade:
+    image: ghcr.io/cplieger/manade:latest
+    container_name: manade
+    restart: unless-stopped
+    # Shutdown closes the GitHub sessions and removes idle runners, which takes
+    # up to 45 seconds. Docker's default of 10 seconds cuts it short.
+    stop_grace_period: 60s
+    # The Docker socket's group, so the non-root pool can start containers. Put
+    # the output of "stat -c %g /var/run/docker.sock" in .env as DOCKER_GID.
+    group_add:
+      - "${DOCKER_GID:?set DOCKER_GID in .env}"
+    environment:
+      - GITHUB_APP_CLIENT_ID  # the GitHub App's client ID, from .env
+      - "GITHUB_APP_PRIVATE_KEY_FILE=/config/github-app.pem"
+    volumes:
+      # Create ./config with config.yaml and github-app.pem in it. Then run
+      # "sudo chown 65532:65532 config/github-app.pem" and "sudo chmod 600 config/github-app.pem".
+      - "./config:/config:ro"
+      # Mount the socket at the path it has on the host: DOCKER_SOCKET names both.
+      - "/var/run/docker.sock:/var/run/docker.sock"
