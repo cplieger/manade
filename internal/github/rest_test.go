@@ -278,7 +278,7 @@ func TestRunnerAtScopeURL(t *testing.T) {
 		id          int64
 		found, fail bool
 	}{
-		{name: "repoBusy", scope: "acme/app", id: 5, want: Runner{Busy: true, Online: true}, found: true},
+		{name: "repoBusy", scope: "acme/app", id: 5, want: Runner{Busy: true}, found: true},
 		{name: "orgOffline", scope: "acme", id: 5, found: true},
 		{name: "enterpriseGone", scope: "enterprises/big", id: 5},
 		{name: "refusedKeeps", scope: "enterprises/big", id: 6, fail: true},

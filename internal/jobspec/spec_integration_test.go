@@ -109,7 +109,7 @@ func waitExit(t *testing.T, c *docker.Client, id string, within time.Duration) i
 		if err != nil {
 			t.Fatalf("InspectContainer: %v", err)
 		}
-		if !ctr.State.Running && !ctr.State.FinishedAt.IsZero() {
+		if !ctr.State.FinishedAt.IsZero() {
 			return ctr.State.ExitCode
 		}
 		if time.Now().After(deadline) {

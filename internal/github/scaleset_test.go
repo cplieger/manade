@@ -198,7 +198,7 @@ func TestRecheckRebuildsAfterReinstall(t *testing.T) {
 		if sc.Key == "acme/app" {
 			return current, nil
 		}
-		return r.Installation(ctx, sc)
+		return r.installation(ctx, sc)
 	}
 	if _, err := s.JIT(t.Context(), ScaleSet{obs.ScaleSet{Scope: "solo/tool", Profile: "small"}, 5}, "r"); err != nil {
 		t.Fatalf("JIT(solo/tool) = %v", err)

@@ -441,7 +441,7 @@ func (d *fakeDocker) CopyArchive(_ context.Context, id, _ string, w io.Writer, l
 	return true, err
 }
 
-func (d *fakeDocker) Events(ctx context.Context, _ func(string)) error {
+func (*fakeDocker) Events(ctx context.Context, _ func(string)) error {
 	<-ctx.Done()
 	return ctx.Err()
 }
@@ -550,7 +550,7 @@ func (fx *fixture) sweep(reads map[string][]github.QueuedJob) {
 	for scope, jobs := range reads {
 		qs = append(qs, github.Queue{Scope: scope, Jobs: jobs, Complete: true})
 	}
-	fx.p.Queued(fx.at, qs)
+	fx.p.queued(fx.at, qs)
 }
 
 // job is a queued job of profile, queued minute minutes after epoch.

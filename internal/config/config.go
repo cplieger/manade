@@ -70,9 +70,9 @@ type Secret struct{ v string }
 // Reveal answers the token, or "" when none is set.
 func (s Secret) Reveal() string { return s.v }
 
-// IsZero reports whether no token is set.
-func (s Secret) IsZero() bool { return s.v == "" }
-
+// String prints "[redacted]" for a set token.
+//
+//deadset:ignore DS1102 -- fmt.Stringer, reached by any print of a Secret, which must never show the token
 func (s Secret) String() string {
 	if s.v == "" {
 		return ""
@@ -81,9 +81,13 @@ func (s Secret) String() string {
 }
 
 // Format prints String for every verb, %#v included.
+//
+//deadset:ignore DS1102 -- fmt.Formatter, reached by any print of a Secret, %#v included
 func (s Secret) Format(f fmt.State, _ rune) { _, _ = f.Write([]byte(s.String())) }
 
 // LogValue prints String.
+//
+//deadset:ignore DS1102 -- slog.LogValuer, reached when a Secret is logged
 func (s Secret) LogValue() slog.Value { return slog.StringValue(s.String()) }
 
 // Load reads the environment and the config file and validates both,

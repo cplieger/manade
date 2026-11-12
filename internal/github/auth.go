@@ -84,11 +84,11 @@ func grant(s *config.Scope) creds.AppGrant {
 
 func (a *auth) source(s *config.Scope) forgeapi.CredentialSource { return a.byScope[s.Key] }
 
-// Installation answers the App installation that serves s: its configured
+// installation answers the App installation that serves s: its configured
 // installation_id, or its account's installation as GitHub answers now, so a
 // reinstall's new ID shows once the old one's tokens are refused. It answers
 // 0 under a PAT. A failure is counted as an installation error.
-func (r *REST) Installation(ctx context.Context, s *config.Scope) (int64, error) {
+func (r *REST) installation(ctx context.Context, s *config.Scope) (int64, error) {
 	if s.InstallationID != 0 || r.auth.lookup == nil {
 		return s.InstallationID, nil
 	}

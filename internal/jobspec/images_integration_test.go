@@ -67,7 +67,7 @@ func TestImages(t *testing.T) {
 			// The docker image's wrapper stays the entrypoint and runs argv
 			// in place of the runner; the others' run.sh would register one.
 			if tt.image == config.ShippedDocker {
-				req.Cmd = argv
+				req.Entrypoint = append(req.Entrypoint, argv...)
 			} else {
 				req.Entrypoint = argv
 			}

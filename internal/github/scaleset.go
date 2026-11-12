@@ -76,7 +76,7 @@ func NewScaleSets(cfg *config.Config, tr http.RoundTripper, r *REST, version str
 
 func newScaleSets(cfg *config.Config, tr http.RoundTripper, r *REST, version, web string) *ScaleSets {
 	s := &ScaleSets{
-		rest: r, key: cfg.GitHub.AppKey, now: time.Now, resolve: r.Installation, byKey: map[string]*scopeClient{}, cfg: cfg, web: web,
+		rest: r, key: cfg.GitHub.AppKey, now: time.Now, resolve: r.installation, byKey: map[string]*scopeClient{}, cfg: cfg, web: web,
 		// scaleset keeps its own retries above the client, and raises the
 		// timeout for its long poll.
 		hc:   &http.Client{Transport: tr, Timeout: 3 * requestTimeout},

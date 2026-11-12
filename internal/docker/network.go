@@ -15,9 +15,9 @@ const (
 	optBridgeName = "com.docker.network.bridge.name"
 )
 
-// ErrNetworkMismatch is returned by EnsureNetwork for an existing network
+// errNetworkMismatch is returned by EnsureNetwork for an existing network
 // whose shape differs from the spec.
-var ErrNetworkMismatch = errors.New("docker: the network exists with a different shape")
+var errNetworkMismatch = errors.New("docker: the network exists with a different shape")
 
 // NetworkSpec is one job network: a bridge with IPv6 off, one IPv4 subnet
 // and a fixed bridge interface name, which the host firewall keys on.
@@ -44,14 +44,14 @@ type ipamConfig struct{ Subnet string }
 
 // EnsureNetwork creates the network when it is missing, and otherwise checks
 // that it has the spec's driver, subnet, bridge name, ICC setting and no
-// IPv6; a difference fails with ErrNetworkMismatch, because jobs on it would
+// IPv6; a difference fails with errNetworkMismatch, because jobs on it would
 // sit on a network the config does not describe. The firewall rules key on
 // the bridge name and cover IPv4 only, so another name or IPv6 also puts
 // jobs outside them.
 func (c *Client) EnsureNetwork(ctx context.Context, spec NetworkSpec) error {
 	var got networkWire
 	err := c.call(ctx, "network", http.MethodGet, "/networks/"+spec.Name, nil, nil, &got, jsonLimit)
-	if errors.Is(err, ErrNotFound) {
+	if errors.Is(err, errNotFound) {
 		return c.createNetwork(ctx, spec)
 	}
 	if err != nil {
@@ -76,7 +76,7 @@ func (c *Client) createNetwork(ctx context.Context, spec NetworkSpec) error {
 
 func checkNetwork(got *networkWire, spec NetworkSpec) error {
 	mismatch := func(format string, args ...any) error {
-		return fmt.Errorf("%w: network %s %s", ErrNetworkMismatch, spec.Name, fmt.Sprintf(format, args...))
+		return fmt.Errorf("%w: network %s %s", errNetworkMismatch, spec.Name, fmt.Sprintf(format, args...))
 	}
 	if got.Driver != "bridge" {
 		return mismatch("uses driver %q, not bridge", got.Driver)

@@ -152,7 +152,7 @@ func New(cfg *config.Config, d *Deps) *Pool {
 		ref := jobspec.ImageRef(pr, d.Dev)
 		img := byRef[ref]
 		if img == nil {
-			img = &image{ref: ref, digest: strings.Contains(ref, "@"), shipped: pr.RunnerImage != ""}
+			img = &image{ref: ref, digest: pr.Pinned(), shipped: pr.RunnerImage != ""}
 			byRef[ref] = img
 			p.imgs = append(p.imgs, img)
 		}
@@ -198,15 +198,6 @@ func (sc *scope) jobsOf(profile string) []github.QueuedJob {
 
 // set is one scale set's records.
 type set struct {
-	asg     *assignments
-	scope   *scope
-	runners map[string]*runner
-	skipped map[jobKey]skip
-	// spent holds when each runner that ended with no JobCompleted naming
-	// it ended (end).
-	spent  map[string]time.Time
-	ss     github.ScaleSet
-	misses misses
 	// beat is the listener's last Beat; lastAssigned its last JobAssigned.
 	beat, lastAssigned time.Time
 	// standSince is when the first poll carrying its standing slot began,
@@ -214,6 +205,15 @@ type set struct {
 	standSince, standEnded time.Time
 	// retryAt holds starts back after a failed one.
 	retryAt time.Time
+	// spent holds when each runner that ended with no JobCompleted naming
+	// it ended (end).
+	spent   map[string]time.Time
+	asg     *assignments
+	skipped map[jobKey]skip
+	runners map[string]*runner
+	scope   *scope
+	misses  misses
+	ss      github.ScaleSet
 	flight  flight
 	profile int
 	// opened reports a session opened at least once since boot.
@@ -248,7 +248,6 @@ func (s *set) spending(now time.Time) int {
 // funded. It stands until the next poll begins or a session opens, so the
 // headroom it carried stays reserved while GitHub may still fill it.
 type flight struct {
-	start time.Time
 	// funded is how many waiting jobs the figure funded.
 	figure, funded   int
 	standing, active bool
@@ -502,9 +501,9 @@ func b2i(b bool) int {
 	return 0
 }
 
-// Hot reports whether the budget left after every holding fits one more
+// hot reports whether the budget left after every holding fits one more
 // runner of some profile: the sweep then reads every started run's jobs.
-func (p *Pool) Hot() bool {
+func (p *Pool) hot() bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	free := p.free()

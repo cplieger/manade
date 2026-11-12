@@ -392,15 +392,14 @@ func TestReconcileAdoptsOrphans(t *testing.T) {
 		// unsettled is a runner that may hold a job left with no record.
 		unsettled bool
 	}{
-		{name: "busy", runner: &github.Runner{Busy: true, Online: true}, adopted: true, kept: true},
-		{name: "idle", runner: &github.Runner{Online: true}, unregistered: true},
-		{name: "offline", runner: &github.Runner{}, unregistered: true},
+		{name: "busy", runner: &github.Runner{Busy: true}, adopted: true, kept: true},
+		{name: "idle", runner: &github.Runner{}, unregistered: true},
 		{name: "registrationGone"},
 		{name: "readFailed", readErr: errFake, kept: true, unsettled: true},
 		{name: "inspectFailed", runner: &github.Runner{Busy: true}, inspectErr: errFake, kept: true, unsettled: true},
-		{name: "idleUnregisterFailed", runner: &github.Runner{Online: true}, removeErr: errFake, kept: true, unsettled: true},
+		{name: "idleUnregisterFailed", runner: &github.Runner{}, removeErr: errFake, kept: true, unsettled: true},
 		// GitHub handed the idle orphan a job between the read and the removal.
-		{name: "idleTookAJob", runner: &github.Runner{Online: true}, removeErr: github.ErrRunnerBusy, adopted: true, kept: true},
+		{name: "idleTookAJob", runner: &github.Runner{}, removeErr: github.ErrRunnerBusy, adopted: true, kept: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fx := newFixture(t)
@@ -479,8 +478,8 @@ func TestReconcileDrainsRunnersTheConfigDropped(t *testing.T) {
 		unsettled     bool
 		noGitHubCalls bool
 	}{
-		{name: "removedProfileBusy", scope: "acme/app", runner: &github.Runner{Busy: true, Online: true}, held: true, kept: true},
-		{name: "removedProfileIdle", scope: "acme/app", runner: &github.Runner{Online: true}, unregistered: true},
+		{name: "removedProfileBusy", scope: "acme/app", runner: &github.Runner{Busy: true}, held: true, kept: true},
+		{name: "removedProfileIdle", scope: "acme/app", runner: &github.Runner{}, unregistered: true},
 		{name: "removedProfileOffline", scope: "acme/app", runner: &github.Runner{}, unregistered: true},
 		{name: "removedProfileRegistrationGone", scope: "acme/app"},
 		{name: "removedProfileReadFailed", scope: "acme/app", readErr: errFake, kept: true, unsettled: true},
@@ -696,7 +695,7 @@ func TestReconcileGitHubCallsCutShortByShutdownLogNothing(t *testing.T) {
 			fx.dk.mu.Unlock()
 		}},
 		{name: "deregisteringAnIdleOrphan", remove: true, setup: func(_ *testing.T, fx *fixture) {
-			fx.gh.runners = map[int64]github.Runner{7: {Online: true}}
+			fx.gh.runners = map[int64]github.Runner{7: {}}
 			fx.dk.mu.Lock()
 			fx.dk.add(orphan("c-old", "acme/app", "default", "manade-default-old", "running"))
 			fx.dk.mu.Unlock()

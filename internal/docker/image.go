@@ -26,16 +26,15 @@ type Image struct {
 		Labels map[string]string
 		User   string
 	}
-	ID          string `json:"Id"`
-	RepoTags    []string
-	RepoDigests []string
+	ID       string `json:"Id"`
+	RepoTags []string
 }
 
 // InspectImage reads an image by reference or ID; found is false when the
 // daemon has no such image.
 func (c *Client) InspectImage(ctx context.Context, ref string) (img Image, found bool, err error) {
 	err = c.call(ctx, "inspect", http.MethodGet, "/images/"+ref+"/json", nil, nil, &img, jsonLimit)
-	if errors.Is(err, ErrNotFound) {
+	if errors.Is(err, errNotFound) {
 		return Image{}, false, nil
 	}
 	if err != nil {
@@ -109,7 +108,7 @@ func (c *Client) RemoveOwnedImage(ctx context.Context, id string) error {
 		return fmt.Errorf("%w: image %s", ErrNotOwned, img.ID)
 	}
 	err = c.call(ctx, "remove", http.MethodDelete, "/images/"+img.ID, nil, nil, nil, 0)
-	if errors.Is(err, ErrNotFound) {
+	if errors.Is(err, errNotFound) {
 		return nil
 	}
 	return err

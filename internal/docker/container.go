@@ -18,7 +18,7 @@ import (
 // labels (managed, pool, created) themselves; the caller sets the rest.
 const (
 	LabelManaged  = "manade.managed"
-	LabelPool     = "manade.pool"
+	labelPool     = "manade.pool"
 	LabelCreated  = "manade.created"
 	LabelScope    = "manade.scope"
 	LabelProfile  = "manade.profile"
@@ -37,7 +37,6 @@ type CreateRequest struct {
 	Image      string            `json:"Image"`
 	User       string            `json:"User,omitempty"`
 	Entrypoint []string          `json:"Entrypoint,omitempty"`
-	Cmd        []string          `json:"Cmd,omitempty"`
 	Env        []string          `json:"Env,omitempty"`
 	HostConfig HostConfig        `json:"HostConfig"`
 }
@@ -78,14 +77,14 @@ type Mount struct {
 	ReadOnly bool   `json:"ReadOnly,omitempty"`
 }
 
-// ErrCreateWarnings is a create the daemon answered with warnings, such as a
+// errCreateWarnings is a create the daemon answered with warnings, such as a
 // limit the kernel discarded. The container is already removed, and the
 // error's text carries the warnings sanitized.
-var ErrCreateWarnings = errors.New("docker create: the daemon warned")
+var errCreateWarnings = errors.New("docker create: the daemon warned")
 
 // CreateContainer creates a container named name and returns its ID. It sets
 // the pool labels over any in req. A create the daemon answers with warnings
-// is removed and fails with ErrCreateWarnings.
+// is removed and fails with errCreateWarnings.
 func (c *Client) CreateContainer(ctx context.Context, name string, req *CreateRequest) (string, error) {
 	body := *req
 	body.Labels = c.poolLabels(req.Labels)
@@ -101,7 +100,7 @@ func (c *Client) CreateContainer(ctx context.Context, name string, req *CreateRe
 		return out.ID, nil
 	}
 	text, _ := textsafe.SanitizeSingleLineCapped(strings.Join(warnings, "; "), 4*errorTextLimit, "…")
-	werr := fmt.Errorf("%w: %s", ErrCreateWarnings, text)
+	werr := fmt.Errorf("%w: %s", errCreateWarnings, text)
 	if err := c.remove(ctx, out.ID); err != nil {
 		return "", errors.Join(werr, err)
 	}
@@ -150,7 +149,6 @@ type Container struct {
 		StartedAt  time.Time
 		FinishedAt time.Time
 		ExitCode   int
-		Running    bool
 		OOMKilled  bool
 	}
 }
@@ -172,7 +170,7 @@ func (c *Container) DiskBytes() (int64, error) {
 // InspectContainer reads a container by ID; found is false when it is gone.
 func (c *Client) InspectContainer(ctx context.Context, id string) (ctr Container, found bool, err error) {
 	err = c.call(ctx, "inspect", http.MethodGet, "/containers/"+id+"/json", nil, nil, &ctr, jsonLimit)
-	if errors.Is(err, ErrNotFound) {
+	if errors.Is(err, errNotFound) {
 		return Container{}, false, nil
 	}
 	if err != nil {
@@ -200,7 +198,7 @@ func (c *Client) RemoveOwned(ctx context.Context, id string) error {
 // client has just created.
 func (c *Client) remove(ctx context.Context, id string) error {
 	err := c.call(ctx, "remove", http.MethodDelete, "/containers/"+id, url.Values{"force": {"1"}}, nil, nil, 0)
-	if errors.Is(err, ErrNotFound) {
+	if errors.Is(err, errNotFound) {
 		return nil
 	}
 	return err

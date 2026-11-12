@@ -8,11 +8,11 @@ import (
 
 func TestHot(t *testing.T) {
 	fx := newFixture(t)
-	if !fx.p.Hot() {
+	if !fx.p.hot() {
 		t.Error("Hot = false on an empty pool")
 	}
 	fx.polled(libDefault, fx.at, &github.Stats{Assigned: 4})
-	if fx.p.Hot() {
+	if fx.p.hot() {
 		t.Error("Hot = true with every slot backing an assignment")
 	}
 }

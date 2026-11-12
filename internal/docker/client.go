@@ -58,13 +58,13 @@ var headerTimeout = callTimeout
 
 // Sentinels an APIError matches through errors.Is.
 var (
-	ErrNotFound = errors.New("docker: not found")
+	errNotFound = errors.New("docker: not found")
 	ErrConflict = errors.New("docker: conflict")
 )
 
-// ErrAPIVersion is returned by Dial for a daemon whose API range does not
+// errAPIVersion is returned by Dial for a daemon whose API range does not
 // overlap this client's.
-var ErrAPIVersion = errors.New("docker: unsupported API version")
+var errAPIVersion = errors.New("docker: unsupported API version")
 
 // APIError is a non-2xx answer. Message is the daemon's own text, sanitized
 // to one line and capped.
@@ -79,9 +79,9 @@ func (e *APIError) Error() string {
 	return "docker " + e.Op + ": status " + strconv.Itoa(e.Code) + ": " + e.Message
 }
 
-// Is matches ErrNotFound for a 404 and ErrConflict for a 409.
+// Is matches errNotFound for a 404 and ErrConflict for a 409.
 func (e *APIError) Is(target error) bool {
-	return (target == ErrNotFound && e.Code == http.StatusNotFound) ||
+	return (target == errNotFound && e.Code == http.StatusNotFound) ||
 		(target == ErrConflict && e.Code == http.StatusConflict)
 }
 
@@ -104,7 +104,7 @@ type Client struct {
 
 // Dial connects to the daemon at socket, an absolute Unix socket path, and
 // negotiates the version: the lower of the daemon's and maxAPIVersion. It
-// fails with ErrAPIVersion when the daemon's newest version is below 1.40 or
+// fails with errAPIVersion when the daemon's newest version is below 1.40 or
 // its oldest above maxAPIVersion. pool names this pool's labels.
 func Dial(ctx context.Context, socket, pool string) (*Client, error) {
 	tr := &http.Transport{
@@ -134,14 +134,14 @@ func Dial(ctx context.Context, socket, pool string) (*Client, error) {
 	}
 	daemonMax, err := parseAPIVersion(v.APIVersion)
 	if err != nil {
-		return nil, fmt.Errorf("%w: the daemon reports %q", ErrAPIVersion, textsafe.SanitizeSingleLineBounded(v.APIVersion, 32))
+		return nil, fmt.Errorf("%w: the daemon reports %q", errAPIVersion, textsafe.SanitizeSingleLineBounded(v.APIVersion, 32))
 	}
 	if daemonMax < minAPIVersion {
-		return nil, fmt.Errorf("%w: the daemon speaks up to %s, below the minimum %s (Docker Engine 19.03)", ErrAPIVersion, daemonMax, minAPIVersion)
+		return nil, fmt.Errorf("%w: the daemon speaks up to %s, below the minimum %s (Docker Engine 19.03)", errAPIVersion, daemonMax, minAPIVersion)
 	}
 	c.version = min(daemonMax, maxAPIVersion)
 	if daemonMin, err := parseAPIVersion(v.MinAPIVersion); err == nil && c.version < daemonMin {
-		return nil, fmt.Errorf("%w: the daemon needs at least %s, above this client's %s", ErrAPIVersion, daemonMin, maxAPIVersion)
+		return nil, fmt.Errorf("%w: the daemon needs at least %s, above this client's %s", errAPIVersion, daemonMin, maxAPIVersion)
 	}
 	return c, nil
 }
@@ -224,7 +224,7 @@ func (c *Client) call(ctx context.Context, op, method, path string, query url.Va
 // labelFilter is the filters parameter selecting this pool's objects, plus
 // any extra filters.
 func (c *Client) labelFilter(extra map[string][]string) url.Values {
-	f := map[string][]string{"label": {LabelManaged + "=true", LabelPool + "=" + c.pool}}
+	f := map[string][]string{"label": {LabelManaged + "=true", labelPool + "=" + c.pool}}
 	maps.Copy(f, extra)
 	b, _ := json.Marshal(f) // a map of string slices cannot fail to marshal
 	return url.Values{"filters": {string(b)}}
@@ -235,14 +235,14 @@ func (c *Client) poolLabels(labels map[string]string) map[string]string {
 	out := make(map[string]string, len(labels)+3)
 	maps.Copy(out, labels)
 	out[LabelManaged] = managedValue
-	out[LabelPool] = c.pool
+	out[labelPool] = c.pool
 	out[LabelCreated] = c.now().UTC().Format(time.RFC3339)
 	return out
 }
 
 // owned reports whether labels carry this pool's ownership labels.
 func (c *Client) owned(labels map[string]string) bool {
-	return labels[LabelManaged] == managedValue && labels[LabelPool] == c.pool
+	return labels[LabelManaged] == managedValue && labels[labelPool] == c.pool
 }
 
 // apiVersion is a Docker API version, major<<16 | minor, so versions order

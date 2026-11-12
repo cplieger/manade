@@ -13,19 +13,19 @@ import (
 func TestDial(t *testing.T) {
 	t.Run("negotiatesTheDaemonsLowerVersion", func(t *testing.T) {
 		d := newDaemon(t, "1.43")
-		d.handle("GET /_ping", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("OK")) })
+		d.handle("GET /images/x/json", func(w http.ResponseWriter, _ *http.Request) { writeError(w, http.StatusNotFound, "no such image") })
 		c := d.dial(t)
 		if got := c.APIVersion(); got != "1.43" {
 			t.Errorf("APIVersion = %q, want 1.43", got)
 		}
-		if err := c.Ping(t.Context()); err != nil {
-			t.Fatalf("Ping: %v", err)
+		if _, _, err := c.InspectImage(t.Context(), "x"); err != nil {
+			t.Fatalf("InspectImage: %v", err)
 		}
 		if v := d.seen(http.MethodGet, "/version"); len(v) != 1 || v[0].version != "" {
 			t.Errorf("/version requests = %+v, want one unversioned", v)
 		}
-		if p := d.seen(http.MethodGet, "/_ping"); len(p) != 1 || p[0].version != "1.43" {
-			t.Errorf("/_ping requests = %+v, want one under /v1.43/", p)
+		if p := d.seen(http.MethodGet, "/images/x/json"); len(p) != 1 || p[0].version != "1.43" {
+			t.Errorf("/images/x/json requests = %+v, want one under /v1.43/", p)
 		}
 	})
 	t.Run("capsANewerDaemonAtTheClientsVersion", func(t *testing.T) {
@@ -63,21 +63,21 @@ func TestDial(t *testing.T) {
 	t.Run("refusesADaemonBelowTheFloor", func(t *testing.T) {
 		d := newDaemon(t, "1.39")
 		_, err := Dial(t.Context(), d.socket, "manade")
-		if !errors.Is(err, ErrAPIVersion) || !strings.Contains(err.Error(), "1.39") {
-			t.Errorf("Dial = %v, want ErrAPIVersion naming 1.39", err)
+		if !errors.Is(err, errAPIVersion) || !strings.Contains(err.Error(), "1.39") {
+			t.Errorf("Dial = %v, want errAPIVersion naming 1.39", err)
 		}
 	})
 	t.Run("refusesADaemonWhoseMinimumIsAboveTheClient", func(t *testing.T) {
 		d := newDaemonRange(t, "1.60", "1.55")
 		_, err := Dial(t.Context(), d.socket, "manade")
-		if !errors.Is(err, ErrAPIVersion) || !strings.Contains(err.Error(), "1.55") {
-			t.Errorf("Dial = %v, want ErrAPIVersion naming 1.55", err)
+		if !errors.Is(err, errAPIVersion) || !strings.Contains(err.Error(), "1.55") {
+			t.Errorf("Dial = %v, want errAPIVersion naming 1.55", err)
 		}
 	})
 	t.Run("refusesAMalformedVersion", func(t *testing.T) {
 		d := newDaemon(t, "one.forty\n")
-		if _, err := Dial(t.Context(), d.socket, "manade"); !errors.Is(err, ErrAPIVersion) || strings.Contains(err.Error(), "\n") {
-			t.Errorf("Dial = %v, want ErrAPIVersion on one line", err)
+		if _, err := Dial(t.Context(), d.socket, "manade"); !errors.Is(err, errAPIVersion) || strings.Contains(err.Error(), "\n") {
+			t.Errorf("Dial = %v, want errAPIVersion on one line", err)
 		}
 	})
 	t.Run("failsWhenTheSocketIsAbsent", func(t *testing.T) {
@@ -104,7 +104,7 @@ func TestAPIError(t *testing.T) {
 	_, _, err := c.InspectContainer(t.Context(), "conflict")
 	t.Run("conflictMatchesErrConflict", func(t *testing.T) {
 		var ae *APIError
-		if !errors.Is(err, ErrConflict) || errors.Is(err, ErrNotFound) || !errors.As(err, &ae) || ae.Code != 409 || ae.Op != "inspect" {
+		if !errors.Is(err, ErrConflict) || errors.Is(err, errNotFound) || !errors.As(err, &ae) || ae.Code != 409 || ae.Op != "inspect" {
 			t.Errorf("err = %v, want an inspect APIError 409 matching ErrConflict only", err)
 		}
 	})

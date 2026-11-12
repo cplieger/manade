@@ -54,7 +54,7 @@ func (p *Pool) Run(ctx context.Context) error {
 	wg.Go(func() { p.runProofs(loops) })
 	wg.Go(func() { p.runImages(loops) })
 	wg.Go(func() { p.runReconciler(loops) })
-	wg.Go(func() { p.sweep.Run(loops, p.Hot, p.Queued) })
+	wg.Go(func() { p.sweep.Run(loops, p.hot, p.queued) })
 	<-ctx.Done()
 	p.shutdown(stop, &wg)
 	return nil

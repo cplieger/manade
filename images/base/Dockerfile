@@ -24,7 +24,7 @@ RUN fetch() { \
     } \
     && docker_v=$(docker --version | sed -E 's/^Docker version ([^,]+),.*/\1/') \
     && dotnet_v=$(jq -er '.runtimeOptions.includedFrameworks[] | select(.name == "Microsoft.NETCore.App") | .version' /home/runner/bin/Runner.Listener.runtimeconfig.json) \
-    && fetch actions-runner "actions/runner/v$(/home/runner/bin/Runner.Listener --version)" \
+    && fetch actions-runner "actions/runner/v$(env -u ACTIONS_RUNNER_PRINT_LOG_TO_STDOUT /home/runner/bin/Runner.Listener --version)" \
     && fetch dotnet-runtime "dotnet/runtime/v${dotnet_v}" LICENSE.TXT THIRD-PARTY-NOTICES.TXT \
     && fetch runner-container-hooks "actions/runner-container-hooks/v${RUNNER_CONTAINER_HOOKS_VERSION}" \
     && fetch docker-cli "docker/cli/v${docker_v}" \

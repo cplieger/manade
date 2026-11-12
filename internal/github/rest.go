@@ -162,7 +162,7 @@ func (r *REST) get(ctx context.Context, c *http.Client, src forgeapi.CredentialS
 	}
 }
 
-func (r *REST) send(ctx context.Context, c *http.Client, token, u string) (answer, error) {
+func (*REST) send(ctx context.Context, c *http.Client, token, u string) (answer, error) {
 	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, http.NoBody)
@@ -305,8 +305,7 @@ func (r *REST) privateGroup(ctx context.Context, s *config.Scope) (bool, error) 
 
 // Runner is a registration's state on GitHub.
 type Runner struct {
-	Busy   bool
-	Online bool
+	Busy bool
 }
 
 var (
@@ -319,8 +318,7 @@ var (
 // so any other failure keeps the container.
 func (r *REST) Runner(ctx context.Context, s *config.Scope, id int64) (Runner, bool, error) {
 	var w struct {
-		Busy   *bool  `json:"busy"`
-		Status string `json:"status"`
+		Busy *bool `json:"busy"`
 	}
 	runners := r.api + accountPath(s) + "/actions/runners"
 	_, found, err := r.getJSON(ctx, s, runners+"/"+strconv.FormatInt(id, 10), &w)
@@ -339,5 +337,5 @@ func (r *REST) Runner(ctx context.Context, s *config.Scope, id int64) (Runner, b
 		r.failure(ctx, obs.GitHubScaleSet)
 		return Runner{}, false, err
 	}
-	return Runner{Busy: w.Busy != nil && *w.Busy, Online: w.Status == "online"}, found, nil
+	return Runner{Busy: w.Busy != nil && *w.Busy}, found, nil
 }

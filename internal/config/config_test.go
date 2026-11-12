@@ -141,7 +141,7 @@ func TestEnterpriseScope(t *testing.T) {
 	t.Parallel()
 	doc := "capacity: {cpus: 4, memory: 8GiB}\nscopes: [{enterprise: bigco}]\nprofiles: {p: {}}\n"
 	cfg := mustBuild(t, tokenEnv(), doc)
-	if s := cfg.Scopes[0]; s.Key != "enterprises/bigco" || s.Kind != ScopeEnterprise || s.RunnerGroup != "Default" {
+	if s := cfg.Scopes[0]; s.Key != "enterprises/bigco" || s.Kind != scopeEnterprise || s.RunnerGroup != "Default" {
 		t.Errorf("scope = %+v", s)
 	}
 	mustBuild(t, tokenEnv(), strings.Replace(doc, "profiles: {p: {}}", "profiles: {p: {scopes: [enterprises/bigco]}}", 1))
@@ -273,7 +273,7 @@ func TestLoadCredential(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if cfg.GitHub.AppKey == nil || !cfg.GitHub.Token.IsZero() {
+		if cfg.GitHub.AppKey == nil || cfg.GitHub.Token.Reveal() != "" {
 			t.Errorf("github = %+v, want the App key alone", cfg.GitHub)
 		}
 	})

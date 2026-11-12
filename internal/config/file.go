@@ -65,7 +65,7 @@ type ScopeKind int
 const (
 	ScopeRepo ScopeKind = iota + 1
 	ScopeOrg
-	ScopeEnterprise
+	scopeEnterprise
 )
 
 // Scope is one registration target.
@@ -197,5 +197,5 @@ func (fs *fileScope) target(cfg *Config, path string, p *problems) Scope {
 	if cfg.GitHub.AppKey != nil {
 		p.addf(path+".enterprise", "an enterprise scope needs GITHUB_TOKEN: GitHub refuses App authentication for enterprise runners")
 	}
-	return Scope{Kind: ScopeEnterprise, Owner: fs.Enterprise, Key: "enterprises/" + fs.Enterprise}
+	return Scope{Kind: scopeEnterprise, Owner: fs.Enterprise, Key: "enterprises/" + fs.Enterprise}
 }
