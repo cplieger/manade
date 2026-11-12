@@ -128,8 +128,10 @@ func TestIntegrationContainerLifecycle(t *testing.T) {
 	if err != nil || !found || ctr.State.ExitCode != 3 || ctr.State.FinishedAt.IsZero() || ctr.Config.Labels[labelPool] != pool || ctr.HostConfig.Memory != 64<<20 {
 		t.Errorf("InspectContainer = %+v, %v, %v", ctr, found, err)
 	}
+	// The daemon orders the two streams by when it read each line, which
+	// need not be the order they were written in.
 	lines, err := c.Logs(ctx, id, 50)
-	if err != nil || !slices.Equal(lines, []string{"hello", "oops"}) {
+	if err != nil || !slices.Equal(slices.Sorted(slices.Values(lines)), []string{"hello", "oops"}) {
 		t.Errorf("Logs = %q, %v", lines, err)
 	}
 	passwd, found, err := c.ReadFile(ctx, id, "/etc/passwd", 1<<20)
