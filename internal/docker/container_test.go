@@ -41,7 +41,7 @@ func TestCreateContainer(t *testing.T) {
 		Image:      imageID,
 		Entrypoint: []string{"/home/runner/run.sh"},
 		Env:        []string{"ACTIONS_RUNNER_INPUT_JITCONFIG=test-config"},
-		Labels:     map[string]string{LabelRunner: "default-1", LabelPool: "someone-else"},
+		Labels:     map[string]string{LabelRunner: "default-1", labelPool: "someone-else"},
 		HostConfig: HostConfig{
 			CapDrop: []string{"ALL"}, SecurityOpt: []string{"no-new-privileges:true"},
 			Memory: 4 << 30, MemorySwap: 4 << 30, NanoCPUs: 2e9, PidsLimit: &pids, Init: &initOn,
@@ -88,14 +88,14 @@ func TestCreateContainer(t *testing.T) {
 		}
 	})
 	t.Run("leavesTheCallersLabelsAlone", func(t *testing.T) {
-		if req.Labels[LabelPool] != "someone-else" || len(req.Labels) != 2 {
+		if req.Labels[labelPool] != "someone-else" || len(req.Labels) != 2 {
 			t.Errorf("req.Labels = %v, want unchanged", req.Labels)
 		}
 	})
 	t.Run("warningsRemoveTheContainer", func(t *testing.T) {
 		_, err := c.CreateContainer(t.Context(), "warned", req)
-		if !errors.Is(err, ErrCreateWarnings) {
-			t.Fatalf("CreateContainer = %v, want ErrCreateWarnings", err)
+		if !errors.Is(err, errCreateWarnings) {
+			t.Fatalf("CreateContainer = %v, want errCreateWarnings", err)
 		}
 		if !strings.Contains(err.Error(), "PIDs limit discarded") || strings.Contains(err.Error(), "\x1b") {
 			t.Errorf("error text = %q, want the warning sanitized", err)
@@ -107,7 +107,7 @@ func TestCreateContainer(t *testing.T) {
 	})
 	t.Run("aFailedRemovalJoinsBothErrors", func(t *testing.T) {
 		_, err := c.CreateContainer(t.Context(), "warnedStuck", req)
-		if !errors.Is(err, ErrCreateWarnings) || !strings.Contains(err.Error(), "remove failed") {
+		if !errors.Is(err, errCreateWarnings) || !strings.Contains(err.Error(), "remove failed") {
 			t.Errorf("CreateContainer = %v, want the warnings and the removal failure", err)
 		}
 	})
@@ -117,8 +117,8 @@ func TestCreateContainer(t *testing.T) {
 		}
 	})
 	t.Run("aMissingImageIsNotFound", func(t *testing.T) {
-		if _, err := c.CreateContainer(t.Context(), "noimage", req); !errors.Is(err, ErrNotFound) {
-			t.Errorf("CreateContainer = %v, want ErrNotFound", err)
+		if _, err := c.CreateContainer(t.Context(), "noimage", req); !errors.Is(err, errNotFound) {
+			t.Errorf("CreateContainer = %v, want errNotFound", err)
 		}
 	})
 }
@@ -136,8 +136,8 @@ func TestStartContainer(t *testing.T) {
 	if err := c.StartContainer(t.Context(), "c1"); err != nil {
 		t.Errorf("StartContainer = %v", err)
 	}
-	if err := c.StartContainer(t.Context(), "gone"); !errors.Is(err, ErrNotFound) {
-		t.Errorf("StartContainer(gone) = %v, want ErrNotFound", err)
+	if err := c.StartContainer(t.Context(), "gone"); !errors.Is(err, errNotFound) {
+		t.Errorf("StartContainer(gone) = %v, want errNotFound", err)
 	}
 }
 
@@ -195,10 +195,10 @@ func TestInspectContainer(t *testing.T) {
 		t.Errorf("container = %+v", ctr)
 	}
 	st := ctr.State
-	if st.ExitCode != 137 || !st.OOMKilled || st.Running {
-		t.Errorf("exit = %d, oom %v, running %v", st.ExitCode, st.OOMKilled, st.Running)
+	if st.ExitCode != 137 || !st.OOMKilled {
+		t.Errorf("exit = %d, oom %v", st.ExitCode, st.OOMKilled)
 	}
-	if hc := ctr.HostConfig; hc.NanoCPUs != 2e9 || hc.Memory != 4<<30 || ctr.Config.Labels[LabelPool] != "manade" {
+	if hc := ctr.HostConfig; hc.NanoCPUs != 2e9 || hc.Memory != 4<<30 || ctr.Config.Labels[labelPool] != "manade" {
 		t.Errorf("resources, labels = %d, %d, %v", hc.NanoCPUs, hc.Memory, ctr.Config.Labels)
 	}
 	if st.FinishedAt.Sub(st.StartedAt) != 9*time.Minute+58500*time.Millisecond {
@@ -238,12 +238,12 @@ func TestDiskBytes(t *testing.T) {
 func TestRemoveOwned(t *testing.T) {
 	d := newDaemon(t, "1.51")
 	other := ownedLabels()
-	other[LabelPool] = "other-pool"
+	other[labelPool] = "other-pool"
 	containers := map[string]map[string]string{
 		"mine":      ownedLabels(),
 		"otherPool": other,
 		"unlabeled": {"com.example.stack": "web"},
-		"notTrue":   {LabelManaged: "yes", LabelPool: "manade"},
+		"notTrue":   {LabelManaged: "yes", labelPool: "manade"},
 		"racing":    ownedLabels(),
 	}
 	d.handle("GET /containers/{id}/json", func(w http.ResponseWriter, r *http.Request) {

@@ -139,11 +139,3 @@ func TestSocketGID(t *testing.T) {
 		}
 	})
 }
-
-func TestPingFailure(t *testing.T) {
-	d := newDaemon(t, "1.51")
-	d.handle("GET /_ping", func(w http.ResponseWriter, _ *http.Request) { writeError(w, http.StatusInternalServerError, "down") })
-	if err := d.dial(t).Ping(t.Context()); err == nil {
-		t.Error("Ping on a 500 succeeded")
-	}
-}

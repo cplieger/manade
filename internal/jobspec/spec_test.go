@@ -19,8 +19,8 @@ func TestRunnerDefaultProfile(t *testing.T) {
 	if req.Image != "sha256:feed" || req.User != "" {
 		t.Errorf("Image, User = %q, %q, want the checked ID and the image's own user", req.Image, req.User)
 	}
-	if !slices.Equal(req.Entrypoint, []string{"/home/runner/run.sh"}) || req.Cmd != nil {
-		t.Errorf("Entrypoint, Cmd = %q, %q, want [/home/runner/run.sh] and none", req.Entrypoint, req.Cmd)
+	if !slices.Equal(req.Entrypoint, []string{"/home/runner/run.sh"}) {
+		t.Errorf("Entrypoint = %q, want [/home/runner/run.sh]", req.Entrypoint)
 	}
 	if !slices.Equal(req.Env, []string{"ACTIONS_RUNNER_INPUT_JITCONFIG=test-jit"}) {
 		t.Errorf("Env = %q, want only the JIT config", req.Env)
@@ -64,8 +64,8 @@ func TestRunnerDefaultProfile(t *testing.T) {
 func TestRunnerDockerImageUsesWrapper(t *testing.T) {
 	h, p := profileOf(t, "runner_image: docker, allow_privilege_escalation: true, privileged: true, scopes: [acme/app]")
 	req := h.Runner(p, &testRunner)
-	if !slices.Equal(req.Entrypoint, []string{"/usr/local/bin/manade-dockerd-run"}) || req.Cmd != nil {
-		t.Errorf("Entrypoint, Cmd = %q, %q, want the wrapper alone", req.Entrypoint, req.Cmd)
+	if !slices.Equal(req.Entrypoint, []string{"/usr/local/bin/manade-dockerd-run"}) {
+		t.Errorf("Entrypoint = %q, want the wrapper alone", req.Entrypoint)
 	}
 }
 

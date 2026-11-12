@@ -31,7 +31,7 @@ func (p *Pool) Capacity(ss github.ScaleSet, start time.Time) int {
 	s := p.set(ss)
 	s.flight = flight{}
 	if p.stopping || s.scope.public {
-		s.flight = flight{start: start, active: true}
+		s.flight = flight{active: true}
 		return 0
 	}
 	a, order, views := p.allocate(start)
@@ -40,7 +40,7 @@ func (p *Pool) Capacity(ss github.ScaleSet, start time.Time) int {
 	}
 	i := slices.Index(order, s)
 	v, g := &views[i], a.grants[i]
-	f := flight{start: start, figure: v.slots, funded: min(len(v.open), v.covered), active: true}
+	f := flight{figure: v.slots, funded: min(len(v.open), v.covered), active: true}
 	if v.fundable {
 		f.figure += g.funded + b2i(g.standing)
 		f.funded += g.funded
@@ -54,7 +54,7 @@ func (p *Pool) Capacity(ss github.ScaleSet, start time.Time) int {
 			if private {
 				p.wantProof(sc)
 			}
-			f = flight{start: start, figure: owed, active: true}
+			f = flight{figure: owed, active: true}
 		}
 	}
 	switch {
@@ -71,7 +71,7 @@ func (p *Pool) Capacity(ss github.ScaleSet, start time.Time) int {
 // still unfilled rotateAfter after the first poll carrying it began, so the
 // next goes to the one whose last slot ended longest ago. While the
 // budget covers all of them, the allocation that follows grants it again.
-func (p *Pool) rotate(s *set, start time.Time) bool {
+func (*Pool) rotate(s *set, start time.Time) bool {
 	if !s.org() || s.standSince.IsZero() || start.Sub(s.standSince) < rotateAfter {
 		return false
 	}
@@ -220,12 +220,12 @@ func (p *Pool) Beat(ss github.ScaleSet) {
 	p.set(ss).beat = p.now()
 }
 
-// Queued takes one sweep's reads, the sweep ending at ended. A scope read
+// queued takes one sweep's reads, the sweep ending at ended. A scope read
 // in part keeps its last whole read and funds nothing new until a sweep
 // reads it whole. A whole read forgets the assignments and unassignable
 // jobs it no longer lists, and gives a scale set whose last two counted
 // polls left a funded slot unfilled its verdict.
-func (p *Pool) Queued(ended time.Time, qs []github.Queue) {
+func (p *Pool) queued(ended time.Time, qs []github.Queue) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	for _, q := range qs {

@@ -54,26 +54,26 @@ const (
 	NetworkBridge   = "bridge"
 	NetworkHost     = "host"
 
-	DockerNone       = "none"
+	dockerNone       = "none"
 	DockerHostSocket = "host-socket"
 
-	RuntimeRunc   = "runc"
-	RuntimeRunsc  = "runsc"
+	runtimeRunc   = "runc"
+	runtimeRunsc  = "runsc"
 	RuntimeSysbox = "sysbox-runc"
 
 	// ShippedDocker is the shipped image whose wrapper starts a daemon.
 	ShippedDocker = "docker"
 	// DockerWrapper is the shipped docker image's runner command.
 	DockerWrapper = "/usr/local/bin/manade-dockerd-run"
-	// RunnerCommand is GitHub's runner image's start script.
-	RunnerCommand = "/home/runner/run.sh"
+	// runnerCommand is GitHub's runner image's start script.
+	runnerCommand = "/home/runner/run.sh"
 )
 
 var (
 	shippedImages = []string{"base", "build", "browser", ShippedDocker}
 	networks      = []string{NetworkIsolated, NetworkBridge, NetworkHost}
-	dockerModes   = []string{DockerNone, DockerHostSocket}
-	runtimes      = []string{RuntimeRunc, RuntimeRunsc, RuntimeSysbox}
+	dockerModes   = []string{dockerNone, DockerHostSocket}
+	runtimes      = []string{runtimeRunc, runtimeRunsc, RuntimeSysbox}
 )
 
 // linuxCapabilities is capabilities(7)'s list without the CAP_ prefix.
@@ -196,8 +196,8 @@ func (p *Profile) Grants() []string {
 	add(len(p.Capabilities) > 0, "capabilities")
 	add(p.AllowRoot, "allow_root")
 	add(p.Network != NetworkIsolated, "network")
-	add(p.Docker != DockerNone, "docker")
-	add(p.Runtime != RuntimeRunc, "runtime")
+	add(p.Docker != dockerNone, "docker")
+	add(p.Runtime != runtimeRunc, "runtime")
 	add(p.Privileged, "privileged")
 	add(len(p.Mounts) > 0, "mounts")
 	return g
@@ -243,8 +243,8 @@ func (fp *fileProfile) parse(cfg *Config, name string, p *problems) Profile {
 	}
 	fp.resources(cfg, &pr, at, p)
 	pr.Network = oneOf(p, at("network"), fp.Network, NetworkIsolated, networks)
-	pr.Docker = oneOf(p, at("docker"), fp.Docker, DockerNone, dockerModes)
-	pr.Runtime = oneOf(p, at("runtime"), fp.Runtime, RuntimeRunc, runtimes)
+	pr.Docker = oneOf(p, at("docker"), fp.Docker, dockerNone, dockerModes)
+	pr.Runtime = oneOf(p, at("runtime"), fp.Runtime, runtimeRunc, runtimes)
 	pr.AllowPrivilegeEscalation = field(p, at("allow_privilege_escalation"), fp.AllowPrivilegeEscalation, "", parseBool)
 	pr.AllowRoot = field(p, at("allow_root"), fp.AllowRoot, "", parseBool)
 	pr.Privileged = field(p, at("privileged"), fp.Privileged, "", parseBool)
@@ -271,7 +271,7 @@ func (fp *fileProfile) image(pr *Profile, at func(string) string, p *problems) {
 	}
 	pr.Command = fp.Command
 	if fp.Command == nil {
-		pr.Command = []string{RunnerCommand}
+		pr.Command = []string{runnerCommand}
 		if pr.RunnerImage == ShippedDocker {
 			pr.Command = []string{DockerWrapper}
 		}

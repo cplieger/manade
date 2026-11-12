@@ -40,11 +40,6 @@ const (
 	firewallVersion   apiVersion = 1<<16 | 49
 )
 
-// Ping is the daemon's liveness check.
-func (c *Client) Ping(ctx context.Context) error {
-	return c.call(ctx, "ping", http.MethodGet, "/_ping", nil, nil, nil, 0)
-}
-
 // Info reads /info. A field added after the floor is read only at a
 // negotiated version that has it, because a daemon answering an older
 // version strips it.

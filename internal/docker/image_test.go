@@ -36,8 +36,8 @@ func TestInspectImage(t *testing.T) {
 		if img.ID != imageID || img.Config.User != "runner" || img.Config.Labels[LabelRunnerImage] != "base" {
 			t.Errorf("image = %+v", img)
 		}
-		if !slices.Equal(img.RepoTags, []string{"ghcr.io/cplieger/manade-runner:base"}) || len(img.RepoDigests) != 1 {
-			t.Errorf("RepoTags, RepoDigests = %v, %v", img.RepoTags, img.RepoDigests)
+		if !slices.Equal(img.RepoTags, []string{"ghcr.io/cplieger/manade-runner:base"}) {
+			t.Errorf("RepoTags = %v", img.RepoTags)
 		}
 	})
 	t.Run("dropsTheNoneTagOfOldDaemons", func(t *testing.T) {
@@ -97,8 +97,8 @@ func TestPullImage(t *testing.T) {
 		}
 	})
 	t.Run("aStatusErrorFailsThePull", func(t *testing.T) {
-		if err := c.PullImage(t.Context(), "missing:1"); !errors.Is(err, ErrNotFound) {
-			t.Errorf("PullImage = %v, want ErrNotFound", err)
+		if err := c.PullImage(t.Context(), "missing:1"); !errors.Is(err, errNotFound) {
+			t.Errorf("PullImage = %v, want errNotFound", err)
 		}
 	})
 	t.Run("anOverlongMessageFailsThePull", func(t *testing.T) {

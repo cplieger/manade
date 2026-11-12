@@ -52,9 +52,6 @@ func TestIntegrationDaemon(t *testing.T) {
 	if !slices.Contains(info.Runtimes, "runc") || info.DataRoot == "" {
 		t.Errorf("Info = %+v, want runc and a data root", info)
 	}
-	if err := c.Ping(t.Context()); err != nil {
-		t.Errorf("Ping: %v", err)
-	}
 	if _, err := c.SocketGID(); err != nil {
 		t.Errorf("SocketGID: %v", err)
 	}
@@ -75,13 +72,13 @@ func TestIntegrationNetwork(t *testing.T) {
 	}
 	other := spec
 	other.Bridge = pool + "9"
-	if err := c.EnsureNetwork(t.Context(), other); !errors.Is(err, ErrNetworkMismatch) {
-		t.Errorf("EnsureNetwork with another bridge name = %v, want ErrNetworkMismatch", err)
+	if err := c.EnsureNetwork(t.Context(), other); !errors.Is(err, errNetworkMismatch) {
+		t.Errorf("EnsureNetwork with another bridge name = %v, want errNetworkMismatch", err)
 	}
 	other = spec
 	other.ICC = true
-	if err := c.EnsureNetwork(t.Context(), other); !errors.Is(err, ErrNetworkMismatch) {
-		t.Errorf("EnsureNetwork with ICC on = %v, want ErrNetworkMismatch", err)
+	if err := c.EnsureNetwork(t.Context(), other); !errors.Is(err, errNetworkMismatch) {
+		t.Errorf("EnsureNetwork with ICC on = %v, want errNetworkMismatch", err)
 	}
 }
 
@@ -128,11 +125,13 @@ func TestIntegrationContainerLifecycle(t *testing.T) {
 	waitEvent(t, events, id)
 
 	ctr, found, err := c.InspectContainer(ctx, id)
-	if err != nil || !found || ctr.State.ExitCode != 3 || ctr.State.Running || ctr.Config.Labels[LabelPool] != pool || ctr.HostConfig.Memory != 64<<20 {
+	if err != nil || !found || ctr.State.ExitCode != 3 || ctr.State.FinishedAt.IsZero() || ctr.Config.Labels[labelPool] != pool || ctr.HostConfig.Memory != 64<<20 {
 		t.Errorf("InspectContainer = %+v, %v, %v", ctr, found, err)
 	}
+	// The daemon orders the two streams by when it read each line, which
+	// need not be the order they were written in.
 	lines, err := c.Logs(ctx, id, 50)
-	if err != nil || !slices.Equal(lines, []string{"hello", "oops"}) {
+	if err != nil || !slices.Equal(slices.Sorted(slices.Values(lines)), []string{"hello", "oops"}) {
 		t.Errorf("Logs = %q, %v", lines, err)
 	}
 	passwd, found, err := c.ReadFile(ctx, id, "/etc/passwd", 1<<20)

@@ -116,7 +116,7 @@ func (c *Client) CopyArchive(ctx context.Context, id, p string, w io.Writer, lim
 	ctx, cancel := httpclient.ContextWithDefaultTimeout(ctx, callTimeout)
 	defer cancel()
 	body, err := c.request(ctx, c.api, "archive", http.MethodGet, "/containers/"+id+"/archive", url.Values{"path": {p}}, nil)
-	if errors.Is(err, ErrNotFound) {
+	if errors.Is(err, errNotFound) {
 		return false, nil
 	}
 	if err != nil {

@@ -243,7 +243,7 @@ func (md *model) drop(j *mjob) {
 }
 
 // cancel is GitHub's reassignment cancel of s's newest unstarted job.
-func (md *model) cancel(s *mset) {
+func (*model) cancel(s *mset) {
 	if len(s.assigned) == 0 || s.inFlight {
 		return
 	}

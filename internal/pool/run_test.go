@@ -75,7 +75,7 @@ func leftoverProbe(id string) *fakeBox {
 
 func TestRunBootsServesAndShutsDown(t *testing.T) {
 	fx := bootFixture(t)
-	fx.gh.runners = map[int64]github.Runner{7: {Busy: true, Online: true}}
+	fx.gh.runners = map[int64]github.Runner{7: {Busy: true}}
 	fx.gh.stats = map[int]github.Stats{appDefault.ID: {Assigned: 5, Running: 1}}
 	fx.dk.add(leftoverProbe("c-leftover"))
 	fx.dk.add(orphan("c-old", "acme/app", "default", "manade-default-old", "running"))

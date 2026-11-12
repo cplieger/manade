@@ -134,7 +134,7 @@ func (h *Host) Runner(p *config.Profile, r *Runner) *docker.CreateRequest {
 // image: the profile's command as its entrypoint, so it creates from any image
 // the runner could start, no network, and nothing else but the disk probe's
 // size. A probe is created and removed, never started.
-func (h *Host) Probe(p *config.Profile, kind ProbeKind, imageID string) *docker.CreateRequest {
+func (*Host) Probe(p *config.Profile, kind ProbeKind, imageID string) *docker.CreateRequest {
 	req := &docker.CreateRequest{
 		Image:      imageID,
 		Entrypoint: slices.Clone(p.Command),

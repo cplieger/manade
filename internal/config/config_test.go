@@ -141,7 +141,7 @@ func TestEnterpriseScope(t *testing.T) {
 	t.Parallel()
 	doc := "capacity: {cpus: 4, memory: 8GiB}\nscopes: [{enterprise: bigco}]\nprofiles: {p: {}}\n"
 	cfg := mustBuild(t, tokenEnv(), doc)
-	if s := cfg.Scopes[0]; s.Key != "enterprises/bigco" || s.Kind != ScopeEnterprise || s.RunnerGroup != "Default" {
+	if s := cfg.Scopes[0]; s.Key != "enterprises/bigco" || s.Kind != scopeEnterprise || s.RunnerGroup != "Default" {
 		t.Errorf("scope = %+v", s)
 	}
 	mustBuild(t, tokenEnv(), strings.Replace(doc, "profiles: {p: {}}", "profiles: {p: {scopes: [enterprises/bigco]}}", 1))
@@ -273,7 +273,7 @@ func TestLoadCredential(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if cfg.GitHub.AppKey == nil || !cfg.GitHub.Token.IsZero() {
+		if cfg.GitHub.AppKey == nil || cfg.GitHub.Token.Reveal() != "" {
 			t.Errorf("github = %+v, want the App key alone", cfg.GitHub)
 		}
 	})
@@ -342,13 +342,25 @@ func TestLoadConfigFile(t *testing.T) {
 
 func TestSecretRedacts(t *testing.T) {
 	t.Parallel()
-	s := Secret{v: "test-token"}
-	for _, out := range []string{fmt.Sprint(s), fmt.Sprintf("%v %+v %#v %s %q", s, s, s, s, s), s.LogValue().String()} {
+	s := newSecret("test-token")
+	type held struct{ s Secret }
+	type nested struct{ h held }
+	var logged strings.Builder
+	for _, v := range []any{s, &s, held{s}, &held{s}, nested{held{s}}, &nested{held{s}}} {
+		slog.New(slog.NewTextHandler(&logged, nil)).Info("v", "v", v)
+		slog.New(slog.NewJSONHandler(&logged, nil)).Info("v", "v", v)
+	}
+	outs := []string{logged.String(), s.LogValue().String()}
+	for _, verb := range []string{"%v", "%+v", "%#v", "%s", "%q"} {
+		outs = append(outs, fmt.Sprintf(verb, s), fmt.Sprintf(verb, held{s}), fmt.Sprintf(verb, &held{s}),
+			fmt.Sprintf(verb, nested{held{s}}), fmt.Sprintf(verb, &nested{held{s}}))
+	}
+	for _, out := range outs {
 		if strings.Contains(out, "test-token") {
 			t.Errorf("printed %q", out)
 		}
 	}
-	if s.Reveal() != "test-token" || s.String() != "[redacted]" || (Secret{}).String() != "" {
+	if s.Reveal() != "test-token" || s.String() != "[redacted]" || (Secret{}).String() != "" || newSecret("") != (Secret{}) {
 		t.Error("Reveal or String wrong")
 	}
 	g := GitHub{Token: s}

@@ -91,12 +91,6 @@ func (d *fakeDaemon) seen(method, path string) []seen {
 	return out
 }
 
-func (d *fakeDaemon) all() []seen {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	return append([]seen(nil), d.requests...)
-}
-
 // dial connects a client for pool "manade" with a fixed clock.
 func (d *fakeDaemon) dial(t *testing.T) *Client {
 	t.Helper()
@@ -120,5 +114,5 @@ func writeError(w http.ResponseWriter, code int, msg string) {
 
 // ownedLabels are the pool labels of pool "manade".
 func ownedLabels() map[string]string {
-	return map[string]string{LabelManaged: "true", LabelPool: "manade", LabelCreated: "2026-11-10T12:00:00Z"}
+	return map[string]string{LabelManaged: "true", labelPool: "manade", LabelCreated: "2026-11-10T12:00:00Z"}
 }

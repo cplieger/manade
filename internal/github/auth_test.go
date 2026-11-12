@@ -106,7 +106,7 @@ func TestInstallation(t *testing.T) {
 		r, _, _ := newTestREST(t, f, cfg)
 		f.app(42, "/repos/acme/app/installation", "/repos/acme/web/installation", "/orgs/acme/installation")
 		for key, want := range map[string]int64{"acme/web": 42, "acme": 42, "solo/tool": 77} {
-			if id, err := r.Installation(t.Context(), scope(t, cfg, key)); id != want || err != nil {
+			if id, err := r.installation(t.Context(), scope(t, cfg, key)); id != want || err != nil {
 				t.Errorf("Installation(%s) = %d, %v; want %d", key, id, err, want)
 			}
 		}
@@ -128,7 +128,7 @@ func TestInstallation(t *testing.T) {
 		f := newFake(t)
 		cfg := load(t, true, appLayout)
 		r, m, _ := newTestREST(t, f, cfg)
-		if _, err := r.Installation(t.Context(), scope(t, cfg, "acme/app")); err == nil {
+		if _, err := r.installation(t.Context(), scope(t, cfg, "acme/app")); err == nil {
 			t.Error("Installation answered with no installation on GitHub")
 		}
 		if got := sample(t, m, `manade_github_errors_total{op="installation"}`); got != 1 {
@@ -139,7 +139,7 @@ func TestInstallation(t *testing.T) {
 		f := newFake(t)
 		cfg := load(t, false, patLayout)
 		r, _, _ := newTestREST(t, f, cfg)
-		if id, err := r.Installation(t.Context(), scope(t, cfg, "acme/app")); id != 0 || err != nil || r.CheckInstallations(t.Context()) != nil {
+		if id, err := r.installation(t.Context(), scope(t, cfg, "acme/app")); id != 0 || err != nil || r.CheckInstallations(t.Context()) != nil {
 			t.Errorf("Installation under a PAT = %d, %v; want 0", id, err)
 		}
 		if len(f.calls) != 0 {

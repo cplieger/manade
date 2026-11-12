@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cplieger/manade/internal/config"
 	"github.com/cplieger/manade/internal/docker"
 )
 
@@ -109,7 +110,7 @@ func waitExit(t *testing.T, c *docker.Client, id string, within time.Duration) i
 		if err != nil {
 			t.Fatalf("InspectContainer: %v", err)
 		}
-		if !ctr.State.Running && !ctr.State.FinishedAt.IsZero() {
+		if !ctr.State.FinishedAt.IsZero() {
 			return ctr.State.ExitCode
 		}
 		if time.Now().After(deadline) {
@@ -146,7 +147,21 @@ func TestIntegrationSudo(t *testing.T) {
 func TestIntegrationDiskLimit(t *testing.T) {
 	c, pool := realDaemon(t)
 	img := imageID(t, c)
-	h, p := profileOf(t, "disk: 64MiB")
+	cfg := load(t, "profiles:\n  p: {disk: 64MiB}\n")
+	info, err := c.Info(t.Context())
+	if err != nil {
+		t.Fatalf("Info: %v", err)
+	}
+	// The startup's own check: a daemon it refuses disk on is no test of
+	// the limit, and the containerd image store accepts the size and
+	// ignores it.
+	if err := cfg.CheckDaemon(&config.Daemon{
+		DataRoot: info.DataRoot, ContainerdAddress: info.ContainerdAddress,
+		Driver: info.Driver, DriverStatus: info.DriverStatus, Runtimes: info.Runtimes,
+	}); err != nil {
+		t.Skipf("the startup refuses disk on this daemon: %v", err)
+	}
+	h, p := NewHost(cfg, 999), &cfg.Profiles[0]
 	r := testRunner
 	r.ImageID = img.ID
 	req := h.Runner(p, &r)

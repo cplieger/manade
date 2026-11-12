@@ -122,8 +122,8 @@ func TestEnsureNetworkChecksAnExistingOne(t *testing.T) {
 			got := networkAnswer()
 			change(got)
 			_, c := networkDaemon(t, got)
-			if err := c.EnsureNetwork(t.Context(), isolatedSpec()); !errors.Is(err, ErrNetworkMismatch) || !strings.Contains(err.Error(), "manade-isolated") {
-				t.Errorf("EnsureNetwork = %v, want ErrNetworkMismatch naming the network", err)
+			if err := c.EnsureNetwork(t.Context(), isolatedSpec()); !errors.Is(err, errNetworkMismatch) || !strings.Contains(err.Error(), "manade-isolated") {
+				t.Errorf("EnsureNetwork = %v, want errNetworkMismatch naming the network", err)
 			}
 		})
 	}
@@ -132,7 +132,7 @@ func TestEnsureNetworkChecksAnExistingOne(t *testing.T) {
 func TestEnsureNetworkPassesOtherErrors(t *testing.T) {
 	d := newDaemon(t, "1.51")
 	d.handle("GET /networks/{name}", func(w http.ResponseWriter, _ *http.Request) { writeError(w, http.StatusInternalServerError, "boom") })
-	if err := d.dial(t).EnsureNetwork(t.Context(), isolatedSpec()); err == nil || errors.Is(err, ErrNetworkMismatch) {
+	if err := d.dial(t).EnsureNetwork(t.Context(), isolatedSpec()); err == nil || errors.Is(err, errNetworkMismatch) {
 		t.Errorf("EnsureNetwork = %v, want the daemon's error", err)
 	}
 	if n := len(d.seen(http.MethodPost, "/networks/create")); n != 0 {

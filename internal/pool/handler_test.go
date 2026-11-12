@@ -333,7 +333,7 @@ func TestUnassignableJobs(t *testing.T) {
 		idlePoll(fx, 50*time.Second)
 		ended := fx.at
 		idlePoll(fx, 50*time.Second)
-		fx.p.Queued(ended.Add(-50*time.Second), []github.Queue{{Scope: "acme/app", Jobs: []github.QueuedJob{job("default", 1, "lint", 0)}, Complete: true}})
+		fx.p.queued(ended.Add(-50*time.Second), []github.Queue{{Scope: "acme/app", Jobs: []github.QueuedJob{job("default", 1, "lint", 0)}, Complete: true}})
 		if c := counts(fx.p.Snapshot(), appDefault); c.Unassignable != 0 {
 			t.Errorf("counts = %+v, want nothing marked by a sweep that ended before the first counted poll", c)
 		}
@@ -427,7 +427,7 @@ func TestHeldStopsServing(t *testing.T) {
 func TestAPartialReadFundsNothingNew(t *testing.T) {
 	fx := newFixture(t)
 	fx.sweep(map[string][]github.QueuedJob{"acme/app": jobs("default", 1, 1, 0)})
-	fx.p.Queued(fx.at, []github.Queue{{Scope: "acme/app", Jobs: jobs("default", 1, 3, 0)}})
+	fx.p.queued(fx.at, []github.Queue{{Scope: "acme/app", Jobs: jobs("default", 1, 3, 0)}})
 	if got := fx.capacity(appDefault); got != 0 {
 		t.Errorf("capacity = %d, want nothing funded on a partial read", got)
 	}
@@ -677,7 +677,7 @@ func TestAPartialReadPrunesNothing(t *testing.T) {
 	fx.sweep(map[string][]github.QueuedJob{"acme/app": listed})
 	// Another job runs; lint is assigned and test waits.
 	fx.polled(appDefault, fx.at, &github.Stats{Assigned: 2, Running: 1}, assigned(1, "lint"))
-	fx.p.Queued(fx.at, []github.Queue{{Scope: "acme/app"}})
+	fx.p.queued(fx.at, []github.Queue{{Scope: "acme/app"}})
 	fx.sweep(map[string][]github.QueuedJob{"acme/app": listed})
 	if got, want := fx.p.Snapshot().HeadSince, epoch.Add(5*time.Minute); !got.Equal(want) {
 		t.Errorf("head since %v, want test's %v: lint is still named as assigned", got, want)
