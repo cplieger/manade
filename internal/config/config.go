@@ -64,17 +64,32 @@ type GitHub struct {
 }
 
 // Secret holds a token that prints as "[redacted]" through every fmt verb and
-// slog; only Reveal answers the value.
-type Secret struct{ v string }
+// slog; only Reveal answers the value. The token sits behind a pointer
+// because fmt formats a holder's unexported field by reflection, skipping the
+// field's own methods, and prints a pointer below the top level as an
+// address, never what it points to.
+type Secret struct{ v *string }
+
+func newSecret(token string) Secret {
+	if token == "" {
+		return Secret{}
+	}
+	return Secret{v: &token}
+}
 
 // Reveal answers the token, or "" when none is set.
-func (s Secret) Reveal() string { return s.v }
+func (s Secret) Reveal() string {
+	if s.v == nil {
+		return ""
+	}
+	return *s.v
+}
 
 // String prints "[redacted]" for a set token.
 //
 //deadset:ignore DS1102 -- fmt.Stringer, reached by any print of a Secret, which must never show the token
 func (s Secret) String() string {
-	if s.v == "" {
+	if s.v == nil {
 		return ""
 	}
 	return "[redacted]"
@@ -173,7 +188,7 @@ func readCredential(gh *GitHub) []error {
 	case hasApp && hasToken:
 		return []error{errors.New("set either GITHUB_APP_CLIENT_ID with GITHUB_APP_PRIVATE_KEY, or GITHUB_TOKEN, not both")}
 	case hasToken:
-		gh.Token = Secret{v: token}
+		gh.Token = newSecret(token)
 	case clientID == "" || !hasKey:
 		return []error{errors.New("set GITHUB_APP_CLIENT_ID with GITHUB_APP_PRIVATE_KEY, or GITHUB_TOKEN")}
 	default:

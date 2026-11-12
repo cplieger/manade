@@ -342,13 +342,25 @@ func TestLoadConfigFile(t *testing.T) {
 
 func TestSecretRedacts(t *testing.T) {
 	t.Parallel()
-	s := Secret{v: "test-token"}
-	for _, out := range []string{fmt.Sprint(s), fmt.Sprintf("%v %+v %#v %s %q", s, s, s, s, s), s.LogValue().String()} {
+	s := newSecret("test-token")
+	type held struct{ s Secret }
+	type nested struct{ h held }
+	var logged strings.Builder
+	for _, v := range []any{s, &s, held{s}, &held{s}, nested{held{s}}, &nested{held{s}}} {
+		slog.New(slog.NewTextHandler(&logged, nil)).Info("v", "v", v)
+		slog.New(slog.NewJSONHandler(&logged, nil)).Info("v", "v", v)
+	}
+	outs := []string{logged.String(), s.LogValue().String()}
+	for _, verb := range []string{"%v", "%+v", "%#v", "%s", "%q"} {
+		outs = append(outs, fmt.Sprintf(verb, s), fmt.Sprintf(verb, held{s}), fmt.Sprintf(verb, &held{s}),
+			fmt.Sprintf(verb, nested{held{s}}), fmt.Sprintf(verb, &nested{held{s}}))
+	}
+	for _, out := range outs {
 		if strings.Contains(out, "test-token") {
 			t.Errorf("printed %q", out)
 		}
 	}
-	if s.Reveal() != "test-token" || s.String() != "[redacted]" || (Secret{}).String() != "" {
+	if s.Reveal() != "test-token" || s.String() != "[redacted]" || (Secret{}).String() != "" || newSecret("") != (Secret{}) {
 		t.Error("Reveal or String wrong")
 	}
 	g := GitHub{Token: s}

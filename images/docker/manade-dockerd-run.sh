@@ -26,7 +26,14 @@ start_dockerd() {
       fi
     done
   fi
-  exec dockerd
+  # On a data root in the container's own overlayfs layer, the overlayfs
+  # snapshotter passes its support check and then fails every mount with
+  # EINVAL, so the copying snapshotter takes its place.
+  local args=()
+  if [ "$(stat -f -c %T /var/lib/docker 2>/dev/null || stat -f -c %T /var/lib)" = overlayfs ]; then
+    args=(--storage-driver=native)
+  fi
+  exec dockerd "${args[@]}"
 }
 
 log="${TMPDIR:-/tmp}/manade-dockerd.log"

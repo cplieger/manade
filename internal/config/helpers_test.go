@@ -35,7 +35,7 @@ var testPEM = sync.OnceValue(func() []byte {
 
 // tokenEnv is the environment's part of a Config under a PAT.
 func tokenEnv() *Config {
-	return &Config{GitHub: GitHub{Token: Secret{v: "test-token"}}, PoolName: "manade", DockerSocket: "/var/run/docker.sock"}
+	return &Config{GitHub: GitHub{Token: newSecret("test-token")}, PoolName: "manade", DockerSocket: "/var/run/docker.sock"}
 }
 
 func appEnv(t *testing.T) *Config {
