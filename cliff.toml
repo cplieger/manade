@@ -1,0 +1,169 @@
+# Synced from cplieger/ci/configs/cliff-stable.toml. Change it there.
+# Version-bump policy. Stable (1.x+): standard semver.
+# feat -> minor; breaking -> major.
+# Fresh/untagged repos start at v1.0.0 (matches "0.x is the exception" policy).
+[bump]
+features_always_bump_minor = true
+breaking_always_bump_major = true
+initial_tag = "v1.0.0"
+
+[changelog]
+header = ""
+# A breaking commit renders once: with a BREAKING CHANGE footer as a `####`
+# subheading under "Breaking changes", footer unquoted (a `> ` quote collapses
+# tables and code blocks), else marked in its group. breaking_description
+# falls back to the subject, so "has a footer" is description != message.
+# Commits scoped deps or devdeps stay out of the notes, and the sections run
+# Security, Added, Fixed, Performance, Changed.
+# Tera rejects `in` inside a parenthesised condition, hence the `set` flags.
+# Only the footer renders, never the body, which is rationale for git log.
+body = """
+{% set_global shown = false %}\
+{% for commit in commits %}\
+{% set footer = commit.breaking and commit.breaking_description and commit.breaking_description | trim != commit.message | trim %}\
+{% set hidden = commit.scope in ["deps", "devdeps"] %}\
+{% if footer and not hidden %}\
+{% if not shown %}
+### Breaking changes
+{% set_global shown = true %}\
+{% endif %}
+#### {{ commit.message | upper_first }}
+
+{{ commit.breaking_description | trim | upper_first }}
+{% endif %}\
+{% endfor %}\
+{% set_global sections = ["Security", "Added", "Fixed", "Performance", "Changed"] %}\
+{% for group, gcommits in commits | group_by(attribute="group") %}\
+{% set label = group | striptags | trim %}\
+{% if label not in sections %}\
+{% set_global sections = sections | concat(with=label) %}\
+{% endif %}\
+{% endfor %}\
+{% for section in sections %}\
+{% set_global keep = [] %}\
+{% for commit in commits %}\
+{% set label = commit.group | striptags | trim %}\
+{% set perf = commit.raw_message is starting_with("perf") %}\
+{% if section == "Performance" %}{% set wanted = label == "Changed" and perf %}\
+{% elif section == "Changed" %}{% set wanted = label == "Changed" and not perf %}\
+{% else %}{% set wanted = label == section %}{% endif %}\
+{% set footer = commit.breaking and commit.breaking_description and commit.breaking_description | trim != commit.message | trim %}\
+{% set hidden = commit.scope in ["deps", "devdeps"] %}\
+{% if wanted and not hidden and not footer %}\
+{% set_global keep = keep | concat(with=commit) %}\
+{% endif %}\
+{% endfor %}\
+{% if keep | length > 0 %}
+### {{ section | upper_first }}
+{% for commit in keep %}
+- {% if commit.breaking %}[**breaking**] {% endif %}{{ commit.message | upper_first }}\
+{% endfor %}
+{% endif %}\
+{% endfor %}
+"""
+trim = true
+
+[git]
+conventional_commits = true
+filter_unconventional = false
+split_commits = false
+protect_breaking_commits = false
+# Anchored at both ends: tag_pattern is a REGEX (unlike git describe's
+# whole-name glob), so anything looser also matches a prefixed lane tag
+# ("yamlenv/v2.0.0") or a pre-release ("v1.3.0-dev.7") and computes the next
+# stable version from it (measured on git-cliff 2.14.2: "^v[0-9]" answered
+# v1.3.0-dev.2 where v1.3.0 was due). A TOML literal string, because "\." is
+# not a valid escape in a basic string. States G and M of
+# scripts/test-cliff-bump-semantics.sh pin both hazards.
+tag_pattern = '^v[0-9]+\.[0-9]+\.[0-9]+$'
+
+# A commit whose changed files ALL match these globs is left out of the notes
+# and the version bump; one that also touches a shipped path still counts.
+# Bare patterns are root-anchored, `**/` matches at any depth. Invariant: a
+# strict subset of EXCLUDE_PATTERNS in cplieger/ci's
+# scripts/path-significance.sh, holding only paths a releasing-type commit
+# can touch alone.
+exclude_paths = [
+  ".github/",                  # CI workflows + pins: never in the artifact
+  "**/*.md",                   # docs, incl. fix:-typed README-only edits
+  "LICENSE",
+  # README images, the subset of path-significance.sh's root docs/ image pattern.
+  "docs/**/*.png",
+  "docs/**/*.jpg",
+  "docs/**/*.jpeg",
+  "docs/**/*.webp",
+  "docs/**/*.gif",
+  "docs/**/*.svg",
+  "alerts/",                   # README-companion alert rules, one file per
+                               # expression language (a ruler parses every expr in
+                               # the file it loads, and PromQL/LogQL are mutually
+                               # unparseable, so a mixed single file loads in neither)
+  "alerts.yaml",               # the pre-folder root form, until no repo has one left
+  "compose.yaml",              # the root-level example compose
+  "tests/",                    # smoke tests: exercised at build, never shipped
+  "**/testdata/",
+  "**/*_test.go",
+  "**/*.test.ts",
+  "**/*.spec.ts",
+  "**/package-lock.json",      # lock file maintenance commits
+  # Repo-metadata dotfiles a fix:-typed commit can plausibly touch alone
+  # (e.g. "fix: correct docker build context" editing only .dockerignore).
+  ".dockerignore",
+  ".gitignore",
+  ".gitattributes",
+  ".editorconfig",
+  # deadset's configuration, adjudications, baseline and cross-language edges,
+  # which a `refactor:` commit can touch alone. `**/`: each sits at its target
+  # root, which in a hybrid repo or a nested Go module is a subdirectory.
+  "**/deadset.json",
+  "**/deadset-ignore.json",
+  "**/deadset-baseline.json",
+  "**/deadset-edges.json",
+  # knip's configs.
+  "**/knip.json",
+  "**/knip.jsonc",
+  "**/.knip.json",
+  "**/.knip.jsonc",
+  "**/knip.ts",
+  "**/knip.js",
+  "**/knip.config.ts",
+  "**/knip.config.js",
+]
+
+commit_parsers = [
+  # Order matters: more-specific patterns first.
+  { message = "^release:", skip = true },
+  # Renovate scopes devDependency bumps `devdeps` (cplieger/.github
+  # default.json packageRules). They never ship, so they add no change level.
+  { message = "^chore\\(devdeps\\)", skip = true },
+  # Runtime, peer, Dockerfile and gomod bumps keep the `deps` scope and count
+  # toward the change level; the body hides them from the notes. Must precede
+  # the ^chore skip.
+  { message = "^chore\\(deps\\)", group = "<!-- 4 -->Dependencies" },
+  # Renovate types runtime dependency updates `fix(deps)`: dependency bumps,
+  # not fixes. Must precede ^fix.
+  { message = "^fix\\(deps\\)", group = "<!-- 4 -->Dependencies" },
+  # Meta commits get no line and no change level. `skip = true`, not
+  # `no_increment_regex`, which would keep them in the notes.
+  { message = "^chore", skip = true },
+  { message = "^ci", skip = true },
+  { message = "^docs", skip = true },
+  { message = "^style", skip = true },
+  { message = "^test", skip = true },
+  # `fuzz:` adds fuzz tests — same shape as test:, no runtime impact.
+  { message = "^fuzz", skip = true },
+  # `lint:` is mechanical lint --fix application; doesn't change behavior.
+  { message = "^lint", skip = true },
+  # `debug:` is throw-away debugging code.
+  { message = "^debug", skip = true },
+  # Auto-generated git merge commit subjects (rebase/merge artifacts).
+  { message = "^[Mm]erge ", skip = true },
+  # Real changes — bump per cliff. The `<!-- N -->` prefixes order any group
+  # the body's section list does not name (group_by sorts alphabetically);
+  # the template's `striptags` removes them at render time.
+  { message = "^feat", group = "<!-- 0 -->Added" },
+  { message = "^fix", group = "<!-- 1 -->Fixed" },
+  { message = "^sec", group = "<!-- 2 -->Security" },
+  { message = "^refactor|^perf", group = "<!-- 3 -->Changed" },
+  { message = ".*", group = "<!-- 3 -->Changed" },
+]
