@@ -1,0 +1,33 @@
+# Synced from cplieger/ci/.github/workflow-templates/security.yml — DO NOT EDIT.
+# Dependency and vulnerability review on Go dependency changes.
+#
+# This template predates the sync-header convention (2026-06-02) and was one of
+# two that never got one backfilled, so nothing warned an editor that the next
+# chore(sync) would clobber a local change. Edit it HERE.
+name: Security
+
+on:
+  pull_request:
+    paths:
+      - go.mod
+      - go.sum
+      - package.json
+      - package-lock.json
+      - Dockerfile
+      - "**/*.sh"
+      - compose.yaml
+      - .trivyignore
+      - .github/workflows/security.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    permissions:
+      contents: read
+      security-events: write
+    uses: cplieger/ci/.github/workflows/security-scan.yaml@13fab94c9074cde57bd95f054cf798f8d71a2757 # v3
+    with:
+      runner: ${{ vars.CI_RUNNER }}
