@@ -98,11 +98,11 @@ func TestIssueAddsAHostToAPool(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	made, err := Issue(root, []string{"voyager"}, now.Add(time.Hour))
+	made, err := Issue(root, []string{"edge"}, now.Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(made, []string{filepath.Join(root, "voyager")}) {
+	if !slices.Equal(made, []string{filepath.Join(root, "edge")}) {
 		t.Errorf("made = %v, want only the new host", made)
 	}
 	again, err := os.ReadFile(filepath.Join(root, "orchestrator", "orchestrator.pem"))
@@ -110,7 +110,7 @@ func TestIssueAddsAHostToAPool(t *testing.T) {
 		t.Error("the orchestrator's certificate was issued again")
 	}
 	ca := readCert(t, filepath.Join(root, "ca", "ca.pem"))
-	if err := readCert(t, filepath.Join(root, "voyager", "voyager.pem")).CheckSignatureFrom(ca); err != nil {
+	if err := readCert(t, filepath.Join(root, "edge", "edge.pem")).CheckSignatureFrom(ca); err != nil {
 		t.Errorf("the new host is not signed by the pool's CA: %v", err)
 	}
 }
@@ -233,7 +233,7 @@ func handshake(t *testing.T, addr string, cfg *tls.Config) error {
 
 func TestIssuedFilesWorkOnlyInTheirRole(t *testing.T) {
 	root := t.TempDir()
-	if _, err := Issue(root, []string{"nas", "voyager"}, now); err != nil {
+	if _, err := Issue(root, []string{"nas", "edge"}, now); err != nil {
 		t.Fatal(err)
 	}
 	addr := serveHost(t, root, "nas")
@@ -253,12 +253,12 @@ func TestIssuedFilesWorkOnlyInTheirRole(t *testing.T) {
 		}
 	})
 	t.Run("a host certificate is refused as a client", func(t *testing.T) {
-		voyager, err := tls.LoadX509KeyPair(filepath.Join(root, "voyager", "voyager.pem"), filepath.Join(root, "voyager", "voyager-key.pem"))
+		edge, err := tls.LoadX509KeyPair(filepath.Join(root, "edge", "edge.pem"), filepath.Join(root, "edge", "edge-key.pem"))
 		if err != nil {
 			t.Fatal(err)
 		}
 		cfg := orch.Clone()
-		cfg.ServerName, cfg.Certificates = "nas", []tls.Certificate{voyager}
+		cfg.ServerName, cfg.Certificates = "nas", []tls.Certificate{edge}
 		if err := handshake(t, addr, cfg); err == nil {
 			t.Error("the host accepted another host's certificate as the orchestrator")
 		}
