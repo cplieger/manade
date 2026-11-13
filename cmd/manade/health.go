@@ -8,8 +8,8 @@ import (
 
 	"github.com/cplieger/go/health"
 	"github.com/cplieger/go/httpserver"
-	"github.com/cplieger/manade/internal/obs"
-	"github.com/cplieger/manade/internal/pool"
+	"github.com/cplieger/manade/internal/r5/obs"
+	"github.com/cplieger/manade/internal/r5/pool"
 )
 
 // markerPath is a var so tests write the marker under their own directory.

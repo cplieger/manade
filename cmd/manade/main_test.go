@@ -19,10 +19,10 @@ import (
 	"time"
 
 	"github.com/cplieger/go/health"
-	"github.com/cplieger/manade/internal/config"
-	"github.com/cplieger/manade/internal/docker"
-	"github.com/cplieger/manade/internal/obs"
-	"github.com/cplieger/manade/internal/pool"
+	"github.com/cplieger/manade/internal/r5/config"
+	"github.com/cplieger/manade/internal/r5/docker"
+	"github.com/cplieger/manade/internal/r5/obs"
+	"github.com/cplieger/manade/internal/r5/pool"
 )
 
 const configDoc = `capacity: {cpus: 16, memory: 64GiB}
