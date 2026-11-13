@@ -10,13 +10,18 @@ import (
 	"github.com/cplieger/manade/internal/config"
 )
 
-// The probe's timings (design §5.3).
 const (
 	// ConnectTimeout bounds each connection a check makes.
 	ConnectTimeout = 3 * time.Second
-	// LookupTimeout bounds each resolver a lookup asks, once, so a lookup
-	// never waits out resolv.conf's 5 s and two attempts.
+	// LookupTimeout bounds each configured resolver the output leg's lookup
+	// asks, once, so it never waits out resolv.conf's 5 s and two attempts.
 	LookupTimeout = 3 * time.Second
+	// EmbeddedUpstreamWait and embeddedUpstreams are Docker's embedded
+	// resolver's per-upstream wait and upstream count, extIOTimeout and
+	// maxExtDNS in https://github.com/moby/moby/blob/docker-v29.0.0/daemon/libnetwork/resolver.go.
+	// The supervisor's forwarder must give up on each upstream within it.
+	EmbeddedUpstreamWait = 4 * time.Second
+	embeddedUpstreams    = 3
 	// ExchangeSlack is added to a job-leg check's timeout for its exchange
 	// over the probe container's attached stream.
 	ExchangeSlack = 2 * time.Second
@@ -129,8 +134,8 @@ type Plan struct {
 	Checks []Check
 }
 
-// PlanProbe answers the checks that prove in's host (design §5.3). An open
-// host gets no block check: nothing there drops.
+// PlanProbe answers the checks that prove in's host. An open host gets no
+// block check: nothing there drops.
 func PlanProbe(in *ProbeInput) *Plan {
 	p := &planner{in: in, e: &in.Host.Egress}
 	p.jobLeg()
@@ -147,10 +152,7 @@ func (p *Plan) Bound(callTimeout time.Duration) time.Duration {
 	b := probeCalls * callTimeout
 	for i := range p.Checks {
 		c := &p.Checks[i]
-		b += c.Timeout
-		if c.Leg == LegJob {
-			b += ExchangeSlack
-		}
+		b += max(c.Timeout, c.Exchange())
 	}
 	return b
 }
@@ -178,9 +180,20 @@ func (p *planner) add(c *Check) {
 	}
 }
 
-// block adds a check that a, port, is dropped, unless a is absent or of a
-// family the host's jobs have no route for.
+// block adds a check that a, port, is dropped, unless an allow entry opens
+// it: the forward and output chains accept allow entries ahead of their
+// drops.
 func (p *planner) block(name string, a netip.Addr, port uint16) {
+	if a.IsValid() && p.e.AllowsTCP(a, port) {
+		return
+	}
+	p.blockLocal(name, a, port)
+}
+
+// blockLocal is block for a target dropped ahead of every allow entry: the
+// host's own addresses and another job. It adds nothing when a is absent or
+// of a family the host's jobs have no route for.
+func (p *planner) blockLocal(name string, a netip.Addr, port uint16) {
 	if !a.IsValid() || (a.Is6() && !p.e.IPv6) {
 		return
 	}
@@ -193,22 +206,25 @@ func (p *planner) jobLeg() {
 	if !p.e.Open {
 		for _, gw := range []netip.Addr{in.JobGateway, in.JobGateway6} {
 			if in.APIPort != 0 {
-				p.block("the job network's gateway, on the API's port", gw, in.APIPort)
+				p.blockLocal("the job network's gateway, on the API's port", gw, in.APIPort)
 			}
-			p.block("the job network's gateway", gw, 1)
+			p.blockLocal("the job network's gateway", gw, 1)
 		}
 		p.gateway()
 		for _, r := range p.resolvers(true) {
 			p.block("a private resolver, reached directly", r, 53)
 		}
-		p.block("another job", in.Listener, in.ListenerPort)
-		p.block("another job, over IPv6", in.Listener6, in.ListenerPort)
+		p.blockLocal("another job", in.Listener, in.ListenerPort)
+		p.blockLocal("another job, over IPv6", in.Listener6, in.ListenerPort)
 	}
 	p.add(&Check{Name: "GitHub's API", Kind: KindReach, Addr: net.JoinHostPort(GitHubAPI, "443")})
 	if !p.e.Open && !p.e.Internet {
 		p.block("a public address outside GitHub's names", outsideGitHub.Addr(), outsideGitHub.Port())
 	}
-	p.add(&Check{Name: "a lookup through the job's resolver", Kind: KindResolve, Addr: GitHubAPI, Timeout: LookupTimeout})
+	p.add(&Check{
+		Name: "a lookup through the job's resolver", Kind: KindResolve, Addr: GitHubAPI,
+		Timeout: time.Duration(min(len(p.in.Host.DNS), embeddedUpstreams)) * EmbeddedUpstreamWait,
+	})
 	p.ipv6()
 }
 
@@ -236,7 +252,7 @@ func (p *planner) ipv6() {
 	} else {
 		p.block("a public IPv6 address outside GitHub's names", public6.Addr(), public6.Port())
 	}
-	p.block("the host's own IPv6 address", in.Own6, 1)
+	p.blockLocal("the host's own IPv6 address", in.Own6, 1)
 	p.block("the host's outward IPv6 gateway", in.OutwardGateway6, 1)
 	if p.e.Internet && in.Self64.IsValid() {
 		p.block("an address in the machine's /64", in.Self64.Masked().Addr().Next(), 1)

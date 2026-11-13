@@ -83,13 +83,19 @@ func iptGolden(rs *Ruleset) []byte {
 	b.WriteString("# ipset restore -exist\n" + rs.IPSet)
 	b.WriteString("# iptables-restore --noflush\n" + rs.IPv4)
 	b.WriteString("# ip6tables-restore --noflush\n" + rs.IPv6)
-	b.WriteString("# jumps\n")
-	for _, j := range rs.Jumps {
-		if j.IPv6 {
-			b.WriteString("ip6 ")
+	writeJumps := func(js []Jump) {
+		for _, j := range js {
+			if j.IPv6 {
+				b.WriteString("ip6 ")
+			}
+			b.WriteString(j.Table + " " + j.Chain + " -j " + j.Target + "\n")
 		}
-		b.WriteString(j.Table + " " + j.Chain + " -j " + j.Target + "\n")
 	}
+	b.WriteString("# jumps\n")
+	writeJumps(rs.Jumps)
+	b.WriteString("# ip6tables-restore --noflush, where a nat table lists\n" + rs.IPv6NATReset)
+	b.WriteString("# stale jumps, where a nat table lists\n")
+	writeJumps(rs.StaleJumps)
 	return []byte(b.String())
 }
 
@@ -130,5 +136,47 @@ func checkGolden(t *testing.T, path string, got []byte) {
 	}
 	if !bytes.Equal(got, want) {
 		t.Errorf("%s differs; regenerate with UPDATE_GOLDEN=1 go test ./internal/egress/ -run TestGenerateGolden\ngot:\n%s", path, got)
+	}
+}
+
+func TestGenerateLearnedTimeoutCeiling(t *testing.T) {
+	t.Parallel()
+	// IPSET_MAX_TIMEOUT is (UINT_MAX >> 1) / MSEC_PER_SEC seconds; a DNS
+	// TTL may reach 2^31-1 s (RFC 2181 section 8).
+	in := Input{
+		Host: &config.Host{Name: "offline", DNS: config.DefaultDNS},
+		State: State{GitHub: []Learned{
+			{Addr: addr("140.82.112.3"), Left: 2147483 * time.Second},
+			{Addr: addr("140.82.112.4"), Left: 2147483*time.Second + time.Millisecond},
+			{Addr: addr("140.82.112.5"), Left: (1<<31 - 1) * time.Second},
+		}},
+	}
+	for _, tc := range []struct {
+		payload func(*Ruleset) string
+		name    string
+		be      Backend
+		want    []string
+	}{
+		{func(rs *Ruleset) string { return rs.NFT }, "nftables", NFTables, []string{
+			"140.82.112.3 timeout 2147483s, 140.82.112.4 timeout 2147483s, 140.82.112.5 timeout 2147483s",
+		}},
+		{func(rs *Ruleset) string { return rs.IPSet }, "iptables", IPTables, []string{
+			"add manade-gh4 140.82.112.3 timeout 2147483\n",
+			"add manade-gh4 140.82.112.4 timeout 2147483\n",
+			"add manade-gh4 140.82.112.5 timeout 2147483\n",
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			rs, err := Generate(&in, tc.be)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, w := range tc.want {
+				if !strings.Contains(tc.payload(rs), w) {
+					t.Errorf("payload lacks %q:\n%s", w, tc.payload(rs))
+				}
+			}
+		})
 	}
 }

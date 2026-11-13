@@ -13,3 +13,9 @@ COMMIT
 :MANADE-IN - [0:0]
 COMMIT
 # jumps
+# ip6tables-restore --noflush, where a nat table lists
+*nat
+:MANADE-NAT - [0:0]
+COMMIT
+# stale jumps, where a nat table lists
+ip6 nat POSTROUTING -j MANADE-NAT

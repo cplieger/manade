@@ -21,7 +21,7 @@ func written(data []byte, a netip.Addr) bool {
 
 func FuzzParseResolvConf_addrsFromTheFile(f *testing.F) {
 	f.Add([]byte("nameserver 127.0.0.11\noptions ndots:0\n"))
-	f.Add([]byte("nameserver 127.0.0.11\n# ExtServers: [host(192.168.1.87) 8.8.8.8]\n"))
+	f.Add([]byte("nameserver 127.0.0.11\n# ExtServers: [host(10.0.0.53) 8.8.8.8]\n"))
 	f.Add([]byte("nameserver fd00::53\nnameserver 10.0.0.53\nnameserver 10.0.0.53\n"))
 	f.Add([]byte("# ExtServers: [host(::1) host( 1.1.1.1 ) [x]]\n"))
 	f.Fuzz(func(t *testing.T, data []byte) {

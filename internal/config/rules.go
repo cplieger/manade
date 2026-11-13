@@ -37,14 +37,7 @@ func (c *Config) check(p *problems) {
 	c.checkNesting(p)
 }
 
-// configDir is the config file's directory, or "" when CONFIG_FILE is not
-// absolute, which contains nothing.
-func (c *Config) configDir() string {
-	if !path.IsAbs(c.File) {
-		return ""
-	}
-	return path.Dir(c.File)
-}
+func (c *Config) configDir() string { return path.Dir(c.File) }
 
 func checkHost(h *Host, confDir string, p *problems) {
 	at := func(key string) string { return hostPath(h.Name) + "." + key }
@@ -190,7 +183,7 @@ func checkRegistry(pr *Profile, h *Host, at func(string) string, p *problems) {
 	case name == "":
 		p.addf(at("image"), "%s is on Docker Hub, which host %s cannot reach with egress.internet: false; use an image on ghcr.io or on a registry its allow entries cover",
 			quote(pr.Image), quote(h.Name))
-	case err == nil && !allows(h.Egress.Allow, addr, port):
+	case err == nil && !h.Egress.AllowsTCP(addr, port):
 		p.addf(at("image"), "%s is on the registry %s, which no allow entry of host %s covers on TCP port %d, and the host has egress.internet: false",
 			quote(pr.Image), addr, quote(h.Name), port)
 	}
@@ -219,14 +212,6 @@ func registry(ref string) (name string, port uint16) {
 		return "", registryPort
 	}
 	return name, port
-}
-
-// allows reports whether an allow entry passes TCP to addr on port.
-func allows(allow []Allow, addr netip.Addr, port uint16) bool {
-	return slices.ContainsFunc(allow, func(a Allow) bool {
-		return a.Protocol != ProtocolUDP && a.To.Contains(addr) &&
-			slices.ContainsFunc(a.Ports, func(r PortRange) bool { return r.First <= port && port <= r.Last })
-	})
 }
 
 // show prints a single-address prefix as its address, as the file wrote it.

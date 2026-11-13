@@ -28,14 +28,14 @@ func planned(p *Plan) []want {
 }
 
 // probeInput is a host on the job network 172.18.0.0/24 behind the outward
-// gateway 172.19.0.1, whose original resolv.conf named 192.168.1.87.
+// gateway 172.19.0.1, whose original resolv.conf named 10.0.0.53.
 func probeInput(e config.Egress, dns ...netip.Addr) *ProbeInput {
 	if len(dns) == 0 {
 		dns = config.DefaultDNS
 	}
 	in := &ProbeInput{
 		Host:           &config.Host{Name: "default", DNS: dns, Egress: e},
-		Original:       Resolvers{Addrs: []netip.Addr{addr("192.168.1.87")}},
+		Original:       Resolvers{Addrs: []netip.Addr{addr("10.0.0.53")}},
 		JobGateway:     addr("172.18.0.1"),
 		Listener:       addr("172.18.0.3"),
 		OutwardGateway: addr("172.19.0.1"),
@@ -79,7 +79,7 @@ func TestPlanProbe(t *testing.T) {
 				{job, block, "172.18.0.1:1"},
 				{job, block, "172.19.0.1:1"},
 				{job, block, "172.19.0.1:53"},
-				{job, block, "192.168.1.87:53"},
+				{job, block, "10.0.0.53:53"},
 				{job, block, "172.18.0.3:7465"},
 				github, jobLookup,
 				{job, KindNoIPv6, "[2606:4700:4700::1111]:443"},
@@ -88,7 +88,7 @@ func TestPlanProbe(t *testing.T) {
 				{job, KindTry, "192.168.3.0:22"},
 				{output, block, "172.19.0.1:1"},
 				{output, block, "172.19.0.1:53"},
-				{output, block, "192.168.1.87:53"},
+				{output, block, "10.0.0.53:53"},
 				outLookup,
 				{output, KindNoIPv6, "[2606:4700:4700::1111]:443"},
 			},
@@ -123,7 +123,7 @@ func TestPlanProbe(t *testing.T) {
 		{
 			name: "a private configured resolver and an IPv6 original without ipv6",
 			in: func() *ProbeInput {
-				in := probeInput(config.Egress{Internet: true}, addr("192.168.1.77"))
+				in := probeInput(config.Egress{Internet: true}, addr("10.0.0.54"))
 				in.Original.Addrs = append(in.Original.Addrs, addr("fd00::53"), addr("127.0.0.53"), addr("8.8.4.4"))
 				in.JobGateway6 = addr("fdc6:6d61:6e61:6465::1")
 				return in
@@ -133,15 +133,15 @@ func TestPlanProbe(t *testing.T) {
 				{job, block, "172.18.0.1:1"},
 				{job, block, "172.19.0.1:1"},
 				{job, block, "172.19.0.1:53"},
-				{job, block, "192.168.1.87:53"},
-				{job, block, "192.168.1.77:53"},
+				{job, block, "10.0.0.53:53"},
+				{job, block, "10.0.0.54:53"},
 				{job, block, "172.18.0.3:7465"},
 				github, jobLookup,
 				{job, KindNoIPv6, "[2606:4700:4700::1111]:443"},
 				{output, block, "172.19.0.1:1"},
 				{output, block, "172.19.0.1:53"},
-				{output, block, "192.168.1.87:53"},
-				{output, block, "192.168.1.77:1"},
+				{output, block, "10.0.0.53:53"},
+				{output, block, "10.0.0.54:1"},
 				outLookup,
 				{output, KindNoIPv6, "[2606:4700:4700::1111]:443"},
 			},
@@ -160,7 +160,7 @@ func TestPlanProbe(t *testing.T) {
 				{job, block, "[fdc6:6d61:6e61:6465::1]:1"},
 				{job, block, "172.19.0.1:1"},
 				{job, block, "172.19.0.1:53"},
-				{job, block, "192.168.1.87:53"},
+				{job, block, "10.0.0.53:53"},
 				{job, block, "172.18.0.3:7465"},
 				{job, block, "[fdc6:6d61:6e61:6465::3]:7465"},
 				github, jobLookup,
@@ -170,13 +170,13 @@ func TestPlanProbe(t *testing.T) {
 				{job, block, "[2a01:e0a:1259:2710::1]:1"},
 				{output, block, "172.19.0.1:1"},
 				{output, block, "172.19.0.1:53"},
-				{output, block, "192.168.1.87:53"},
+				{output, block, "10.0.0.53:53"},
 				outLookup,
 			},
 		},
 		{
 			// Until the /64 is learned the IPv6 internet check fails on
-			// its own: job IPv6 stays dropped (design §5.1).
+			// its own: job IPv6 stays dropped.
 			name: "ipv6 with the /64 unlearned",
 			in:   probeInput(config.Egress{Internet: true, IPv6: true}),
 			want: []want{
@@ -186,7 +186,7 @@ func TestPlanProbe(t *testing.T) {
 				{job, block, "[fdc6:6d61:6e61:6465::1]:1"},
 				{job, block, "172.19.0.1:1"},
 				{job, block, "172.19.0.1:53"},
-				{job, block, "192.168.1.87:53"},
+				{job, block, "10.0.0.53:53"},
 				{job, block, "172.18.0.3:7465"},
 				{job, block, "[fdc6:6d61:6e61:6465::3]:7465"},
 				github, jobLookup,
@@ -195,7 +195,7 @@ func TestPlanProbe(t *testing.T) {
 				{job, block, "[fd4d:6169:6e65::1]:1"},
 				{output, block, "172.19.0.1:1"},
 				{output, block, "172.19.0.1:53"},
-				{output, block, "192.168.1.87:53"},
+				{output, block, "10.0.0.53:53"},
 				outLookup,
 			},
 		},
@@ -213,7 +213,7 @@ func TestPlanProbe(t *testing.T) {
 				{job, block, "[fdc6:6d61:6e61:6465::1]:1"},
 				{job, block, "172.19.0.1:1"},
 				{job, block, "172.19.0.1:53"},
-				{job, block, "192.168.1.87:53"},
+				{job, block, "10.0.0.53:53"},
 				{job, block, "172.18.0.3:7465"},
 				{job, block, "[fdc6:6d61:6e61:6465::3]:7465"},
 				github,
@@ -224,9 +224,45 @@ func TestPlanProbe(t *testing.T) {
 				{job, block, "[fd4d:6169:6e65::1]:1"},
 				{output, block, "172.19.0.1:1"},
 				{output, block, "172.19.0.1:53"},
-				{output, block, "192.168.1.87:53"},
+				{output, block, "10.0.0.53:53"},
 				{output, block, "1.1.1.1:1"},
 				{output, block, "8.8.8.8:1"},
+				outLookup,
+			},
+		},
+		{
+			// Allow accepts precede the drops on the forward and output
+			// chains, so an opened target is no block; the job gateway, the
+			// host's own IPv6 address and another job are dropped ahead of
+			// them and stay.
+			name: "allow entries opening blocked targets",
+			in: func() *ProbeInput {
+				in := probeInput(config.Egress{IPv6: true, Allow: []config.Allow{
+					{To: pfx("172.16.0.0/12"), Protocol: config.ProtocolTCP, Ports: ports([2]uint16{1, 65535})},
+					{To: pfx("10.0.0.53/32"), Protocol: config.ProtocolTCP, Ports: ports([2]uint16{53, 53})},
+					{To: pfx("10.0.0.54/32"), Protocol: config.ProtocolBoth, Ports: ports([2]uint16{1, 65535})},
+					{To: pfx("fd4d:6169:6e65::/48"), Protocol: config.ProtocolTCP, Ports: ports([2]uint16{1, 1})},
+				}}, addr("10.0.0.54"), addr("1.1.1.1"))
+				in.Self64 = pfx("2a01:e0a:1259:2710::/64")
+				return in
+			}(),
+			want: []want{
+				{job, block, "172.18.0.1:7464"},
+				{job, block, "172.18.0.1:1"},
+				{job, block, "[fdc6:6d61:6e61:6465::1]:7464"},
+				{job, block, "[fdc6:6d61:6e61:6465::1]:1"},
+				{job, block, "172.18.0.3:7465"},
+				{job, block, "[fdc6:6d61:6e61:6465::3]:7465"},
+				github,
+				{job, block, "9.9.9.9:443"},
+				jobLookup,
+				{job, block, "[2606:4700:4700::1111]:443"},
+				{job, block, "[fd4d:6169:6e65::2]:1"},
+				{job, KindTry, "172.16.0.1:1"},
+				{job, KindTry, "10.0.0.53:53"},
+				{job, KindTry, "10.0.0.54:1"},
+				{job, KindTry, "[fd4d:6169:6e65::1]:1"},
+				{output, block, "1.1.1.1:1"},
 				outLookup,
 			},
 		},
@@ -254,8 +290,9 @@ func TestPlanProbeTargetsAndTimeouts(t *testing.T) {
 			wantTimeout := ConnectTimeout
 			switch {
 			case c.Kind == KindResolve && c.Leg == LegJob:
-				// The probe asks the job's embedded resolver once.
-				wantTimeout = 3 * time.Second
+				// Docker's embedded resolver waits 4 s on each of the
+				// three configured resolvers in turn.
+				wantTimeout = 12 * time.Second
 			case c.Kind == KindResolve:
 				// 3 s for each of the three configured resolvers.
 				wantTimeout = 9 * time.Second
@@ -291,11 +328,11 @@ func TestPlanBound(t *testing.T) {
 		t.Parallel()
 		p := PlanProbe(probeInput(config.Egress{Internet: true}))
 		// Twelve calls; the job leg's six blocks, its GitHub connection and
-		// its NoIPv6 check at 3 s and its lookup at 3 s for one resolver,
-		// each with 2 s of slack; the output leg's three blocks and NoIPv6
-		// at 3 s and its lookup at 3 s for each of the two default
-		// resolvers.
-		want := 12*call + 9*(3+2)*time.Second + (4*3+2*3)*time.Second
+		// its NoIPv6 check at 3 s and its lookup at 4 s for each of the two
+		// default resolvers, each with 2 s of slack; the output leg's three
+		// blocks and NoIPv6 at 3 s and its lookup at 3 s for each of the
+		// two default resolvers.
+		want := 12*call + (8*(3+2)+(2*4+2))*time.Second + (4*3+2*3)*time.Second
 		if got := p.Bound(call); got != want {
 			t.Errorf("Bound = %v, want %v", got, want)
 		}
@@ -303,6 +340,35 @@ func TestPlanBound(t *testing.T) {
 			t.Errorf("Deadline = %v, want %v", got, 2*want)
 		}
 	})
+	for _, tc := range []struct {
+		name        string
+		dns         []netip.Addr
+		job, output time.Duration
+	}{
+		// The embedded resolver asks three upstreams at most.
+		{"two resolvers", []netip.Addr{addr("1.1.1.1"), addr("8.8.8.8")}, 8 * time.Second, 6 * time.Second},
+		{"four resolvers", []netip.Addr{addr("1.1.1.1"), addr("8.8.8.8"), addr("9.9.9.9"), addr("8.8.4.4")}, 12 * time.Second, 12 * time.Second},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			p := PlanProbe(probeInput(config.Egress{Open: true}, tc.dns...))
+			var got []time.Duration
+			for _, c := range p.Checks {
+				if c.Kind == KindResolve {
+					got = append(got, c.Timeout)
+				}
+			}
+			if want := []time.Duration{tc.job, tc.output}; !slices.Equal(got, want) {
+				t.Errorf("lookup timeouts = %v, want %v", got, want)
+			}
+			// An open host's plan: GitHub at 3 s and the job lookup, each
+			// with 2 s of slack, then the output lookup.
+			want := 12*call + (3+2)*time.Second + tc.job + 2*time.Second + tc.output
+			if b := p.Bound(call); b != want {
+				t.Errorf("Bound = %v, want %v", b, want)
+			}
+		})
+	}
 	t.Run("exchanges summing past the call timeout", func(t *testing.T) {
 		t.Parallel()
 		e := config.Egress{Internet: true}

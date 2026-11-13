@@ -3,6 +3,7 @@ package config
 import (
 	"net/netip"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -40,6 +41,14 @@ type Allow struct {
 	To       netip.Prefix
 	Ports    []PortRange
 	Protocol Protocol
+}
+
+// AllowsTCP reports whether an allow entry passes TCP to addr on port.
+func (e *Egress) AllowsTCP(addr netip.Addr, port uint16) bool {
+	return slices.ContainsFunc(e.Allow, func(a Allow) bool {
+		return a.Protocol != ProtocolUDP && a.To.Contains(addr) &&
+			slices.ContainsFunc(a.Ports, func(r PortRange) bool { return r.First <= port && port <= r.Last })
+	})
 }
 
 // PortRange is an inclusive port range; a single port has First == Last.

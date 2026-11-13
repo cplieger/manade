@@ -23,12 +23,18 @@ const (
 
 var iptChainNames = map[string]string{hookForward: iptFwd, hookOutput: iptOut, hookInput: iptIn}
 
+var natJump = Jump{Table: "nat", Chain: "POSTROUTING", Target: iptNAT, IPv6: true}
+
 // renderIPTables writes the three payloads and the jumps. The chains are
 // declared in each payload, which under --noflush empties them, so a reload
 // replaces their rules in one restore; on an open host that is all it does.
 func (rs *Ruleset) renderIPTables() {
 	rs.IPv4 = rs.restore(ipv4)
 	rs.IPv6 = rs.restore(ipv6)
+	if rs.nat == nil {
+		rs.IPv6NATReset = "*nat\n:" + iptNAT + " - [0:0]\nCOMMIT\n"
+		rs.StaleJumps = []Jump{natJump}
+	}
 	if rs.open {
 		return
 	}
@@ -46,7 +52,7 @@ func (rs *Ruleset) renderIPTables() {
 		{Table: tableFilter, Chain: "INPUT", Target: iptIn, IPv6: true},
 	}
 	if rs.nat != nil {
-		rs.Jumps = append(rs.Jumps, Jump{Table: "nat", Chain: "POSTROUTING", Target: iptNAT, IPv6: true})
+		rs.Jumps = append(rs.Jumps, natJump)
 	}
 }
 

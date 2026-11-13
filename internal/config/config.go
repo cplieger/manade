@@ -37,7 +37,8 @@ type Config struct {
 	Orchestrator *Orchestrator
 	// Self is set for RoleHost only.
 	Self *Self
-	// File is the config file's path, CONFIG_FILE.
+	// File is the config file's absolute path: CONFIG_FILE, resolved against
+	// the working directory.
 	File             string
 	Scopes           []Scope
 	Hosts            []Host

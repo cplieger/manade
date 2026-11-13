@@ -522,7 +522,7 @@ func sortedWords(ws []string) []string {
 func (rs *Ruleset) compareIPT(rb *ReadBack) []error {
 	byFamily := map[bool]map[string]saved{false: parseSave(rb.IPv4), true: parseSave(rb.IPv6)}
 	if rs.open {
-		return compareOpenIPT(byFamily)
+		return append(compareOpenIPT(byFamily), compareNoNAT(byFamily[true])...)
 	}
 	var errs []error
 	for _, f := range []family{ipv4, ipv6} {
@@ -538,6 +538,8 @@ func (rs *Ruleset) compareIPT(rb *ReadBack) []error {
 		if err := compareChain(tool(true)+" nat", iptNAT, byFamily[true]["nat"], rs.nat.ipt(ipv6)); err != nil {
 			errs = append(errs, err)
 		}
+	} else {
+		errs = append(errs, compareNoNAT(byFamily[true])...)
 	}
 	jumps := append(slices.Clone(rs.Jumps), Jump{Table: tableFilter, Chain: iptDocker, Target: iptFwd})
 	for _, j := range jumps {
@@ -558,6 +560,24 @@ func compareOpenIPT(byFamily map[bool]map[string]saved) []error {
 				errs = append(errs, fmt.Errorf("%s filter %s holds rules on an open host: %s", tool(f == ipv6), name, rules[0]))
 			}
 		}
+	}
+	return errs
+}
+
+// compareNoNAT checks that ip6tables' nat table, where the kernel has one,
+// neither masquerades nor jumps to MANADE-NAT for a rule set without IPv6
+// jobs.
+func compareNoNAT(v6 map[string]saved) []error {
+	nat, ok := v6["nat"]
+	if !ok {
+		return nil
+	}
+	var errs []error
+	if rules := nat.rules[iptNAT]; len(rules) > 0 {
+		errs = append(errs, fmt.Errorf("ip6tables nat %s holds rules on a host without IPv6 jobs: %s", iptNAT, rules[0]))
+	}
+	if slices.Contains(nat.rules[natJump.Chain], "-j "+iptNAT) {
+		errs = append(errs, fmt.Errorf("ip6tables nat %s jumps to %s on a host without IPv6 jobs", natJump.Chain, iptNAT))
 	}
 	return errs
 }

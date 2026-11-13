@@ -85,9 +85,14 @@ func (s *set) nft() string {
 	return b.String()
 }
 
-// seconds rounds d up to whole seconds, at least one.
+// maxSetTimeout is IPSET_MAX_TIMEOUT in seconds
+// (include/linux/netfilter/ipset/ip_set_timeout.h): one element above it
+// fails the whole ipset restore. nftables takes more; both backends share it.
+const maxSetTimeout = 2147483
+
+// seconds rounds d up to whole seconds, from one to maxSetTimeout.
 func seconds(d time.Duration) int64 {
-	return max(1, int64(math.Ceil(d.Seconds())))
+	return min(maxSetTimeout, max(1, int64(math.Ceil(d.Seconds()))))
 }
 
 // nft renders the rule in the order its listing shows it.

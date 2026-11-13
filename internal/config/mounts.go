@@ -23,10 +23,7 @@ func (c *Config) protected(h *Host) []string {
 	if c.Self != nil && c.Self.Name == h.Name {
 		tls = c.Self.TLSDir
 	}
-	out := append([]string{tls}, fixedProtected...)
-	if dir := c.configDir(); dir != "" {
-		out = append(out, dir)
-	}
+	out := append([]string{tls, c.configDir()}, fixedProtected...)
 	if h.RegistryAuth != "" {
 		out = append(out, h.RegistryAuth)
 	}

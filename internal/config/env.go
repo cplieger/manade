@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -62,19 +63,25 @@ var hostCredentials = []envx.Key{
 
 // readEnv answers the environment's settings for role.
 func readEnv(role Role) (*Config, error) {
-	cfg := &Config{File: cmp.Or(envx.String("CONFIG_FILE"), "/config/config.yaml")}
+	var errs []error
+	file, err := filepath.Abs(cmp.Or(envx.String("CONFIG_FILE"), "/config/config.yaml"))
+	if err != nil {
+		errs = append(errs, fmt.Errorf("CONFIG_FILE: %w", err))
+	}
+	cfg := &Config{File: file}
 	var ok bool
 	cfg.LogLevel, ok = slogx.ParseLevel(envx.String("LOG_LEVEL"), slog.LevelInfo)
 	cfg.LogLevelInvalid = !ok
-	var errs []error
+	var roleErrs []error
 	switch role {
 	case RoleOrchestrator:
-		cfg.Orchestrator, errs = readOrchestrator()
+		cfg.Orchestrator, roleErrs = readOrchestrator()
 	case RoleHost:
-		cfg.Self, errs = readSelf()
+		cfg.Self, roleErrs = readSelf()
 	default:
-		errs = []error{fmt.Errorf("unknown role %d", role)}
+		roleErrs = []error{fmt.Errorf("unknown role %d", role)}
 	}
+	errs = append(errs, roleErrs...)
 	return cfg, errors.Join(errs...)
 }
 

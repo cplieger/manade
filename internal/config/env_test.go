@@ -162,6 +162,24 @@ func TestLoadOrchestratorRefusals(t *testing.T) {
 	}
 }
 
+func TestLoadRelativeConfigFile(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	clearEnv(t)
+	doc := oneHost("    registry_auth: "+dir+"/auth.json\n", ", mounts: [{bind: "+dir+"/data, target: /m}]")
+	if err := os.WriteFile("config.yaml", []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CONFIG_FILE", "config.yaml")
+	t.Setenv("MANADE_HOST", "h")
+	t.Setenv("TLS_DIR", dir+"/tls")
+	_, err := Load(t.Context(), RoleHost)
+	wantErr(t, err,
+		`TLS_DIR: "`+dir+`/tls" lies at or under the config file's directory "`+dir+`"`,
+		`hosts.h.registry_auth: "`+dir+`/auth.json" lies at or under the config file's directory "`+dir+`"`,
+		`profiles.p.mounts[0].bind: "`+dir+`/data" reaches `+dir+`, which host "h" protects`)
+}
+
 func TestLoadFileBounds(t *testing.T) {
 	clearEnv(t)
 	t.Setenv("GITHUB_TOKEN", "t")
@@ -186,6 +204,6 @@ func TestEnterpriseNeedsToken(t *testing.T) {
 		mustBuild(t, tokenEnv(), doc)
 	})
 	t.Run("host", func(t *testing.T) {
-		mustBuild(t, &Config{Self: &Self{Name: "default"}}, doc)
+		mustBuild(t, &Config{File: "/config/config.yaml", Self: &Self{Name: "default", TLSDir: "/tls"}}, doc)
 	})
 }

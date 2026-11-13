@@ -29,7 +29,7 @@ func ParseResolvConf(data []byte) Resolvers {
 	var named, ext []netip.Addr
 	for line := range strings.Lines(string(data)) {
 		line = strings.TrimSpace(line)
-		// Docker writes "# ExtServers: [host(192.168.1.87) 8.8.8.8]", host()
+		// Docker writes "# ExtServers: [host(10.0.0.53) 8.8.8.8]", host()
 		// marking an address reached from the machine's namespace
 		// (https://github.com/moby/moby/blob/docker-v29.0.0/daemon/libnetwork/internal/resolvconf/resolvconf.go).
 		if list, ok := strings.CutPrefix(line, "# ExtServers:"); ok {

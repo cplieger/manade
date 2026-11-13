@@ -10,7 +10,7 @@ import (
 func hashHost() *config.Host {
 	return &config.Host{
 		Name:   "nas",
-		DNS:    []netip.Addr{addr("192.168.1.87"), addr("192.168.1.77")},
+		DNS:    []netip.Addr{addr("10.0.0.53"), addr("10.0.0.54")},
 		Egress: config.Egress{Internet: true, Allow: []config.Allow{{To: pfx("10.0.0.50/32"), Protocol: config.ProtocolTCP, Ports: ports([2]uint16{5432, 5432})}}},
 	}
 }

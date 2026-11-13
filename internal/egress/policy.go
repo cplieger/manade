@@ -95,12 +95,18 @@ type Ruleset struct {
 	IPSet, IPv4, IPv6 string
 	// Jumps must each be the first rule of their chain once the payloads
 	// are loaded; the loader inserts any that is not.
-	Jumps   []Jump
-	chains  []chain
-	sets    []set
-	Backend Backend
-	open    bool
-	ipv6    bool
+	Jumps []Jump
+	// IPv6NATReset (ip6tables-restore --noflush) empties MANADE-NAT and the
+	// loader deletes StaleJumps, on an iptables rule set without IPv6 jobs,
+	// only where ip6tables lists a nat table: a kernel without IPv6 NAT
+	// refuses a payload naming one.
+	IPv6NATReset string
+	StaleJumps   []Jump
+	chains       []chain
+	sets         []set
+	Backend      Backend
+	open         bool
+	ipv6         bool
 }
 
 // Jump is a rule `-j Target` that must be first in Chain of Table, under

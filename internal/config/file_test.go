@@ -73,7 +73,7 @@ func TestBuildHosts(t *testing.T) {
   nas:
     address: https://nas.example:7464
     capacity: {cpus: 2, memory: 3GiB}
-    dns: [192.168.1.87, "2001:db8::53"]
+    dns: [10.0.0.53, "2001:db8::53"]
     network: {subnet: 10.200.0.0/24}
     registry_auth: /auth/config.json
     egress:
@@ -115,7 +115,7 @@ func TestBuildHosts(t *testing.T) {
 		if h.ImageRefresh != 2*time.Hour {
 			t.Errorf("images.refresh = %v, want the top level's 2h", h.ImageRefresh)
 		}
-		if want := []netip.Addr{netip.MustParseAddr("192.168.1.87"), netip.MustParseAddr("2001:db8::53")}; !slices.Equal(h.DNS, want) {
+		if want := []netip.Addr{netip.MustParseAddr("10.0.0.53"), netip.MustParseAddr("2001:db8::53")}; !slices.Equal(h.DNS, want) {
 			t.Errorf("dns = %v", h.DNS)
 		}
 		if h.Subnet != netip.MustParsePrefix("10.200.0.0/24") {
