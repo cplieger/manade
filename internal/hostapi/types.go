@@ -29,6 +29,10 @@ const (
 	Heartbeat = 30 * time.Second
 )
 
+// clientSlack is how much longer the client waits than the server's bound,
+// so the server's own answer to a cut request arrives; a test seam.
+var clientSlack = 15 * time.Second
+
 // The size bounds.
 const (
 	// requestLimit caps a request body.
@@ -42,6 +46,10 @@ const (
 	logLimit = 256 << 10
 	// DiagLimit caps a runner's _diag tar.
 	DiagLimit = 8 << 20
+	// answerLimit caps a JSON answer the client reads.
+	answerLimit = 16 << 20
+	// eventLimit caps one events line.
+	eventLimit = 64 << 10
 )
 
 // OrchestratorName is the DNS name the orchestrator's client certificate
