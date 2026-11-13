@@ -9,7 +9,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"slices"
 	"strings"
 
 	"github.com/cplieger/go/httpclient"
@@ -37,8 +36,6 @@ func (c *Client) InspectImage(ctx context.Context, ref string) (img Image, found
 	if err != nil {
 		return Image{}, false, err
 	}
-	// Daemons before API 1.44 list an untagged image as <none>:<none>.
-	img.RepoTags = slices.DeleteFunc(img.RepoTags, func(t string) bool { return t == "<none>:<none>" })
 	return img, true, nil
 }
 

@@ -75,9 +75,8 @@ type Host struct {
 	// protected are the paths no job on a host that is not open may
 	// reach, each also with its symlinks resolved.
 	protected []string
-	// binds are the bind sources of the profiles the host serves, with
-	// their forms resolved when the host started, before any job ran.
-	binds []bindSource
+	// binds are the bind sources of the profiles the host serves.
+	binds []config.BindSource
 	plat  Platform
 }
 
@@ -88,7 +87,7 @@ func NewHost(cfg *config.Config, h *config.Host, plat *Platform) *Host {
 	for _, p := range paths {
 		prot = append(prot, withResolved(p)...)
 	}
-	return &Host{host: h, protected: prot, binds: bindSources(cfg, h.Name), plat: *plat}
+	return &Host{host: h, protected: prot, binds: cfg.BindSources(h.Name), plat: *plat}
 }
 
 // ErrUnenforceable is a profile asking for a limit its host's kernel or

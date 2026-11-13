@@ -2,10 +2,12 @@ package jobspec
 
 import (
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/cplieger/manade/internal/config"
@@ -23,15 +25,23 @@ func testHost(t *testing.T, open bool, plat Platform) (h *Host, root string) {
 			t.Fatal(err)
 		}
 	}
-	cfg := &config.Config{File: filepath.Join(root, "config", "config.yaml"), Self: &config.Self{Name: "nas", TLSDir: filepath.Join(root, "tls")}}
+	return hostAt(root, open, plat), root
+}
+
+// hostAt is testHost's host in root, serving profiles.
+func hostAt(root string, open bool, plat Platform, profiles ...config.Profile) *Host {
+	cfg := &config.Config{
+		File: filepath.Join(root, "config", "config.yaml"), Self: &config.Self{Name: "nas", TLSDir: filepath.Join(root, "tls")},
+		Profiles: profiles,
+	}
 	hc := &config.Host{Name: "nas", Egress: config.Egress{Internet: true, Open: open}}
 	if plat.Network == "" {
 		plat.Network = "manade"
 	}
 	plat.Mounts = append(plat.Mounts, filepath.Join(root, "data"))
-	h = NewHost(cfg, hc, &plat)
+	h := NewHost(cfg, hc, &plat)
 	h.protected = slices.DeleteFunc(h.protected, func(p string) bool { return p == "/tmp" })
-	return h, root
+	return h
 }
 
 func profile() *config.Profile {
@@ -289,17 +299,17 @@ func TestRunnerMounts(t *testing.T) {
 }
 
 func TestRunnerMountNesting(t *testing.T) {
-	// serve gives host nas profiles small (binding src read-only, or
-	// writable) and big (binding other, writable when otherWritable).
-	serve := func(h *Host, src string, writable bool, other string, otherWritable bool) *config.Profile {
+	// serve builds host nas in root serving profiles small (binding src
+	// read-only, or writable) and big (binding other, writable when
+	// otherWritable), and answers it with small.
+	serve := func(root, src string, writable bool, other string, otherWritable bool) (*Host, *config.Profile) {
 		small := profile()
 		small.Hosts = []string{"nas"}
 		small.Mounts = []config.Mount{{Source: src, Target: "/cache", Bind: true, ReadOnly: !writable}}
 		big := profile()
 		big.Name, big.Hosts = "big", []string{"nas"}
 		big.Mounts = []config.Mount{{Source: other, Target: "/work", Bind: true, ReadOnly: !otherWritable}}
-		h.binds = bindSources(&config.Config{Profiles: []config.Profile{*small, *big}}, "nas")
-		return small
+		return hostAt(root, false, Platform{}, *small, *big), small
 	}
 	mkdirs := func(t *testing.T, dirs ...string) {
 		t.Helper()
@@ -309,68 +319,90 @@ func TestRunnerMountNesting(t *testing.T) {
 			}
 		}
 	}
-	t.Run("a link into another profile's writable source is refused, after a swap too", func(t *testing.T) {
-		h, root := testHost(t, false, Platform{})
-		work, elsewhere := filepath.Join(root, "data", "work"), filepath.Join(root, "data", "elsewhere")
-		mkdirs(t, filepath.Join(work, "x"), elsewhere)
-		link := filepath.Join(root, "data", "link")
-		if err := os.Symlink(filepath.Join(work, "x"), link); err != nil {
+	// linkInto makes root/data/link to root/data/work/x and
+	// root/data/elsewhere, and answers work and x.
+	linkInto := func(t *testing.T, root string) (work, x, link string) {
+		t.Helper()
+		work = filepath.Join(root, "data", "work")
+		x = filepath.Join(work, "x")
+		mkdirs(t, x, filepath.Join(root, "data", "elsewhere"))
+		link = filepath.Join(root, "data", "link")
+		if err := os.Symlink(x, link); err != nil {
 			t.Fatal(err)
 		}
-		small := serve(h, link, false, work, true)
+		return work, x, link
+	}
+	// swap is a job on work replacing x with a link out of its mount.
+	swap := func(t *testing.T, root, x string) {
+		t.Helper()
+		if err := os.Remove(x); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(filepath.Join(root, "data", "elsewhere"), x); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Run("a link into another profile's writable source is refused, after a swap too", func(t *testing.T) {
+		_, root := testHost(t, false, Platform{})
+		work, x, link := linkInto(t, root)
+		h, small := serve(root, link, false, work, true)
 		_, err := h.Runner(small, runner())
 		if !errors.Is(err, ErrMountRefused) || !strings.Contains(err.Error(), "profile small") || !strings.Contains(err.Error(), "profile big's jobs may write") {
 			t.Fatalf("Runner = %v, want the source refused naming both profiles", err)
 		}
-		// A job on big replaces x with a link out of its mount.
-		x := filepath.Join(work, "x")
-		if err := os.Remove(x); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Symlink(elsewhere, x); err != nil {
-			t.Fatal(err)
-		}
+		swap(t, root, x)
 		if _, err := h.Runner(small, runner()); !errors.Is(err, ErrMountRefused) {
 			t.Errorf("Runner after the swap = %v, want refused", err)
 		}
 	})
-	t.Run("a writable source another's link reached at the start stays refused after a swap", func(t *testing.T) {
-		h, root := testHost(t, false, Platform{})
-		work, elsewhere := filepath.Join(root, "data", "work"), filepath.Join(root, "data", "elsewhere")
-		mkdirs(t, filepath.Join(work, "x"), elsewhere)
-		link := filepath.Join(root, "data", "link")
-		if err := os.Symlink(filepath.Join(work, "x"), link); err != nil {
-			t.Fatal(err)
+	t.Run("a link into another profile's writable source swapped before the host was built is refused", func(t *testing.T) {
+		_, root := testHost(t, false, Platform{})
+		work, x, link := linkInto(t, root)
+		swap(t, root, x)
+		h, small := serve(root, link, false, work, true)
+		if _, err := h.Runner(small, runner()); !errors.Is(err, ErrMountRefused) || !strings.Contains(err.Error(), "profile big's jobs may write") {
+			t.Errorf("Runner = %v, want refused", err)
 		}
-		small := serve(h, work, true, link, false)
-		x := filepath.Join(work, "x")
-		if err := os.Remove(x); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Symlink(elsewhere, x); err != nil {
-			t.Fatal(err)
-		}
+	})
+	t.Run("a writable source another's link goes through is refused after a swap", func(t *testing.T) {
+		_, root := testHost(t, false, Platform{})
+		work, x, link := linkInto(t, root)
+		h, small := serve(root, work, true, link, false)
+		swap(t, root, x)
 		_, err := h.Runner(small, runner())
 		if !errors.Is(err, ErrMountRefused) || !strings.Contains(err.Error(), "writable to jobs and an ancestor of "+x) {
-			t.Errorf("Runner = %v, want refused for the start-time form", err)
+			t.Errorf("Runner = %v, want refused for the link it holds", err)
 		}
 	})
 	t.Run("a writable link to an ancestor of another source is refused", func(t *testing.T) {
-		h, root := testHost(t, false, Platform{})
+		_, root := testHost(t, false, Platform{})
 		parent := filepath.Join(root, "data", "parent")
 		mkdirs(t, filepath.Join(parent, "child"))
 		link := filepath.Join(root, "data", "up")
 		if err := os.Symlink(parent, link); err != nil {
 			t.Fatal(err)
 		}
-		small := serve(h, link, true, filepath.Join(parent, "child"), false)
+		h, small := serve(root, link, true, filepath.Join(parent, "child"), false)
 		_, err := h.Runner(small, runner())
 		if !errors.Is(err, ErrMountRefused) || !strings.Contains(err.Error(), "writable to jobs and an ancestor of") || !strings.Contains(err.Error(), "profile big") {
 			t.Errorf("Runner = %v, want the source refused naming both profiles", err)
 		}
 	})
+	t.Run("siblings reached through one link pass", func(t *testing.T) {
+		_, root := testHost(t, false, Platform{})
+		x := filepath.Join(root, "data", "x")
+		mkdirs(t, filepath.Join(x, "b"), filepath.Join(x, "c"))
+		via := filepath.Join(root, "data", "via")
+		if err := os.Symlink(x, via); err != nil {
+			t.Fatal(err)
+		}
+		h, small := serve(root, filepath.Join(via, "b"), true, filepath.Join(via, "c"), false)
+		if _, err := h.Runner(small, runner()); err != nil {
+			t.Errorf("Runner = %v, want a writable via/b and a via/c apart", err)
+		}
+	})
 	t.Run("sources apart, equal, or nested read-only pass", func(t *testing.T) {
-		h, root := testHost(t, false, Platform{})
+		_, root := testHost(t, false, Platform{})
 		a, b := filepath.Join(root, "data", "a"), filepath.Join(root, "data", "b")
 		mkdirs(t, filepath.Join(a, "sub"), b)
 		for name, tc := range map[string]struct {
@@ -381,12 +413,77 @@ func TestRunnerMountNesting(t *testing.T) {
 			"equal, both writable":  {src: a, other: a, writable: true, own: true},
 			"nested, both readonly": {src: filepath.Join(a, "sub"), other: a},
 		} {
-			small := serve(h, tc.src, tc.writable, tc.other, tc.own)
+			h, small := serve(root, tc.src, tc.writable, tc.other, tc.own)
 			if _, err := h.Runner(small, runner()); err != nil {
 				t.Errorf("%s: Runner = %v", name, err)
 			}
 		}
 	})
+}
+
+func TestResolve(t *testing.T) {
+	root := t.TempDir()
+	real := filepath.Join(root, "real")
+	if err := os.MkdirAll(filepath.Join(real, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for link, to := range map[string]string{"abs": real, "rel": "real", "chain": "rel/sub", "loop": "loop", "file": "f"} {
+		if err := os.Symlink(to, filepath.Join(root, link)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, "f"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, src := range []string{"abs", "rel", "chain", "abs/sub/../sub", "real/./sub"} {
+		t.Run(src, func(t *testing.T) {
+			p := filepath.Join(root, src)
+			if strings.Contains(src, "..") {
+				p = root + "/" + src
+			}
+			want, err := filepath.EvalSymlinks(p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			w, err := resolve(p)
+			if err != nil || w.final != want || !slices.Contains(w.forms, want) || w.forms[0] != p {
+				t.Errorf("resolve = %+v, %v, want final %s as EvalSymlinks", w, err, want)
+			}
+		})
+	}
+	t.Run("a chain's forms are its spellings and its lookups hold each link", func(t *testing.T) {
+		w, err := resolve(filepath.Join(root, "chain"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []string{filepath.Join(root, "chain"), filepath.Join(root, "rel/sub"), filepath.Join(root, "real/sub")}
+		if !slices.Equal(w.forms, want) {
+			t.Errorf("forms = %v, want %v", w.forms, want)
+		}
+		for _, l := range []string{filepath.Join(root, "chain"), filepath.Join(root, "rel"), filepath.Join(root, "real"), filepath.Join(root, "real/sub")} {
+			if !slices.Contains(w.lookups, l) {
+				t.Errorf("lookups %v lack %s", w.lookups, l)
+			}
+		}
+	})
+	t.Run("a link inside the path is no form of it", func(t *testing.T) {
+		w, err := resolve(filepath.Join(root, "abs", "sub"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if slices.Contains(w.forms, filepath.Join(root, "abs")) {
+			t.Errorf("forms = %v hold the link abs, an ancestor", w.forms)
+		}
+	})
+	// A file followed by .. fails as EvalSymlinks does, though the kernel
+	// is never asked to look under it.
+	for src, want := range map[string]error{"loop": errTooManyLinks, "file/x": syscall.ENOTDIR, "f/..": syscall.ENOTDIR, "absent": fs.ErrNotExist} {
+		t.Run(src+" fails", func(t *testing.T) {
+			if _, err := resolve(root + "/" + src); !errors.Is(err, want) {
+				t.Errorf("resolve = %v, want %v", err, want)
+			}
+		})
+	}
 }
 
 func TestNewHostProtects(t *testing.T) {

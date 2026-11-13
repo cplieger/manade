@@ -226,6 +226,118 @@ func TestCreate(t *testing.T) {
 	})
 }
 
+func TestCreateFoundKeepsItsLimits(t *testing.T) {
+	pids := int64(4096)
+	limited := &CreateRequest{Image: "sha256:abc", Labels: map[string]string{"manade.runner": "r1"}, HostConfig: HostConfig{
+		Memory: 1 << 30, MemorySwap: -1, NanoCPUs: 2_000_000_000, PidsLimit: &pids, StorageOpt: map[string]string{"size": "1024"},
+	}}
+	// built answers c1 holding name r1 with hostConfig as the daemon built it.
+	built := func(hostConfig map[string]any) http.HandlerFunc {
+		return func(w http.ResponseWriter, _ *http.Request) {
+			a := inspectAnswer("c1", StateCreated)
+			a["Config"] = map[string]any{"Labels": map[string]string{LabelManaged: "true", "manade.runner": "r1"}}
+			a["HostConfig"] = hostConfig
+			writeJSON(w, http.StatusOK, a)
+		}
+	}
+	all := func() map[string]any {
+		return map[string]any{"Memory": 1 << 30, "MemorySwap": -1, "NanoCpus": 2_000_000_000, "PidsLimit": 4096, "StorageOpt": map[string]string{"size": "1024"}}
+	}
+	inUse := func(w http.ResponseWriter, _ *http.Request) {
+		writeError(w, http.StatusConflict, `Conflict. The container name "/r1" is already in use`)
+	}
+	t.Run("a held name with every limit is done", func(t *testing.T) {
+		d := newDaemon(t, "1.51")
+		d.handle("POST /containers/create", inUse)
+		d.handle("GET /containers/r1/json", built(all()))
+		if res := d.dial(t).Create(t.Context(), "r1", limited); res.Outcome != Done || res.ID != "c1" || res.Err != nil {
+			t.Errorf("Create = %+v", res)
+		}
+	})
+	for name, tc := range map[string]struct {
+		edit  func(map[string]any)
+		field string
+	}{
+		"Memory":          {func(h map[string]any) { h["Memory"] = 0 }, "Memory"},
+		"MemorySwap":      {func(h map[string]any) { h["MemorySwap"] = 2 << 30 }, "MemorySwap"},
+		"NanoCpus":        {func(h map[string]any) { h["NanoCpus"] = 0 }, "NanoCpus"},
+		"PidsLimit unset": {func(h map[string]any) { delete(h, "PidsLimit") }, "PidsLimit"},
+		"PidsLimit 0":     {func(h map[string]any) { h["PidsLimit"] = 0 }, "PidsLimit"},
+		"StorageOpt size": {func(h map[string]any) { delete(h, "StorageOpt") }, "StorageOpt size"},
+	} {
+		field, edit := tc.field, tc.edit
+		t.Run("a held name without its "+name+" fails with its ID", func(t *testing.T) {
+			hc := all()
+			edit(hc)
+			d := newDaemon(t, "1.51")
+			d.handle("POST /containers/create", inUse)
+			d.handle("GET /containers/r1/json", built(hc))
+			res := d.dial(t).Create(t.Context(), "r1", limited)
+			if res.Outcome != Failed || res.ID != "c1" || !errors.Is(res.Err, errLimitDiscarded) || !strings.Contains(res.Err.Error(), field+" is ") {
+				t.Errorf("Create = %+v, want failed with c1 naming %s", res, field)
+			}
+		})
+	}
+	t.Run("a held cpuset other than the one asked fails", func(t *testing.T) {
+		pinned := &CreateRequest{Image: "sha256:abc", Labels: map[string]string{"manade.runner": "r1"}, HostConfig: HostConfig{CpusetCpus: "0,1"}}
+		d := newDaemon(t, "1.51")
+		d.handle("POST /containers/create", inUse)
+		d.handle("GET /containers/r1/json", built(map[string]any{"CpusetCpus": ""}))
+		res := d.dial(t).Create(t.Context(), "r1", pinned)
+		if res.Outcome != Failed || res.ID != "c1" || !strings.Contains(res.Err.Error(), "CpusetCpus") {
+			t.Errorf("Create = %+v", res)
+		}
+	})
+	t.Run("a warned create whose removal failed, created again, fails", func(t *testing.T) {
+		d := newDaemon(t, "1.51")
+		var creates atomic.Int32
+		d.handle("POST /containers/create", func(w http.ResponseWriter, r *http.Request) {
+			if creates.Add(1) == 1 {
+				writeJSON(w, http.StatusCreated, map[string]any{"Id": "c1", "Warnings": []string{"Your kernel does not support memory limit capabilities or the cgroup is not mounted. Limitation discarded."}})
+				return
+			}
+			inUse(w, r)
+		})
+		d.handle("DELETE /containers/{id}", func(w http.ResponseWriter, _ *http.Request) {
+			writeError(w, http.StatusInternalServerError, "driver busy")
+		})
+		hc := all()
+		hc["Memory"], hc["MemorySwap"] = 0, 0
+		d.handle("GET /containers/r1/json", built(hc))
+		c := d.dial(t)
+		if res := c.Create(t.Context(), "r1", limited); res.Outcome != Failed || res.ID != "c1" || !errors.Is(res.Err, errCreateWarnings) {
+			t.Fatalf("first Create = %+v, want failed with c1 left", res)
+		}
+		res := c.Create(t.Context(), "r1", limited)
+		if res.Outcome != Failed || res.ID != "c1" || !errors.Is(res.Err, errLimitDiscarded) {
+			t.Errorf("second Create = %+v, want failed with c1 for its discarded memory limit", res)
+		}
+	})
+	t.Run("a timed-out create whose container lacks its memory limit fails with its ID", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			d := newDaemon(t, "1.51")
+			d.handle("POST /containers/create", hold)
+			hc := all()
+			hc["Memory"] = 0
+			d.handle("GET /containers/r1/json", built(hc))
+			res := d.dial(t).Create(t.Context(), "r1", limited)
+			if res.Outcome != Failed || res.ID != "c1" || !errors.Is(res.Err, errLimitDiscarded) || !strings.Contains(res.Err.Error(), "Memory is 0") {
+				t.Errorf("Create = %+v", res)
+			}
+		})
+	})
+	t.Run("a timed-out create whose container has its limits is done", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			d := newDaemon(t, "1.51")
+			d.handle("POST /containers/create", hold)
+			d.handle("GET /containers/r1/json", built(all()))
+			if res := d.dial(t).Create(t.Context(), "r1", limited); res.Outcome != Done || res.ID != "c1" {
+				t.Errorf("Create = %+v", res)
+			}
+		})
+	})
+}
+
 func TestStart(t *testing.T) {
 	t.Run("a start that answers is done", func(t *testing.T) {
 		d := newDaemon(t, "1.51")

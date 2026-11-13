@@ -3,8 +3,12 @@ package jobspec
 import (
 	"errors"
 	"fmt"
+	"io/fs"
+	"os"
 	"path/filepath"
 	"slices"
+	"strings"
+	"syscall"
 
 	"github.com/cplieger/go/pathinside"
 	"github.com/cplieger/manade/internal/config"
@@ -39,99 +43,76 @@ func (h *Host) mounts(p *config.Profile) ([]docker.Mount, error) {
 	return out, nil
 }
 
-// checkSource answers mount k of profile resolved, or refuses it when
-// either form reaches a protected path, when the resolved form lies under
-// none of the host container's mounts, or when it nests with another source
+// checkSource answers mount k of profile resolved, or refuses it when any
+// form of it reaches a protected path, when it resolves under none of the
+// host container's mounts, or when it nests with another source
 // (checkNesting).
 func (h *Host) checkSource(profile string, k int, m *config.Mount) (string, error) {
 	src := m.Source
-	resolved, err := filepath.EvalSymlinks(src)
+	w, err := resolve(src)
 	if err != nil {
 		return "", fmt.Errorf("%w: profile %s: source %s: %w", ErrMountRefused, profile, src, err)
 	}
-	for _, s := range []string{src, resolved} {
+	for _, s := range w.forms {
 		for _, prot := range h.protected {
 			if pathinside.Root(prot).Contains(s) || pathinside.Root(s).Contains(prot) {
-				return "", fmt.Errorf("%w: profile %s: source %s reaches %s, which host %s protects", ErrMountRefused, profile, describe(src, resolved), prot, h.host.Name)
+				return "", fmt.Errorf("%w: profile %s: source %s reaches %s, which host %s protects", ErrMountRefused, profile, describe(src, s), prot, h.host.Name)
 			}
 		}
 	}
 	for _, mnt := range h.plat.Mounts {
-		if pathinside.Root(mnt).Contains(resolved) {
-			return resolved, h.checkNesting(profile, k, m, resolved)
+		if pathinside.Root(mnt).Contains(w.final) {
+			return w.final, h.checkNesting(profile, k, m, &w)
 		}
 	}
 	return "", fmt.Errorf("%w: profile %s: source %s lies outside every mount of host %s's container; mount the path into the host service first",
-		ErrMountRefused, profile, describe(src, resolved), h.host.Name)
+		ErrMountRefused, profile, describe(src, w.final), h.host.Name)
 }
 
-// bindSource is bind mount index of profile, with its forms: as written and,
-// where it differs, resolved.
-type bindSource struct {
-	profile  string
-	forms    []string
-	index    int
-	writable bool
-}
-
-// bindSources answers the bind sources of every profile cfg gives host.
-func bindSources(cfg *config.Config, host string) []bindSource {
-	var out []bindSource
-	for i := range cfg.Profiles {
-		pr := &cfg.Profiles[i]
-		if !slices.Contains(pr.Hosts, host) {
-			continue
-		}
-		for k, m := range pr.Mounts {
-			if m.Bind && m.Source != "" {
-				out = append(out, bindSource{profile: pr.Name, forms: withResolved(m.Source), index: k, writable: !m.ReadOnly})
-			}
-		}
-	}
-	return out
-}
-
-// checkNesting refuses mount k of profile, resolved now to resolved, when
-// any of its forms lies strictly under a form of another bind source jobs
-// may write, or is writable itself and a strict ancestor of another's: a job
-// could rename or replace a directory the other runner binds. Each other
-// source's forms are its own at the host's start and now, so a link it
-// held then through a writable source stays refused after a swap.
-func (h *Host) checkNesting(profile string, k int, m *config.Mount, resolved string) error {
-	mine := []string{resolved}
-	if i := slices.IndexFunc(h.binds, func(b bindSource) bool { return b.profile == profile && b.index == k }); i >= 0 {
-		mine = append(mine, h.binds[i].forms...)
-	}
+// checkNesting refuses mount k of profile, walked as mine, when a path its
+// walk read lies strictly under a form of another source jobs may write, or
+// when it is writable and a form of it is a strict ancestor of a path
+// another source's walk reads: a job could rename or replace an entry the
+// other runner's bind goes through. Every source is walked again at each
+// create, and every entry a walk reads before its first one under a
+// writable source is out of any job's reach, so the answer is the same
+// whenever the Host was built.
+func (h *Host) checkNesting(profile string, k int, m *config.Mount, mine *walk) error {
 	for i := range h.binds {
 		b := &h.binds[i]
-		if b.profile == profile && b.index == k {
+		if b.Profile == profile && b.Index == k {
 			continue
 		}
-		theirs := append(slices.Clone(b.forms), withResolved(b.forms[0])...)
-		for _, a := range mine {
-			for _, o := range theirs {
-				if err := h.nested(profile, m, a, b, o); err != nil {
-					return err
-				}
+		// A walk that fails still answers what it read, which is what
+		// decides the nesting; that source's own create refuses it.
+		theirs, _ := resolve(b.Mount.Source)
+		if !b.Mount.ReadOnly {
+			if a, o, ok := strictlyUnder(mine.read(), theirs.forms); ok {
+				return fmt.Errorf("%w: profile %s: source %s lies under %s, a source profile %s's jobs may write on host %s; mount the two apart",
+					ErrMountRefused, profile, describe(m.Source, a), o, b.Profile, h.host.Name)
+			}
+		}
+		if !m.ReadOnly {
+			if o, a, ok := strictlyUnder(theirs.read(), mine.forms); ok {
+				return fmt.Errorf("%w: profile %s: source %s is writable to jobs and an ancestor of %s, a source of profile %s, on host %s; mount it read-only, or mount the two apart",
+					ErrMountRefused, profile, describe(m.Source, a), o, b.Profile, h.host.Name)
 			}
 		}
 	}
 	return nil
 }
 
-// nested refuses form a of profile's mount m against form o of b.
-func (h *Host) nested(profile string, m *config.Mount, a string, b *bindSource, o string) error {
-	switch {
-	case a == o:
-		return nil
-	case b.writable && pathinside.Root(o).Contains(a):
-		return fmt.Errorf("%w: profile %s: source %s lies under %s, a source profile %s's jobs may write on host %s; mount the two apart",
-			ErrMountRefused, profile, describe(m.Source, a), o, b.profile, h.host.Name)
-	case !m.ReadOnly && pathinside.Root(a).Contains(o):
-		return fmt.Errorf("%w: profile %s: source %s is writable to jobs and an ancestor of %s, a source of profile %s, on host %s; mount it read-only, or mount the two apart",
-			ErrMountRefused, profile, describe(m.Source, a), o, b.profile, h.host.Name)
+// strictlyUnder answers the first path of paths strictly under one of
+// roots, and that root.
+func strictlyUnder(paths, roots []string) (path, root string, ok bool) {
+	for _, p := range paths {
+		for _, r := range roots {
+			if p != r && pathinside.Root(r).Contains(p) {
+				return p, r, true
+			}
+		}
 	}
-	return nil
+	return "", "", false
 }
 
 func describe(src, resolved string) string {
@@ -149,4 +130,90 @@ func withResolved(p string) []string {
 		return []string{p}
 	}
 	return []string{p, r}
+}
+
+// maxLinks is filepath.EvalSymlinks's bound on the links one walk follows.
+const maxLinks = 255
+
+var errTooManyLinks = errors.New("too many links")
+
+// walk is an absolute path resolved one component at a time, as
+// filepath.EvalSymlinks does: final is the path it resolves to; forms are
+// every spelling of it the walk went through, from as written to final;
+// lookups are every entry the walk read, each link included, so a writer of
+// any of their directories decides where the walk goes.
+type walk struct {
+	final   string
+	forms   []string
+	lookups []string
+}
+
+// read answers every path w read or was spelled as.
+func (w *walk) read() []string { return append(slices.Clone(w.lookups), w.forms...) }
+
+// resolve walks src. On an error it answers what the walk reached.
+func resolve(src string) (walk, error) {
+	w := walk{forms: []string{src}}
+	dest, rest, links := "/", src, 0
+	for rest != "" {
+		var name string
+		var more bool
+		name, rest, more = strings.Cut(strings.TrimLeft(rest, "/"), "/")
+		switch name {
+		case "", ".":
+			continue
+		case "..":
+			dest = filepath.Dir(dest)
+			continue
+		}
+		dest = filepath.Join(dest, name)
+		link, isLink, err := w.step(dest, more)
+		switch {
+		case err != nil:
+			return w, err
+		case !isLink:
+			continue
+		}
+		links++
+		if links > maxLinks {
+			return w, errTooManyLinks
+		}
+		w.addForm(filepath.Join(dest, rest))
+		if filepath.IsAbs(link) {
+			dest = "/"
+		} else {
+			dest = filepath.Dir(dest)
+		}
+		if more {
+			link += "/" + rest
+		}
+		rest = link
+		w.addForm(filepath.Join(dest, rest))
+	}
+	w.final = dest
+	w.addForm(dest)
+	return w, nil
+}
+
+// step reads entry dest, a directory when more of the path follows, and
+// answers its target when it is a link.
+func (w *walk) step(dest string, more bool) (link string, isLink bool, err error) {
+	w.lookups = append(w.lookups, dest)
+	fi, err := os.Lstat(dest)
+	switch {
+	case err != nil:
+		return "", false, err
+	case fi.Mode()&fs.ModeSymlink == 0 && more && !fi.IsDir():
+		return "", false, syscall.ENOTDIR
+	case fi.Mode()&fs.ModeSymlink == 0:
+		return "", false, nil
+	}
+	link, err = os.Readlink(dest)
+	return link, err == nil, err
+}
+
+func (w *walk) addForm(p string) {
+	if !slices.Contains(w.forms, p) {
+		w.forms = append(w.forms, p)
+	}
 }

@@ -19,6 +19,8 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
+	"syscall"
 	"time"
 
 	"github.com/cplieger/manade/internal/config"
@@ -55,6 +57,11 @@ func Issue(root string, hosts []string, now time.Time) ([]string, error) {
 	orchExists, err := checkOrchestrator(orch, ca, found)
 	if err != nil {
 		return nil, err
+	}
+	if !found {
+		if serr := checkStranded(root); serr != nil {
+			return nil, serr
+		}
 	}
 	var out []string
 	if !found {
@@ -100,6 +107,35 @@ func checkOrchestrator(orch string, ca *authority, found bool) (bool, error) {
 		return false, fmt.Errorf("pki: %s is not from the CA in %s; restore that CA, or remove %s and every host directory to issue the whole pool again", filepath.Join(orch, hostapi.CAFile), CADir, orch)
 	}
 	return true, nil
+}
+
+// checkStranded refuses a root without a CA that still holds a party's
+// directory: a new CA would split the pool, its hosts trusting the old one.
+// writeDir's temporaries start with a dot, which no party name does.
+func checkStranded(root string) error {
+	entries, err := os.ReadDir(root)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("pki: %w", err)
+	}
+	var stranded []string
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".") {
+			continue
+		}
+		if _, err := os.Lstat(filepath.Join(root, e.Name(), hostapi.CAFile)); err == nil {
+			stranded = append(stranded, filepath.Join(root, e.Name()))
+		} else if !errors.Is(err, os.ErrNotExist) && !errors.Is(err, syscall.ENOTDIR) {
+			return fmt.Errorf("pki: %w", err)
+		}
+	}
+	if len(stranded) == 0 {
+		return nil
+	}
+	return fmt.Errorf("pki: %s trust a CA %s no longer holds, so a new CA would split the pool; restore %s, or remove %s to issue the whole pool again",
+		strings.Join(stranded, ", "), filepath.Join(root, CADir), CADir, strings.Join(stranded, " and "))
 }
 
 func checkHosts(root string, hosts []string) error {

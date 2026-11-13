@@ -1,6 +1,7 @@
 package hostapi
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -92,6 +93,21 @@ func TestState(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestStateUnknownDockerState(t *testing.T) {
+	for name, word := range map[string]string{"empty": "", "unknown": "hibernating", "multiline": "odd\nword"} {
+		t.Run(name, func(t *testing.T) {
+			c := &Container{ID: "c1", Name: "r1", State: word, ExitCode: 0}
+			got, listed := State(c, &Record{State: RecordStarted, Request: RunnerRequest{RunnerName: "r1"}})
+			if !listed || got.State != StateFailed || got.ExitCode != nil || !strings.HasPrefix(got.Reason, ReasonUnknownState+` "`) || strings.ContainsAny(got.Reason, "\n\r") {
+				t.Errorf("runner = %+v, want failed naming the state word on one line, no exit code", got)
+			}
+			if name == "unknown" && got.Reason != ReasonUnknownState+` "hibernating"` {
+				t.Errorf("reason = %q", got.Reason)
+			}
+		})
 	}
 }
 

@@ -17,12 +17,11 @@ import (
 	"github.com/cplieger/go/httpclient"
 )
 
-const (
-	// logReadLimit bounds the bytes read from a log tail; logKeep how many
-	// of its last bytes are kept.
-	logReadLimit = 4 << 20
-	logKeep      = 64 << 10
-)
+// logReadLimit bounds the bytes read from a log tail.
+const logReadLimit = 4 << 20
+
+// LogKeep is how many of a log tail's last bytes Logs keeps.
+const LogKeep = 256 << 10
 
 // ErrTooLarge is returned when an archive or file passes its caller's limit.
 var ErrTooLarge = errors.New("docker: content over its size limit")
@@ -70,7 +69,7 @@ func (c *Client) Logs(ctx context.Context, id string, n int) ([]string, error) {
 }
 
 // demux joins the payloads of a multiplexed log stream, keeping the last
-// logKeep bytes. A container without a TTY, as every runner is, frames its
+// LogKeep bytes. A container without a TTY, as every runner is, frames its
 // output with an 8-byte header: the stream (0, 1 or 2), three zero bytes and
 // the payload's big-endian length
 // (https://docs.docker.com/reference/api/engine/version/v1.51/#tag/Container/operation/ContainerAttach).
@@ -90,8 +89,8 @@ func demux(r io.Reader) ([]byte, error) {
 		}
 		chunk, err := payload(r, int64(binary.BigEndian.Uint32(hdr[4:])))
 		out = append(out, chunk...)
-		if len(out) > logKeep {
-			out = append(out[:0], out[len(out)-logKeep:]...)
+		if len(out) > LogKeep {
+			out = append(out[:0], out[len(out)-LogKeep:]...)
 		}
 		if err != nil {
 			return out, err

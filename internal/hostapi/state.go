@@ -1,6 +1,11 @@
 package hostapi
 
-import "time"
+import (
+	"strconv"
+	"time"
+
+	"github.com/cplieger/go/textsafe"
+)
 
 // RecordState is how far the host has taken a runner it accepted.
 type RecordState int
@@ -64,7 +69,12 @@ const (
 	ReasonRemovedOutside = "container removed outside the host"
 	ReasonResetOutside   = "container reset outside the host"
 	ReasonHostRestarted  = "host restarted before its start"
+	// ReasonUnknownState is followed by the Docker state word, quoted.
+	ReasonUnknownState = "container in an unknown Docker state"
 )
+
+// stateWordLimit caps the Docker state word a reason repeats.
+const stateWordLimit = 64
 
 // State maps a runner's labelled container and the host's record of it to
 // the runner a list shows; either may be nil. It answers false for a runner
@@ -90,13 +100,25 @@ func State(c *Container, r *Record) (Runner, bool) {
 		run.State, run.Reason = StateFailed, ReasonHostRestarted
 	case c.State == DockerCreated:
 		run.State, run.Reason = recorded(r, ReasonResetOutside)
-	case c.State == DockerRunning || c.State == DockerPaused || c.State == DockerRestarting:
-		run.State = StateRunning
 	default:
-		code := c.ExitCode
-		run.State, run.ExitCode, run.ExitedAt, run.OOMKilled = StateExited, &code, c.FinishedAt, c.OOMKilled
+		fromContainer(c, &run)
 	}
 	return run, true
+}
+
+// fromContainer sets run's state from a created-and-started container's
+// Docker state, whatever the record says.
+func fromContainer(c *Container, run *Runner) {
+	switch c.State {
+	case DockerRunning, DockerPaused, DockerRestarting:
+		run.State = StateRunning
+	case DockerExited, DockerDead, DockerRemoving:
+		code := c.ExitCode
+		run.State, run.ExitCode, run.ExitedAt, run.OOMKilled = StateExited, &code, c.FinishedAt, c.OOMKilled
+	default:
+		word, _ := textsafe.SanitizeSingleLineCapped(c.State, stateWordLimit, "…")
+		run.State, run.Reason = StateFailed, ReasonUnknownState+" "+strconv.Quote(word)
+	}
 }
 
 // recorded is a creating or starting record's own state, or failed with

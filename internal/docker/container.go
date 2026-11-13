@@ -119,9 +119,10 @@ var errCreateWarnings = errors.New("docker create: the daemon warned")
 // container there means the create succeeded, and a 404 is inspected again
 // for one more CallTimeout before the create is judged failed. A name
 // already in use by a managed container carrying every label of req is that
-// create's own container, made by an earlier call, and is Done; any other
-// holder fails the create with ErrConflict. A create the daemon refuses for
-// its image fails with an error matching ErrImageMissing.
+// create's own container, made by an earlier call; any other holder fails
+// the create with ErrConflict. A container found either way that lacks a
+// limit req sets fails with its ID and errLimitDiscarded. A create the
+// daemon refuses for its image fails with an error matching ErrImageMissing.
 func (c *Client) Create(ctx context.Context, name string, req *CreateRequest) Result {
 	body := *req
 	body.Labels = c.managedLabels(req.Labels)
@@ -138,16 +139,17 @@ func (c *Client) Create(ctx context.Context, name string, req *CreateRequest) Re
 	case ctx.Err() != nil:
 		return Result{Outcome: Pending, Err: err}
 	case errors.Is(err, ErrConflict):
-		return c.adopt(ctx, name, req.Labels, err)
+		return c.adopt(ctx, name, req, err)
 	case !timedOut:
 		return Result{Outcome: Failed, Err: err}
 	}
-	return c.afterCreateTimeout(ctx, name, err)
+	return c.afterCreateTimeout(ctx, name, &req.HostConfig, err)
 }
 
-// adopt judges a create refused because name is in use: Done when the
-// holder is managed and carries labels, Failed otherwise.
-func (c *Client) adopt(ctx context.Context, name string, labels map[string]string, callErr error) Result {
+// adopt judges a create of req refused because name is in use: Done when
+// the holder is managed, carries req's labels and has its limits (withLimits),
+// Failed otherwise.
+func (c *Client) adopt(ctx context.Context, name string, req *CreateRequest, callErr error) Result {
 	ctr, found, err := c.InspectContainer(ctx, name)
 	switch {
 	case err != nil:
@@ -155,12 +157,51 @@ func (c *Client) adopt(ctx context.Context, name string, labels map[string]strin
 	case !found || ctr.Config.Labels[LabelManaged] != managedValue:
 		return Result{Outcome: Failed, Err: callErr}
 	}
-	for k, v := range labels {
+	for k, v := range req.Labels {
 		if k != LabelManaged && k != LabelCreated && ctr.Config.Labels[k] != v {
 			return Result{Outcome: Failed, Err: callErr}
 		}
 	}
-	return Result{Outcome: Done, ID: ctr.ID}
+	return withLimits(&ctr, &req.HostConfig)
+}
+
+// errLimitDiscarded is a container found after a create whose answer the
+// client never read that lacks a limit the create set: the daemon discarded
+// it with a warning the client did not see.
+var errLimitDiscarded = errors.New("docker create: the container lacks a requested limit")
+
+// withLimits is Done for ctr when it has every limit want sets that the daemon
+// may discard or zero with only a warning (verifyPlatformContainerResources,
+// https://github.com/moby/moby/blob/docker-v29.0.0/daemon/daemon_unix.go),
+// and Failed with its ID otherwise.
+func withLimits(ctr *Container, want *HostConfig) Result {
+	got := &ctr.HostConfig
+	var field string
+	var have, asked any
+	switch {
+	case want.Memory != 0 && got.Memory != want.Memory:
+		field, have, asked = "Memory", got.Memory, want.Memory
+	case want.MemorySwap != 0 && got.MemorySwap != want.MemorySwap:
+		field, have, asked = "MemorySwap", got.MemorySwap, want.MemorySwap
+	case want.NanoCPUs != 0 && got.NanoCPUs != want.NanoCPUs:
+		field, have, asked = "NanoCpus", got.NanoCPUs, want.NanoCPUs
+	case want.CpusetCpus != "" && got.CpusetCpus != want.CpusetCpus:
+		field, have, asked = "CpusetCpus", strconv.Quote(got.CpusetCpus), strconv.Quote(want.CpusetCpus)
+	case want.PidsLimit != nil && (got.PidsLimit == nil || *got.PidsLimit != *want.PidsLimit):
+		field, have, asked = "PidsLimit", pids(got.PidsLimit), *want.PidsLimit
+	case want.StorageOpt["size"] != "" && got.StorageOpt["size"] != want.StorageOpt["size"]:
+		field, have, asked = "StorageOpt size", strconv.Quote(got.StorageOpt["size"]), strconv.Quote(want.StorageOpt["size"])
+	default:
+		return Result{Outcome: Done, ID: ctr.ID}
+	}
+	return Result{Outcome: Failed, ID: ctr.ID, Err: fmt.Errorf("%w: container %s: %s is %v, the create set %v", errLimitDiscarded, ctr.ID, field, have, asked)}
+}
+
+func pids(p *int64) any {
+	if p == nil {
+		return "unset"
+	}
+	return *p
 }
 
 // created removes a container the daemon warned about and fails it.
@@ -177,11 +218,12 @@ func (c *Client) created(ctx context.Context, id string, warnings []string) Resu
 	return Result{Outcome: Failed, Err: werr}
 }
 
-// afterCreateTimeout judges a create whose call timed out by inspecting name
-// until a container appears or one more CallTimeout passes. The window's end
-// fails the create only when the last inspect answered 404; an inspect that
-// errs, the window's end cutting it included, leaves it pending.
-func (c *Client) afterCreateTimeout(ctx context.Context, name string, callErr error) Result {
+// afterCreateTimeout judges a create with limits want whose call timed out
+// by inspecting name until a container appears (withLimits) or one more
+// CallTimeout passes. The window's end fails the create only when the last
+// inspect answered 404; an inspect that errs, the window's end cutting it
+// included, leaves it pending.
+func (c *Client) afterCreateTimeout(ctx context.Context, name string, want *HostConfig, callErr error) Result {
 	end := time.Now().Add(CallTimeout)
 	wctx, cancel := context.WithDeadline(ctx, end)
 	defer cancel()
@@ -194,7 +236,7 @@ func (c *Client) afterCreateTimeout(ctx context.Context, name string, callErr er
 		case err != nil:
 			return Result{Outcome: Pending, Err: errors.Join(callErr, err)}
 		case found:
-			return Result{Outcome: Done, ID: ctr.ID}
+			return withLimits(&ctr, want)
 		}
 		select {
 		case <-ctx.Done():
@@ -302,13 +344,6 @@ type Container struct {
 	Config struct {
 		Labels map[string]string
 	}
-	// HostConfig holds the limits the container was built with.
-	HostConfig struct {
-		StorageOpt map[string]string
-		CpusetCpus string
-		NanoCPUs   int64 `json:"NanoCpus"`
-		Memory     int64
-	}
 	NetworkSettings struct {
 		Networks map[string]Endpoint
 	}
@@ -324,6 +359,15 @@ type Container struct {
 		Status    string
 		ExitCode  int
 		OOMKilled bool
+	}
+	// HostConfig holds the limits the container was built with.
+	HostConfig struct {
+		StorageOpt map[string]string
+		PidsLimit  *int64
+		CpusetCpus string
+		NanoCPUs   int64 `json:"NanoCpus"`
+		Memory     int64
+		MemorySwap int64
 	}
 }
 

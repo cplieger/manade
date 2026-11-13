@@ -1,8 +1,10 @@
 package hostapi
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -160,4 +162,72 @@ func TestListenUnix(t *testing.T) {
 	if _, err := os.Lstat(path); !os.IsNotExist(err) {
 		t.Errorf("socket left after Close: %v", err)
 	}
+}
+
+func TestListenUnixBindsPrivately(t *testing.T) {
+	old := syscall.Umask(0)
+	t.Cleanup(func() { syscall.Umask(old) })
+	var bindDir os.FileMode
+	orig := listen
+	t.Cleanup(func() { listen = orig })
+	listen = func(lc *net.ListenConfig, ctx context.Context, network, addr string) (net.Listener, error) {
+		if fi, err := os.Stat(filepath.Dir(addr)); err == nil {
+			bindDir = fi.Mode().Perm()
+		}
+		return orig(lc, ctx, network, addr)
+	}
+	path := filepath.Join(t.TempDir(), "api.sock")
+	ln, err := ListenUnix(t.Context(), path, os.Getuid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	if bindDir != 0o700 {
+		t.Errorf("bound in a directory of mode %v, want 0700 under umask 0", bindDir)
+	}
+	if fi, err := os.Lstat(path); err != nil || fi.Mode().Perm() != 0o600 {
+		t.Errorf("socket = %v, %v, want mode 0600", fi, err)
+	}
+}
+
+func TestListenUnixLeavesNothingOnFailure(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "api.sock")
+	// A non-empty directory at path fails the rename, as root too.
+	if err := os.MkdirAll(filepath.Join(path, "x"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ListenUnix(t.Context(), path, os.Getuid()); err == nil {
+		t.Fatal("ListenUnix renamed a socket onto a directory")
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil || len(entries) != 1 || entries[0].Name() != "api.sock" {
+		t.Errorf("socket directory holds %v: %v, want only what was there", entries, err)
+	}
+}
+
+func TestListenUnixCloseKeepsASuccessor(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "api.sock")
+	first, err := ListenUnix(t.Context(), path, os.Getuid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := ListenUnix(t.Context(), path, os.Getuid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		if c, err := second.Accept(); err == nil {
+			_ = c.Close()
+		}
+	}()
+	c, err := net.Dial("unix", path)
+	if err != nil {
+		t.Fatalf("dial after the first Close: %v, want the second listener", err)
+	}
+	_ = c.Close()
 }

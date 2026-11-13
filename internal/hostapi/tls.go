@@ -2,10 +2,8 @@ package hostapi
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
@@ -119,19 +117,26 @@ func usageName(u x509.ExtKeyUsage) string {
 	return "server authentication"
 }
 
-// ListenUnix serves the API socket at path with mode 0600, owned by uid. The
-// socket is bound under a temporary name and renamed into place once its
-// owner and mode are set, so path never answers anyone else. Closing the
-// listener removes path.
+// ListenUnix serves the API socket at path with mode 0600, owned by uid,
+// whatever the process's umask. The socket is bound inside a fresh 0700
+// directory beside path, which no other uid can traverse to connect, and
+// renamed onto path once its owner and mode are set; on a failure neither is
+// left. Closing the listener removes path while it is still this socket.
 func ListenUnix(ctx context.Context, path string, uid int) (net.Listener, error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("host API socket: %w", err)
 	}
-	var suffix [6]byte
-	_, _ = rand.Read(suffix[:])
-	tmp := path + ".tmp-" + hex.EncodeToString(suffix[:])
+	// Short names: the bind path, longer than path, must fit sun_path's
+	// 108 bytes (unix(7)).
+	private, err := os.MkdirTemp(dir, ".")
+	if err != nil {
+		return nil, fmt.Errorf("host API socket: %w", err)
+	}
+	defer func() { _ = os.RemoveAll(private) }()
+	tmp := filepath.Join(private, "s")
 	var lc net.ListenConfig
-	ln, err := lc.Listen(ctx, "unix", tmp)
+	ln, err := listen(&lc, ctx, "unix", tmp)
 	if err != nil {
 		return nil, fmt.Errorf("host API socket: %w", err)
 	}
@@ -145,23 +150,39 @@ func ListenUnix(ctx context.Context, path string, uid int) (net.Listener, error)
 	if err == nil {
 		err = os.Rename(tmp, path)
 	}
+	var fi os.FileInfo
+	if err == nil {
+		fi, err = os.Lstat(path)
+	}
 	if err != nil {
 		_ = ul.Close()
-		_ = os.Remove(tmp)
 		return nil, fmt.Errorf("host API socket: %w", err)
 	}
-	return &unixListener{UnixListener: ul, path: path}, nil
+	return &unixListener{UnixListener: ul, path: path, fi: fi}, nil
 }
+
+// listen is net.ListenConfig.Listen, a seam for observing the bind.
+var listen = (*net.ListenConfig).Listen
 
 type unixListener struct {
 	*net.UnixListener
+	fi   os.FileInfo
 	path string
 }
 
+// Close removes path only while it is still this socket: a later listener
+// may have renamed its own onto it.
 func (l *unixListener) Close() error {
 	err := l.UnixListener.Close()
-	if rerr := os.Remove(l.path); rerr != nil && !errors.Is(rerr, os.ErrNotExist) {
-		err = errors.Join(err, rerr)
+	cur, serr := os.Lstat(l.path)
+	switch {
+	case errors.Is(serr, os.ErrNotExist):
+	case serr != nil:
+		err = errors.Join(err, serr)
+	case os.SameFile(cur, l.fi):
+		if rerr := os.Remove(l.path); rerr != nil && !errors.Is(rerr, os.ErrNotExist) {
+			err = errors.Join(err, rerr)
+		}
 	}
 	return err
 }

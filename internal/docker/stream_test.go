@@ -99,12 +99,12 @@ func TestDemux(t *testing.T) {
 	t.Run("keepsTheLastBytesPastTheCap", func(t *testing.T) {
 		var in []byte
 		for range 3 {
-			in = append(in, frame(1, strings.Repeat("a", logKeep/2))...)
+			in = append(in, frame(1, strings.Repeat("a", LogKeep/2))...)
 		}
 		in = append(in, frame(2, "end")...)
 		out, err := demux(bytes.NewReader(in))
-		if err != nil || len(out) != logKeep || !bytes.HasSuffix(out, []byte("aend")) {
-			t.Errorf("demux = %d bytes, %v; want the last %d ending in the last frame", len(out), err, logKeep)
+		if err != nil || len(out) != LogKeep || !bytes.HasSuffix(out, []byte("aend")) {
+			t.Errorf("demux = %d bytes, %v; want the last %d ending in the last frame", len(out), err, LogKeep)
 		}
 	})
 	t.Run("aCutFrameFails", func(t *testing.T) {

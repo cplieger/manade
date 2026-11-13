@@ -47,8 +47,8 @@ const (
 	// LogTailDefault and LogTailMax bound a log tail's lines.
 	LogTailDefault = 50
 	LogTailMax     = 1000
-	// logLimit caps a log tail's bytes.
-	logLimit = 256 << 10
+	// logLimit caps a log tail's bytes; docker.LogKeep owns the value.
+	logLimit = docker.LogKeep
 	// DiagLimit caps a runner's _diag tar.
 	DiagLimit = 8 << 20
 	// answerLimit caps a JSON answer the client reads.

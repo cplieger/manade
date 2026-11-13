@@ -176,6 +176,16 @@ func TestIssueRefusals(t *testing.T) {
 				t.Fatal(err)
 			}
 		}},
+		"a host left without its CA and orchestrator": {hosts: []string{"edge"}, want: "/nas trust a CA", setup: func(t *testing.T, root string) {
+			if _, err := Issue(root, []string{"nas"}, now); err != nil {
+				t.Fatal(err)
+			}
+			for _, d := range []string{CADir, OrchestratorDir} {
+				if err := os.RemoveAll(filepath.Join(root, d)); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}},
 		"a ca directory without ca.pem": {hosts: []string{"nas"}, want: "holds no ca.pem", setup: func(t *testing.T, root string) { mkdir(t, filepath.Join(root, "ca")) }},
 		"a mismatched CA key": {hosts: []string{"nas"}, want: "does not match", setup: func(t *testing.T, root string) {
 			other := t.TempDir()
@@ -205,6 +215,21 @@ func TestIssueRefusals(t *testing.T) {
 				t.Errorf("the refusal wrote %v (before %v)", after, before)
 			}
 		})
+	}
+}
+
+func TestIssueIgnoresWhatHoldsNoTrust(t *testing.T) {
+	root := t.TempDir()
+	tmp := filepath.Join(root, ".nas.tmp-1")
+	mkdir(t, tmp)
+	for _, f := range []string{filepath.Join(tmp, "ca.pem"), filepath.Join(root, "notes.txt")} {
+		if err := os.WriteFile(f, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mkdir(t, filepath.Join(root, "empty"))
+	if _, err := Issue(root, []string{"nas"}, now); err != nil {
+		t.Errorf("Issue = %v, want a writeDir temporary, a file and an empty directory ignored", err)
 	}
 }
 
