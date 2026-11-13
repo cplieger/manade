@@ -225,7 +225,8 @@ func (p *Pool) plan(list []docker.Summary, known map[*runner]bool) work {
 }
 
 // sortOne files c in w. A runner whose start is still in flight has no
-// container yet and is left to the start worker.
+// container yet and is left to the start worker, exited or not: the worker
+// may be removing it after a failed start, or about to hand it over.
 func (p *Pool) sortOne(w *work, c docker.Summary, now time.Time) {
 	s := p.setOf(c.Labels)
 	var r *runner
@@ -233,6 +234,7 @@ func (p *Pool) sortOne(w *work, c docker.Summary, now time.Time) {
 		r = s.runners[c.Labels[docker.LabelRunner]]
 	}
 	switch {
+	case r != nil && r.container == "":
 	case c.State == "exited" || c.State == "dead":
 		w.exited = append(w.exited, c)
 	case s == nil:
@@ -243,7 +245,6 @@ func (p *Pool) sortOne(w *work, c docker.Summary, now time.Time) {
 		}
 	case r == nil:
 		w.adopt = append(w.adopt, c)
-	case r.container == "":
 	case now.Sub(r.created) > p.cfg.Profiles[s.profile].MaxLifetime:
 		w.expired = append(w.expired, r)
 	case r.state == idle && (p.stopping || s.scope.public || now.Sub(r.created) > p.cfg.Profiles[s.profile].IdleTimeout):
