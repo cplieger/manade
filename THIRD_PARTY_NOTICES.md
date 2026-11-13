@@ -6,7 +6,7 @@
 
 <https://github.com/moby/sys>, licensed under the Apache License 2.0.
 
-`internal/r5/jobspec/user.go` ports `GetExecUser` and the passwd and group parsing it uses from [`user/user.go`](https://github.com/moby/sys/blob/main/user/user.go) and [`user/user_utils.go`](https://github.com/moby/sys/blob/main/user/user_utils.go), so the image user check resolves a container's user exactly as Docker does. moby/sys ships no NOTICE file.
+`internal/jobspec/user.go` and `internal/r5/jobspec/user.go` port `GetExecUser` and the passwd and group parsing it uses from [`user/user.go`](https://github.com/moby/sys/blob/main/user/user.go) and [`user/user_utils.go`](https://github.com/moby/sys/blob/main/user/user_utils.go), so the image user check resolves a container's user exactly as Docker does. moby/sys ships no NOTICE file.
 
 ```text
 

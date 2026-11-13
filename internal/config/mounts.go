@@ -15,10 +15,10 @@ var fixedProtected = []string{
 	"/run/manade", "/tmp", "/proc", "/sys", "/dev",
 }
 
-// protected answers the paths in host h's container that no job on a host
+// Protected answers the paths in host h's container that no job on a host
 // that is not open may reach. TLS_DIR is the host's own only in its own
 // role, and the default elsewhere: the host checks its own at start.
-func (c *Config) protected(h *Host) []string {
+func (c *Config) Protected(h *Host) []string {
 	tls := hostTLSDir
 	if c.Self != nil && c.Self.Name == h.Name {
 		tls = c.Self.TLSDir

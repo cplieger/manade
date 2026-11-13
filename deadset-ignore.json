@@ -2,12 +2,6 @@
   "description": "Staging entries for revision 6 packages whose production reader a later build step adds. Each reason names that step; the step deletes the entry, and a stale entry fails the run.",
   "ignore": [
     {
-      "code": "DS1501",
-      "symbol": "go://github.com/cplieger/manade/internal/config#Secret",
-      "path": "internal/config/config.go",
-      "reason": "staging: internal/github names config.Secret for its token source once it moves onto internal/config (build plan item 8); delete this entry there"
-    },
-    {
       "code": "DS1101",
       "symbol": "go://github.com/cplieger/manade/internal/config#Secret.LogValue",
       "path": "internal/config/config.go",
@@ -114,6 +108,24 @@
       "symbol": "go://github.com/cplieger/manade/internal/docker#APIError.Error",
       "path": "internal/docker/client.go",
       "reason": "staging: an APIError reaches error formatting once the supervisor (build plan item 5) logs a refused call; delete this entry there"
+    },
+    {
+      "code": "DS1101",
+      "symbol": "go://github.com/cplieger/manade/internal/jobspec#PasswdPath",
+      "path": "internal/jobspec/user.go",
+      "reason": "staging: the image manager (build plan item 5) reads an image's passwd and group files for CheckUser; delete this entry there"
+    },
+    {
+      "code": "DS1101",
+      "symbol": "go://github.com/cplieger/manade/internal/jobspec#GroupPath",
+      "path": "internal/jobspec/user.go",
+      "reason": "staging: the image manager (build plan item 5) reads an image's passwd and group files for CheckUser; delete this entry there"
+    },
+    {
+      "code": "DS1101",
+      "symbol": "go://github.com/cplieger/manade/internal/jobspec#UserFileLimit",
+      "path": "internal/jobspec/user.go",
+      "reason": "staging: the image manager (build plan item 5) reads an image's passwd and group files for CheckUser; delete this entry there"
     }
   ]
 }
