@@ -94,8 +94,8 @@ func (f *fileConfig) hosts(refresh time.Duration, p *problems) []Host {
 	out := make([]Host, 0, len(f.Hosts))
 	for _, name := range slices.Sorted(maps.Keys(f.Hosts)) {
 		path := hostPath(name)
-		if !hostNameRe.MatchString(name) {
-			p.add(path, invalid(hostNameRule, name))
+		if err := CheckHostName(name); err != nil {
+			p.add(path, err)
 		}
 		fh := f.Hosts[name]
 		out = append(out, fh.parse(name, path, path+".capacity", refresh, p))

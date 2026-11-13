@@ -1,6 +1,7 @@
 package config
 
 import (
+	"slices"
 	"strings"
 	"testing"
 )
@@ -143,4 +144,28 @@ profiles:
 			t.Errorf("err = %v, want the pair once, got %d", err, n)
 		}
 	})
+}
+
+func TestBindSources(t *testing.T) {
+	t.Parallel()
+	cfg := &Config{Profiles: []Profile{
+		{Name: "p", Hosts: []string{"h"}, Mounts: []Mount{
+			{Source: "cache", Target: "/c"},
+			{Source: "/srv/a", Target: "/a", Bind: true, ReadOnly: true},
+			{Source: "/srv/b", Target: "/b", Bind: true},
+		}},
+		{Name: "q", Hosts: []string{"g"}, Mounts: []Mount{{Source: "/srv/q", Target: "/q", Bind: true}}},
+		{Name: "r", Hosts: []string{"g", "h"}, Mounts: []Mount{{Source: "/srv/r", Target: "/r", Bind: true}}},
+	}}
+	want := []BindSource{
+		{Profile: "p", Index: 1, Mount: Mount{Source: "/srv/a", Target: "/a", Bind: true, ReadOnly: true}},
+		{Profile: "p", Index: 2, Mount: Mount{Source: "/srv/b", Target: "/b", Bind: true}},
+		{Profile: "r", Index: 0, Mount: Mount{Source: "/srv/r", Target: "/r", Bind: true}},
+	}
+	if got := cfg.BindSources("h"); !slices.Equal(got, want) {
+		t.Errorf("BindSources(h) = %+v, want %+v", got, want)
+	}
+	if got := cfg.BindSources("none"); len(got) != 0 {
+		t.Errorf("BindSources(none) = %+v, want none", got)
+	}
 }

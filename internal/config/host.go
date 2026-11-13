@@ -5,6 +5,7 @@ import (
 	"net/netip"
 	"net/url"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -20,6 +21,21 @@ const DefaultHost = "default"
 var hostNameRe = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 
 const hostNameRule = "want a lowercase DNS label: letters, digits and dashes, at most 63, not starting or ending with a dash"
+
+// reservedHostNames name the TLS directories manade pki writes beside the
+// hosts' own, and "ca" also names the CA's file in every TLS_DIR.
+var reservedHostNames = []string{"ca", "orchestrator"}
+
+// CheckHostName refuses a name no hosts key may have.
+func CheckHostName(name string) error {
+	if !hostNameRe.MatchString(name) {
+		return invalid(hostNameRule, name)
+	}
+	if slices.Contains(reservedHostNames, name) {
+		return invalid("want a name other than ca and orchestrator, which name the pool's own TLS files", name)
+	}
+	return nil
+}
 
 // DefaultDNS are a host's resolvers when its section names none.
 var DefaultDNS = []netip.Addr{netip.MustParseAddr("1.1.1.1"), netip.MustParseAddr("8.8.8.8")}

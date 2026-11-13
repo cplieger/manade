@@ -267,12 +267,14 @@ func TestHostNames(t *testing.T) {
 		{"-nas", false},
 		{"nas-", false},
 		{"nas_2", false},
+		{"ca", false},
+		{"orchestrator", false},
 	}
 	for _, tt := range tests {
 		t.Run(strings.NewReplacer("/", "slash", ".", "dot").Replace(tt.name), func(t *testing.T) {
 			doc := withHosts("  \""+tt.name+"\": {capacity: {cpus: 1, memory: 1GiB}}\n", "default")
 			err := build(tokenEnv(), []byte(doc))
-			refused := err != nil && strings.Contains(err.Error(), "want a lowercase DNS label")
+			refused := err != nil && (strings.Contains(err.Error(), "want a lowercase DNS label") || strings.Contains(err.Error(), "want a name other than ca and orchestrator"))
 			if refused == tt.ok {
 				t.Errorf("host %q: err = %v, want accepted %v", tt.name, err, tt.ok)
 			}

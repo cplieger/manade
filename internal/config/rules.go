@@ -179,7 +179,7 @@ func (c *Config) checkProfile(pr *Profile, p *problems) {
 			continue
 		}
 		checkConfined(pr, h, at, p)
-		checkMounts(pr, h, c.protected(h), at, p)
+		checkMounts(pr, h, c.Protected(h), at, p)
 		if !h.Egress.Internet {
 			checkRegistry(pr, h, at, p)
 		}

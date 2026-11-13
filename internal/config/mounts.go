@@ -15,10 +15,10 @@ var fixedProtected = []string{
 	"/run/manade", "/tmp", "/proc", "/sys", "/dev",
 }
 
-// protected answers the paths in host h's container that no job on a host
+// Protected answers the paths in host h's container that no job on a host
 // that is not open may reach. TLS_DIR is the host's own only in its own
 // role, and the default elsewhere: the host checks its own at start.
-func (c *Config) protected(h *Host) []string {
+func (c *Config) Protected(h *Host) []string {
 	tls := hostTLSDir
 	if c.Self != nil && c.Self.Name == h.Name {
 		tls = c.Self.TLSDir
@@ -47,9 +47,6 @@ func checkMounts(pr *Profile, h *Host, protected []string, at func(string) strin
 	}
 }
 
-// nestSource is one bind source on a host and its error path.
-type nestSource struct{ path, at string }
-
 // checkNesting refuses, on each host that is not open, a bind source jobs
 // may write that is a strict ancestor of another source on that host, in one
 // profile or two: a job could rename or replace the directory another
@@ -62,39 +59,54 @@ func (c *Config) checkNesting(p *problems) {
 		if h.Egress.Open {
 			continue
 		}
-		all, writable := c.bindSources(h.Name)
-		for _, a := range writable {
-			for _, b := range all {
-				key := [2]string{a.at, b.at}
-				if a.path == b.path || reported[key] || !pathinside.Root(a.path).Contains(b.path) {
-					continue
-				}
-				reported[key] = true
-				p.addf(a.at, "%s is writable to jobs and an ancestor of %s, the source of %s, on host %s; mount it read-only, or mount the two apart",
-					quote(a.path), quote(b.path), b.at, quote(h.Name))
+		all := c.BindSources(h.Name)
+		for k := range all {
+			if !all[k].Mount.ReadOnly {
+				checkAncestor(&all[k], all, h.Name, reported, p)
 			}
 		}
 	}
 }
 
-// bindSources answers the bind sources of every profile host serves, and
-// those of them jobs may write.
-func (c *Config) bindSources(host string) (all, writable []nestSource) {
+// checkAncestor reports writable source a once per source of all it is a
+// strict ancestor of.
+func checkAncestor(a *BindSource, all []BindSource, host string, reported map[[2]string]bool, p *problems) {
+	for _, b := range all {
+		key := [2]string{a.at(), b.at()}
+		if a.Mount.Source == b.Mount.Source || reported[key] || !pathinside.Root(a.Mount.Source).Contains(b.Mount.Source) {
+			continue
+		}
+		reported[key] = true
+		p.addf(a.at(), "%s is writable to jobs and an ancestor of %s, the source of %s, on host %s; mount it read-only, or mount the two apart",
+			quote(a.Mount.Source), quote(b.Mount.Source), b.at(), quote(host))
+	}
+}
+
+// BindSource is bind mount Index of profile Profile.
+type BindSource struct {
+	Profile string
+	Mount   Mount
+	Index   int
+}
+
+func (b *BindSource) at() string {
+	return profilePath(b.Profile) + ".mounts[" + strconv.Itoa(b.Index) + "].bind"
+}
+
+// BindSources answers the bind mounts of every profile host serves, in the
+// config's profile and mount order.
+func (c *Config) BindSources(host string) []BindSource {
+	var out []BindSource
 	for i := range c.Profiles {
 		pr := &c.Profiles[i]
 		if !slices.Contains(pr.Hosts, host) {
 			continue
 		}
 		for k, m := range pr.Mounts {
-			if !m.Bind || m.Source == "" {
-				continue
-			}
-			s := nestSource{m.Source, profilePath(pr.Name) + ".mounts[" + strconv.Itoa(k) + "].bind"}
-			all = append(all, s)
-			if !m.ReadOnly {
-				writable = append(writable, s)
+			if m.Bind && m.Source != "" {
+				out = append(out, BindSource{Profile: pr.Name, Mount: m, Index: k})
 			}
 		}
 	}
-	return all, writable
+	return out
 }
