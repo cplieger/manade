@@ -40,6 +40,12 @@ const (
 	// sits above it so the context, not the client, ends a slow call.
 	callTimeout = 60 * time.Second
 	httpTimeout = 90 * time.Second
+	// startCallTimeout bounds a container create or start, which a loaded
+	// daemon can hold past callTimeout: Docker took over 60 s to start a
+	// container at a machine load average of 60 to 72, and 44.6 s on a
+	// two-CPU host starting six at once. startHTTPTimeout sits above it.
+	startCallTimeout = 3 * time.Minute
+	startHTTPTimeout = startCallTimeout + 30*time.Second
 	// pullTimeout bounds a pull whose context has no deadline.
 	pullTimeout = 30 * time.Minute
 
@@ -53,8 +59,12 @@ const (
 )
 
 // headerTimeout is how long the API client waits for an answer's headers, a
-// test seam over callTimeout.
-var headerTimeout = callTimeout
+// test seam over callTimeout; startHeaderTimeout is the same seam over
+// startCallTimeout.
+var (
+	headerTimeout      = callTimeout
+	startHeaderTimeout = startCallTimeout
+)
 
 // Sentinels an APIError matches through errors.Is.
 var (
@@ -86,6 +96,18 @@ func ImageMissing(err error) bool {
 	return ok && e.Code == http.StatusNotFound && strings.Contains(strings.ToLower(e.Message), "no such image")
 }
 
+// Unanswered reports a create or start call that ended with no answer from
+// the daemon, as when it timed out: the daemon may still be doing the work,
+// so the container's state is read before anything is cleaned up. An
+// answered refusal, a create's warnings included, is not one.
+func Unanswered(err error) bool {
+	if err == nil || errors.Is(err, errCreateWarnings) {
+		return false
+	}
+	_, answered := errors.AsType[*APIError](err)
+	return !answered
+}
+
 // Is matches errNotFound for a 404 and ErrConflict for a 409.
 func (e *APIError) Is(target error) bool {
 	return (target == errNotFound && e.Code == http.StatusNotFound) ||
@@ -99,6 +121,8 @@ func (e *APIError) Unwrap() error { return e.status }
 // concurrent use.
 type Client struct {
 	api *http.Client
+	// starts is api with startCallTimeout's waits, for a create or start.
+	starts *http.Client
 	// stream has no client or header timeout, for the pull and event streams
 	// that the caller's context bounds: a pull's status line arrives only with
 	// its first progress line, after the registry answers.
@@ -123,10 +147,13 @@ func Dial(ctx context.Context, socket, pool string) (*Client, error) {
 		IdleConnTimeout:       90 * time.Second,
 		ResponseHeaderTimeout: headerTimeout,
 	}
+	slow := tr.Clone()
+	slow.ResponseHeaderTimeout = startHeaderTimeout
 	str := tr.Clone()
 	str.ResponseHeaderTimeout = 0
 	c := &Client{
 		api:    &http.Client{Transport: tr, Timeout: httpTimeout, CheckRedirect: httpclient.RefuseAllRedirects},
+		starts: &http.Client{Transport: slow, Timeout: startHTTPTimeout, CheckRedirect: httpclient.RefuseAllRedirects},
 		stream: &http.Client{Transport: str, CheckRedirect: httpclient.RefuseAllRedirects},
 		now:    time.Now,
 		socket: socket,
@@ -208,9 +235,19 @@ func apiError(op string, resp *http.Response, status error) *APIError {
 // call sends a bounded JSON call and decodes its answer into out, when out is
 // not nil.
 func (c *Client) call(ctx context.Context, op, method, path string, query url.Values, in, out any, limit int64) error {
-	ctx, cancel := httpclient.ContextWithDefaultTimeout(ctx, callTimeout)
+	return c.callOn(ctx, c.api, callTimeout, op, method, path, query, in, out, limit)
+}
+
+// callStart is call with startCallTimeout's waits, for a create or start.
+func (c *Client) callStart(ctx context.Context, op, method, path string, query url.Values, in, out any, limit int64) error {
+	return c.callOn(ctx, c.starts, startCallTimeout, op, method, path, query, in, out, limit)
+}
+
+// callOn is call on hc, bounded by timeout when ctx has no deadline.
+func (c *Client) callOn(ctx context.Context, hc *http.Client, timeout time.Duration, op, method, path string, query url.Values, in, out any, limit int64) error {
+	ctx, cancel := httpclient.ContextWithDefaultTimeout(ctx, timeout)
 	defer cancel()
-	body, err := c.request(ctx, c.api, op, method, path, query, in)
+	body, err := c.request(ctx, hc, op, method, path, query, in)
 	if err != nil {
 		return err
 	}

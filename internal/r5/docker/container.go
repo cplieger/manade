@@ -92,7 +92,7 @@ func (c *Client) CreateContainer(ctx context.Context, name string, req *CreateRe
 		ID       string `json:"Id"`
 		Warnings []string
 	}
-	if err := c.call(ctx, "create", http.MethodPost, "/containers/create", url.Values{"name": {name}}, &body, &out, jsonLimit); err != nil {
+	if err := c.callStart(ctx, "create", http.MethodPost, "/containers/create", url.Values{"name": {name}}, &body, &out, jsonLimit); err != nil {
 		return "", err
 	}
 	warnings := slices.DeleteFunc(out.Warnings, func(w string) bool { return strings.TrimSpace(w) == "" })
@@ -109,7 +109,7 @@ func (c *Client) CreateContainer(ctx context.Context, name string, req *CreateRe
 
 // StartContainer starts a container this client created.
 func (c *Client) StartContainer(ctx context.Context, id string) error {
-	return c.call(ctx, "start", http.MethodPost, "/containers/"+id+"/start", nil, nil, nil, 0)
+	return c.callStart(ctx, "start", http.MethodPost, "/containers/"+id+"/start", nil, nil, nil, 0)
 }
 
 // Summary is one entry of ListContainers.
@@ -167,7 +167,8 @@ func (c *Container) DiskBytes() (int64, error) {
 	return n, nil
 }
 
-// InspectContainer reads a container by ID; found is false when it is gone.
+// InspectContainer reads a container by ID or name; found is false when it
+// is gone.
 func (c *Client) InspectContainer(ctx context.Context, id string) (ctr Container, found bool, err error) {
 	err = c.call(ctx, "inspect", http.MethodGet, "/containers/"+id+"/json", nil, nil, &ctr, jsonLimit)
 	if errors.Is(err, errNotFound) {

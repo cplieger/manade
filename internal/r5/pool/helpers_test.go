@@ -221,7 +221,14 @@ type fakeBox struct {
 // registry holds for it. It records what it is asked.
 type fakeDocker struct {
 	createErr, startErr, listErr, inspectErr error
-	pullErr, imageInspectErr                 error
+	// createLate and startLate are a create and a start the daemon carries
+	// out but never answers, as with a call cut by its timeout.
+	createLate, startLate error
+	// startHook runs at each StartContainer before it acts, unlocked.
+	startHook func(id string)
+	// inspectHook runs at each InspectContainer of a box, under d.mu.
+	inspectHook              func(b *fakeBox)
+	pullErr, imageInspectErr error
 	// diskErr refuses a create that sets a size limit.
 	networkErr, diskErr  error
 	pullGate             chan struct{}
@@ -353,6 +360,9 @@ func (d *fakeDocker) CreateContainer(_ context.Context, name string, req *docker
 	b.ctr.Config.Labels[docker.LabelCreated] = d.now().UTC().Format(time.RFC3339)
 	b.ctr.HostConfig.NanoCPUs, b.ctr.HostConfig.Memory = req.HostConfig.NanoCPUs, req.HostConfig.Memory
 	d.add(b)
+	if d.createLate != nil {
+		return "", d.createLate
+	}
 	return b.ctr.ID, nil
 }
 
@@ -365,6 +375,9 @@ func (d *fakeDocker) add(b *fakeBox) {
 }
 
 func (d *fakeDocker) StartContainer(_ context.Context, id string) error {
+	if d.startHook != nil {
+		d.startHook(id)
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.startErr != nil {
@@ -372,9 +385,14 @@ func (d *fakeDocker) StartContainer(_ context.Context, id string) error {
 	}
 	d.started = append(d.started, id)
 	if b := d.boxes[id]; b != nil {
-		b.state = "running"
+		b.run(d.now())
 	}
-	return nil
+	return d.startLate
+}
+
+// run puts b in the running state, started at.
+func (b *fakeBox) run(at time.Time) {
+	b.state, b.ctr.State.StartedAt = "running", at
 }
 
 func (d *fakeDocker) RemoveOwned(_ context.Context, id string) error {
@@ -413,8 +431,14 @@ func (d *fakeDocker) InspectContainer(_ context.Context, id string) (docker.Cont
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	b := d.boxes[id]
+	if b == nil {
+		b = d.boxes["c-"+id]
+	}
 	if d.inspectErr != nil || b == nil {
 		return docker.Container{}, false, d.inspectErr
+	}
+	if d.inspectHook != nil {
+		d.inspectHook(b)
 	}
 	return b.ctr, true, nil
 }
@@ -514,6 +538,7 @@ func newUnbooted(tb testing.TB, cfg *config.Config) *fixture {
 	fx.dk.now = func() time.Time { return fx.at }
 	fx.p = New(cfg, &Deps{GitHub: fx.gh, REST: fx.gh, Sweep: fakeSweep{}, Docker: fx.dk, Host: jobspec.NewHost(cfg, 0), Metrics: m, Log: log})
 	fx.p.now = func() time.Time { return fx.at }
+	fx.p.settle, fx.p.settleEvery = 50*time.Millisecond, time.Millisecond
 	return fx
 }
 

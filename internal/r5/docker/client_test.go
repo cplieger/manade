@@ -1,9 +1,11 @@
 package docker
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -53,6 +55,43 @@ func TestDial(t *testing.T) {
 		}
 		if _, err := c.Info(t.Context()); err == nil {
 			t.Error("Info with headers after the header wait succeeded, want it cut")
+		}
+	})
+	// A loaded daemon answers a create or start late, so only those wait
+	// past the API header bound, up to their own.
+	t.Run("waitsLongerForACreateOrStart", func(t *testing.T) {
+		prevAPI, prevStart := headerTimeout, startHeaderTimeout
+		headerTimeout, startHeaderTimeout = 50*time.Millisecond, 400*time.Millisecond
+		t.Cleanup(func() { headerTimeout, startHeaderTimeout = prevAPI, prevStart })
+		d := newDaemon(t, "1.43")
+		var delay atomic.Int64
+		delay.Store(int64(200 * time.Millisecond))
+		d.handle("POST /containers/create", func(w http.ResponseWriter, _ *http.Request) {
+			time.Sleep(time.Duration(delay.Load()))
+			writeJSON(w, http.StatusCreated, map[string]any{"Id": "c-late"})
+		})
+		d.handle("POST /containers/{id}/start", func(w http.ResponseWriter, _ *http.Request) {
+			time.Sleep(time.Duration(delay.Load()))
+			w.WriteHeader(http.StatusNoContent)
+		})
+		d.handle("GET /containers/{id}/json", func(w http.ResponseWriter, _ *http.Request) {
+			time.Sleep(time.Duration(delay.Load()))
+			writeJSON(w, http.StatusOK, map[string]any{"Id": "c-late"})
+		})
+		c := d.dial(t)
+		if id, err := c.CreateContainer(t.Context(), "late", &CreateRequest{Image: "x"}); err != nil || id != "c-late" {
+			t.Errorf("CreateContainer answered after the API header wait = %q, %v; want c-late", id, err)
+		}
+		if err := c.StartContainer(t.Context(), "c-late"); err != nil {
+			t.Errorf("StartContainer answered after the API header wait = %v, want success", err)
+		}
+		if _, _, err := c.InspectContainer(t.Context(), "c-late"); err == nil {
+			t.Error("InspectContainer answered after the API header wait succeeded, want it cut")
+		}
+		delay.Store(int64(600 * time.Millisecond))
+		err := c.StartContainer(t.Context(), "c-late")
+		if err == nil || !Unanswered(err) {
+			t.Errorf("StartContainer answered after its own header wait = %v, want an unanswered error", err)
 		}
 	})
 	t.Run("acceptsTheFloor", func(t *testing.T) {
@@ -125,6 +164,40 @@ func TestAPIError(t *testing.T) {
 			t.Errorf("err = %v, want the status text", err)
 		}
 	})
+}
+
+func TestUnanswered(t *testing.T) {
+	d := newDaemon(t, "1.51")
+	d.handle("POST /containers/create", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("name") == "warned" {
+			writeJSON(w, http.StatusCreated, map[string]any{"Id": "c-warned", "Warnings": []string{"PIDs limit discarded."}})
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "refused")
+	})
+	d.handle("DELETE /containers/{id}", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
+	c := d.dial(t)
+	_, refused := c.CreateContainer(t.Context(), "refused", &CreateRequest{Image: "x"})
+	_, warned := c.CreateContainer(t.Context(), "warned", &CreateRequest{Image: "x"})
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	cut := c.StartContainer(ctx, "c1")
+	for _, tc := range []struct {
+		err  error
+		name string
+		want bool
+	}{
+		{name: "none", err: nil, want: false},
+		{name: "answeredRefusal", err: refused, want: false},
+		{name: "createWarnings", err: warned, want: false},
+		{name: "cutCall", err: cut, want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := Unanswered(tc.err); got != tc.want {
+				t.Errorf("Unanswered(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
+	}
 }
 
 func TestCallCapsTheBody(t *testing.T) {

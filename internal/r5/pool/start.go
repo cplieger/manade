@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"strconv"
 	"sync"
 	"time"
 
@@ -13,8 +14,14 @@ import (
 )
 
 const (
-	// startTimeout bounds one start: its JIT config, create and start.
-	startTimeout = 2 * time.Minute
+	// startTimeout bounds one start: its JIT config, then a create and a
+	// start the Docker client bounds at 3 minutes each.
+	startTimeout = 7 * time.Minute
+	// startSettle is how long a start whose create or start call went
+	// unanswered waits for the daemon to finish it, read every
+	// settlePoll. A container not started by then is removed as failed.
+	startSettle = 2 * time.Minute
+	settlePoll  = 5 * time.Second
 	// cleanupTimeout bounds the removals after a failed start, which run
 	// past shutdown so no registration or container is left behind.
 	cleanupTimeout = 30 * time.Second
@@ -110,7 +117,9 @@ func randHex() string {
 
 // start registers r, then creates and starts its container from the
 // checked image ID. A failure after the registration removes it, and one
-// after the create removes the container.
+// after the create removes the container. A create or start call the
+// daemon left unanswered is no failure yet: the daemon may still be doing
+// it, so the container is read until it shows (settle).
 func (p *Pool) start(parent context.Context, r *runner) {
 	ctx, cancel := context.WithTimeout(parent, startTimeout)
 	defer cancel()
@@ -124,7 +133,10 @@ func (p *Pool) start(parent context.Context, r *runner) {
 		Scope: s.ss.Scope, Name: r.name, ImageID: r.image, JITConfig: jit.Config, ID: jit.RunnerID,
 	})
 	id, err := p.dk.CreateContainer(ctx, r.name, req)
-	if err != nil {
+	if docker.Unanswered(err) {
+		id = p.lateCreate(parent, r.name, jit.RunnerID)
+	}
+	if id == "" {
 		p.dockerFailed(parent, obs.DockerCreate)
 		p.unregister(ctx, s.ss.Scope, jit.RunnerID, r.name)
 		if docker.ImageMissing(err) {
@@ -135,10 +147,26 @@ func (p *Pool) start(parent context.Context, r *runner) {
 	}
 	if err := p.dk.StartContainer(ctx, id); err != nil {
 		p.dockerFailed(parent, obs.DockerStart)
-		p.removeContainer(ctx, r, id)
-		p.unregister(ctx, s.ss.Scope, jit.RunnerID, r.name)
-		p.startFailed(parent, r, "Starting a runner's container failed", err)
-		return
+		st := settledStopped
+		if docker.Unanswered(err) {
+			st = p.settleStart(parent, id)
+		}
+		switch st {
+		case settledRunning:
+			p.log.Info("A runner's container start went unanswered but the container started", "scope", s.ss.Scope, "profile", s.ss.Profile, "runner", r.name, "error", err)
+		case settledGone:
+			p.unregister(ctx, s.ss.Scope, jit.RunnerID, r.name)
+			p.startFailed(parent, r, "Starting a runner's container failed and the container is gone", err)
+			return
+		case settledUnread:
+			p.startFailed(parent, r, "Starting a runner's container went unanswered and its state could not be read, so the start is retried and the pass settles the container", err)
+			return
+		default:
+			p.removeContainer(ctx, r, id)
+			p.unregister(ctx, s.ss.Scope, jit.RunnerID, r.name)
+			p.startFailed(parent, r, "Starting a runner's container failed", err)
+			return
+		}
 	}
 	p.mu.Lock()
 	r.container, r.id = id, jit.RunnerID
@@ -149,6 +177,91 @@ func (p *Pool) start(parent context.Context, r *runner) {
 	p.mu.Unlock()
 	p.m.RunnerStarted(s.ss.ScaleSet, true)
 	p.log.Info("Runner started", "scope", s.ss.Scope, "profile", s.ss.Profile, "runner", r.name, "image", r.image)
+}
+
+// settled is what a container read after an unanswered call shows.
+type settled int
+
+const (
+	// settledStopped is a container that never started, or no container
+	// yet after a create.
+	settledStopped settled = iota
+	// settledRunning is a container that started; it may have exited since.
+	settledRunning
+	// settledGone is a container the daemon no longer has.
+	settledGone
+	// settledUnread is a container whose state no read answered, or a
+	// wait shutdown cut short. The container and its registration are left
+	// to the reconcile pass, which adopts or removes it.
+	settledUnread
+)
+
+// settleStart reads container id until it shows it started or is gone, for
+// at most p.settle. One still not started then is stopped: its start is
+// taken as hung.
+func (p *Pool) settleStart(parent context.Context, id string) settled {
+	return p.poll(parent, func(ctx context.Context) (settled, bool) {
+		ctr, found, err := p.dk.InspectContainer(ctx, id)
+		switch {
+		case err != nil:
+			return settledUnread, false
+		case !found:
+			return settledGone, true
+		case !ctr.State.StartedAt.IsZero():
+			return settledRunning, true
+		}
+		return settledStopped, false
+	})
+}
+
+// lateCreate reads the container a create left unanswered by its name, name,
+// for at most p.settle, and answers its ID once it shows carrying runner
+// registration runnerID, "" when it never does. A container the daemon
+// creates after that is an orphan whose registration is removed, which the
+// reconcile pass removes too.
+func (p *Pool) lateCreate(parent context.Context, name string, runnerID int64) string {
+	var id string
+	p.poll(parent, func(ctx context.Context) (settled, bool) {
+		ctr, found, err := p.dk.InspectContainer(ctx, name)
+		switch {
+		case err != nil:
+			return settledUnread, false
+		case !found:
+			return settledStopped, false
+		case ctr.Config.Labels[docker.LabelRunner] == name &&
+			ctr.Config.Labels[docker.LabelManaged] == "true" &&
+			ctr.Config.Labels[docker.LabelRunnerID] == strconv.FormatInt(runnerID, 10):
+			id = ctr.ID
+		}
+		return settledStopped, true
+	})
+	return id
+}
+
+// poll runs read every p.settleEvery until it reports done or p.settle
+// passes, and answers its last result; settledUnread when parent ends.
+func (p *Pool) poll(parent context.Context, read func(context.Context) (settled, bool)) settled {
+	ctx, cancel := context.WithTimeout(parent, p.settle)
+	defer cancel()
+	t := time.NewTicker(p.settleEvery)
+	defer t.Stop()
+	for {
+		st, done := read(ctx)
+		if done {
+			return st
+		}
+		if parent.Err() != nil {
+			return settledUnread
+		}
+		select {
+		case <-ctx.Done():
+			if parent.Err() != nil {
+				return settledUnread
+			}
+			return st
+		case <-t.C:
+		}
+	}
 }
 
 // startFailed drops r after a failed start. A start shutdown cut short

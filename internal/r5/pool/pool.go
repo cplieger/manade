@@ -121,7 +121,10 @@ type Pool struct {
 	old    []string
 	caps   []int
 	budget res
-	mu     sync.Mutex
+	// settle is how long a start whose create or start call went
+	// unanswered waits for the daemon, read every settleEvery.
+	settle, settleEvery time.Duration
+	mu                  sync.Mutex
 	// passMu runs one reconciler pass at a time.
 	passMu sync.Mutex
 	// booting holds health at starting until boot has added every scale set.
@@ -133,7 +136,7 @@ type Pool struct {
 func New(cfg *config.Config, d *Deps) *Pool {
 	p := &Pool{
 		gh: d.GitHub, rest: d.REST, sweep: d.Sweep, dk: d.Docker, host: d.Host, m: d.Metrics, log: cmp.Or(d.Log, slog.Default()), diag: d.Diag,
-		cfg: cfg, now: time.Now, booting: true, kick: make(chan struct{}, 1), verify: make(chan struct{}, 1), died: make(chan struct{}, 1),
+		cfg: cfg, now: time.Now, settle: startSettle, settleEvery: settlePoll, booting: true, kick: make(chan struct{}, 1), verify: make(chan struct{}, 1), died: make(chan struct{}, 1),
 		pull: make(chan struct{}, 1), probes: map[string]bool{}, strays: map[string]*stray{}, byName: map[string]int{}, caps: make([]int, len(cfg.Profiles)),
 		images: make([]string, len(cfg.Profiles)), scopes: map[string]*scope{},
 		budget: res{cfg.Capacity.MilliCPUs, cfg.Capacity.Memory, unbounded, unbounded},
