@@ -2,7 +2,7 @@
 FROM ghcr.io/cplieger/manade-runner:build-dev
 USER root
 # renovate: datasource=node-version depName=node versioning=node
-ARG NODE_VERSION=26.13.0
+ARG NODE_VERSION=26.13.1
 # renovate: datasource=npm depName=playwright
 ARG PLAYWRIGHT_VERSION=1.65.0
 ARG PKG_REFRESH=static
