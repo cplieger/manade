@@ -135,19 +135,40 @@ func parseHostPath(raw string) (string, error) {
 	return raw, nil
 }
 
-// privateBlocks are RFC 1918's private IPv4 blocks.
-var privateBlocks = [...]netip.Prefix{
-	netip.MustParsePrefix("10.0.0.0/8"), netip.MustParsePrefix("172.16.0.0/12"), netip.MustParsePrefix("192.168.0.0/16"),
+// PrivateRanges are the IPv4 destinations a job reaches only through an
+// allow entry: RFC 1918, shared address space and link-local, which hold
+// every machine's Docker bridges and the cloud metadata address.
+var PrivateRanges = []netip.Prefix{
+	netip.MustParsePrefix("10.0.0.0/8"), netip.MustParsePrefix("100.64.0.0/10"),
+	netip.MustParsePrefix("169.254.0.0/16"), netip.MustParsePrefix("172.16.0.0/12"),
+	netip.MustParsePrefix("192.168.0.0/16"),
+}
+
+// within reports whether p lies wholly inside one of blocks.
+func within(p netip.Prefix, blocks []netip.Prefix) bool {
+	return slices.ContainsFunc(blocks, func(b netip.Prefix) bool { return b.Bits() <= p.Bits() && b.Contains(p.Addr()) })
 }
 
 // parseSubnet accepts a masked IPv4 prefix of /28 or wider that lies wholly
-// inside one private block. Any public address in it would route real
+// inside one private range. Any public address in it would route real
 // destinations into the job bridge.
 func parseSubnet(raw string) (netip.Prefix, error) {
 	p, err := netip.ParsePrefix(raw)
-	inside := func(b netip.Prefix) bool { return b.Bits() <= p.Bits() && b.Contains(p.Addr()) }
-	if err != nil || p != p.Masked() || p.Bits() > 28 || !slices.ContainsFunc(privateBlocks[:], inside) {
+	if err != nil || !p.Addr().Is4() || p != p.Masked() || p.Bits() < 8 || p.Bits() > 28 || !within(p, PrivateRanges) {
 		return netip.Prefix{}, invalid("want a private IPv4 subnet from /8 to /28, such as 172.30.0.0/24", raw)
+	}
+	return p, nil
+}
+
+// parsePrefix accepts an address, read as its own /32 or /128, or a masked
+// prefix.
+func parsePrefix(raw string) (netip.Prefix, error) {
+	if a, err := netip.ParseAddr(raw); err == nil && a.Zone() == "" {
+		return netip.PrefixFrom(a, a.BitLen()), nil
+	}
+	p, err := netip.ParsePrefix(raw)
+	if err != nil || p != p.Masked() {
+		return netip.Prefix{}, invalid("want an IP address or a prefix such as 10.0.0.0/24", raw)
 	}
 	return p, nil
 }

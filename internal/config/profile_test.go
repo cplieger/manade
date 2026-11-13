@@ -22,8 +22,8 @@ func TestProfileDefaults(t *testing.T) {
 	if p.MaxLifetime != 2*time.Hour || p.IdleTimeout != 10*time.Minute {
 		t.Errorf("lifetime %v, idle %v", p.MaxLifetime, p.IdleTimeout)
 	}
-	if p.Network != "isolated" || p.Docker != "none" || p.Runtime != "runc" {
-		t.Errorf("network %q, docker %q, runtime %q", p.Network, p.Docker, p.Runtime)
+	if p.Docker != "none" || p.Runtime != "runc" {
+		t.Errorf("docker %q, runtime %q", p.Docker, p.Runtime)
 	}
 	if g := p.Grants(); g != nil || p.Scopes != nil || !p.Allowed("acme/web") {
 		t.Errorf("grants %q, scopes %q: want none and every scope", g, p.Scopes)
@@ -66,7 +66,7 @@ func TestProfileValidForms(t *testing.T) {
 
 func TestProfileEmptyScopesServeNothing(t *testing.T) {
 	t.Parallel()
-	p := profile(t, mustBuild(t, tokenEnv(), withProfile("privileged: true, scopes: []")), "p")
+	p := profile(t, mustBuild(t, tokenEnv(), withOpenProfile("privileged: true, scopes: []")), "p")
 	if p.Scopes == nil || p.Allowed("acme/app") || p.Allowed("acme") {
 		t.Errorf("scopes = %#v: want an empty list that allows no scope", p.Scopes)
 	}
@@ -83,6 +83,7 @@ func TestProfileImageFields(t *testing.T) {
 		{"onlyRunnerImage", "runner_image: build", "build", ""},
 		{"neither", "", "base", ""},
 		{"registryPort", "image: registry.local:5000/team/runner", "", "registry.local:5000/team/runner"},
+		{"ipv6Registry", `image: "[fd00::5]:5000/team/runner"`, "", "[fd00::5]:5000/team/runner"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -108,11 +109,9 @@ func TestProfileInvalidForms(t *testing.T) {
 		{"cpusZero", "cpus: 0", "profiles.p.cpus: want more than 0 CPUs"},
 		{"cpusWord", "cpus: two", "profiles.p.cpus: want a CPU count"},
 		{"cpusFourDecimals", "cpus: 0.0005", "profiles.p.cpus"},
-		{"cpusTooLarge", "cpus: 17", "profiles.p.cpus: never fits capacity.cpus"},
 		{"memoryBare", "memory: 4096", "profiles.p.memory: want a whole number with a unit"},
 		{"memoryDockerUnit", "memory: 4g", "profiles.p.memory"},
 		{"memoryTiny", "memory: 1MiB", "profiles.p.memory: want at least 6MiB"},
-		{"memoryTooLarge", "memory: 65GiB", "profiles.p.memory: never fits capacity.memory"},
 		{"memoryOverflow", "memory: 999999999999999TiB", "profiles.p.memory: size is too large"},
 		{"swapNegative", "swap: -1GiB", "profiles.p.swap"},
 		{"pidsZero", "pids: 0", "profiles.p.pids: want a whole number from 1 to 4194304"},
@@ -129,12 +128,14 @@ func TestProfileInvalidForms(t *testing.T) {
 		{"runnerImageUnknown", "runner_image: ubuntu", "profiles.p.runner_image: want one of base, build, browser, docker"},
 		{"imageUppercase", "image: Alpine", "profiles.p.image: want an image reference"},
 		{"imageShortDigest", "image: alpine@sha256:abc", "profiles.p.image"},
+		{"imageIPv6Unbracketed", `image: "fd00::5:5000/runner"`, "profiles.p.image: want an image reference"},
+		{"imageIPv6Unclosed", `image: "[fd00::5:5000/runner"`, "profiles.p.image: want an image reference"},
+		{"imageIPv6PortOutOfRange", `image: "[fd00::5]:70000/runner"`, "profiles.p.image: want a registry port from 1 to 65535"},
 		{"commandEmpty", "command: []", "profiles.p.command: want the runner's path"},
 		{"commandRelative", "command: [run.sh]", "profiles.p.command[0]: want an absolute, clean path"},
 		{"commandDotDot", "command: [/home/runner/../run.sh]", "profiles.p.command[0]"},
-		{"networkUnknown", "network: none", "profiles.p.network: want one of isolated, bridge, host"},
 		{"dockerUnknown", "docker: socket", "profiles.p.docker: want one of none, host-socket"},
-		{"runtimeUnknown", "runtime: kata", "profiles.p.runtime: want one of runc, runsc, sysbox-runc"},
+		{"runtimeUnknown", "runtime: kata", "profiles.p.runtime: want one of runc"},
 		{"privilegedYes", "privileged: yes", "profiles.p.privileged: want true or false"},
 		{"allowRootTitle", "allow_root: True", "profiles.p.allow_root: want true or false"},
 		{"capUnknown", "capabilities: [NET_ADMIN, CAP_SYS_ADMIN], scopes: [acme/app]", "profiles.p.capabilities[1]: want a Linux capability name"},
@@ -165,21 +166,22 @@ func TestProfileInvalidForms(t *testing.T) {
 
 func TestProfileElevatedNeedsScopes(t *testing.T) {
 	t.Parallel()
-	for _, tc := range []struct{ grant, body string }{
-		{"allow_privilege_escalation", "allow_privilege_escalation: true, privileged: true"},
-		{"capabilities", "capabilities: [NET_ADMIN]"},
-		{"allow_root", "allow_root: true"},
-		{"network", "network: bridge"},
-		{"docker", "docker: host-socket"},
-		{"runtime", "runtime: runsc"},
-		{"privileged", "privileged: true"},
-		{"mounts", "mounts: [{volume: cache, target: /cache}]"},
+	for _, tc := range []struct {
+		grant, body string
+		doc         func(string) string
+	}{
+		{"allow_privilege_escalation", "allow_privilege_escalation: true, privileged: true", withOpenProfile},
+		{"capabilities", "capabilities: [NET_ADMIN]", withProfile},
+		{"allow_root", "allow_root: true", withProfile},
+		{"docker", "docker: host-socket", withOpenProfile},
+		{"privileged", "privileged: true", withOpenProfile},
+		{"mounts", "mounts: [{volume: cache, target: /cache}]", withProfile},
 	} {
 		t.Run(tc.grant, func(t *testing.T) {
 			t.Parallel()
-			err := build(tokenEnv(), []byte(withProfile(tc.body)))
+			err := build(tokenEnv(), []byte(tc.doc(tc.body)))
 			wantErr(t, err, "profiles.p.scopes: an elevated profile must list its scopes", tc.grant)
-			p := profile(t, mustBuild(t, tokenEnv(), withProfile(tc.body+", scopes: [acme/app]")), "p")
+			p := profile(t, mustBuild(t, tokenEnv(), tc.doc(tc.body+", scopes: [acme/app]")), "p")
 			if !slices.Contains(p.Grants(), tc.grant) {
 				t.Errorf("grants = %q, want %s", p.Grants(), tc.grant)
 			}
@@ -198,7 +200,7 @@ func TestProfilePrivilegeEscalation(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			err := build(tokenEnv(), []byte(withProfile(tc.body+", scopes: [acme/app]")))
+			err := build(tokenEnv(), []byte(withOpenProfile(tc.body+", scopes: [acme/app]")))
 			if tc.want == "" {
 				if err != nil {
 					t.Fatalf("err = %v", err)
@@ -216,24 +218,19 @@ func TestProfilePrivilegeEscalation(t *testing.T) {
 
 func TestProfileShippedDockerImage(t *testing.T) {
 	t.Parallel()
-	const sysbox = "runner_image: docker, allow_privilege_escalation: true, runtime: sysbox-runc, capabilities: docker-default, scopes: [acme/app]"
-	p := profile(t, mustBuild(t, tokenEnv(), withProfile(sysbox)), "p")
+	const privileged = "runner_image: docker, allow_privilege_escalation: true, privileged: true, scopes: [acme/app]"
+	p := profile(t, mustBuild(t, tokenEnv(), withOpenProfile(privileged)), "p")
 	if !slices.Equal(p.Command, []string{"/usr/local/bin/manade-dockerd-run"}) {
 		t.Errorf("command = %q, want the wrapper", p.Command)
 	}
-	if !p.RootHoldsAllCapabilities() {
-		t.Error("a Sysbox profile with escalation does not report root's full capabilities")
-	}
-	mustBuild(t, tokenEnv(), withProfile("runner_image: docker, allow_privilege_escalation: true, privileged: true, scopes: [acme/app]"))
 	for _, tc := range []struct{ name, body, want string }{
 		{"noEscalation", "runner_image: docker, privileged: true", "profiles.p.allow_privilege_escalation: runner_image: docker needs"},
-		{"runcOnly", "runner_image: docker, allow_privilege_escalation: true, capabilities: docker-default", "profiles.p.runtime: runner_image: docker needs runtime: sysbox-runc"},
-		{"sysboxWithoutDefaults", "runner_image: docker, allow_privilege_escalation: true, runtime: sysbox-runc, capabilities: [SETUID, SETGID]", "profiles.p.runtime"},
+		{"unprivileged", "runner_image: docker, allow_privilege_escalation: true, capabilities: docker-default", "profiles.p.privileged: runner_image: docker needs privileged: true"},
 		{"hostSocket", "runner_image: docker, allow_privilege_escalation: true, privileged: true, docker: host-socket", "profiles.p.docker: runner_image: docker cannot use host-socket"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			err := build(tokenEnv(), []byte(withProfile(tc.body+", scopes: [acme/app]")))
+			err := build(tokenEnv(), []byte(withOpenProfile(tc.body+", scopes: [acme/app]")))
 			wantErr(t, err, tc.want)
 		})
 	}

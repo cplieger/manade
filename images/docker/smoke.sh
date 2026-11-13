@@ -1,6 +1,6 @@
 #!/bin/bash
 # The docker image's smoke test, run by manade-dockerd-run in place of the
-# runner, from internal/jobspec's TestImages. $1 is the storage the inner
+# runner, from internal/r5/jobspec's TestImages. $1 is the storage the inner
 # daemon must use: copy, overlay or any.
 set -euo pipefail
 fail() {

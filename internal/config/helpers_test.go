@@ -12,12 +12,14 @@ import (
 	"github.com/cplieger/forgeapi/v2/creds"
 )
 
-const header = `capacity: {cpus: 16, memory: 64GiB}
-scopes:
+const scopes = `scopes:
   - repo: acme/app
   - repo: acme/web
   - org: acme
 `
+
+// header is a valid file without profiles: three scopes and one host.
+const header = scopes + "capacity: {cpus: 16, memory: 64GiB}\n"
 
 // testPEM is a throwaway App key generated per test binary, so no key is
 // ever committed.
@@ -33,9 +35,9 @@ var testPEM = sync.OnceValue(func() []byte {
 	return pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})
 })
 
-// tokenEnv is the environment's part of a Config under a PAT.
+// tokenEnv is the environment's part of an orchestrator's Config under a PAT.
 func tokenEnv() *Config {
-	return &Config{GitHub: GitHub{Token: newSecret("test-token")}, PoolName: "manade", DockerSocket: "/var/run/docker.sock"}
+	return &Config{Orchestrator: &Orchestrator{GitHub: GitHub{Token: newSecret("test-token")}, PoolName: "manade"}}
 }
 
 func appEnv(t *testing.T) *Config {
@@ -44,13 +46,25 @@ func appEnv(t *testing.T) *Config {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &Config{GitHub: GitHub{AppKey: key}, PoolName: "manade", DockerSocket: "/var/run/docker.sock"}
+	return &Config{Orchestrator: &Orchestrator{GitHub: GitHub{AppKey: key}, PoolName: "manade"}}
 }
 
 // withProfile builds header plus one profile "p" whose body is the flow
 // mapping's contents.
 func withProfile(body string) string {
 	return header + "profiles:\n  p: {" + body + "}\n"
+}
+
+// withOpenProfile is withProfile with the one host, default, open.
+func withOpenProfile(body string) string {
+	return scopes + "hosts:\n  default:\n    capacity: {cpus: 16, memory: 64GiB}\n    egress: {open: true}\n" +
+		"profiles:\n  p: {" + body + "}\n"
+}
+
+// withHosts builds scopes, the hosts block hosts (indented under hosts:)
+// and one plain profile "p" listing every host named in names.
+func withHosts(hosts, names string) string {
+	return scopes + "hosts:\n" + hosts + "profiles:\n  p: {hosts: [" + names + "], scopes: [acme/app]}\n"
 }
 
 func mustBuild(t *testing.T, cfg *Config, doc string) *Config {
@@ -76,11 +90,42 @@ func wantErr(t *testing.T, err error, subs ...string) {
 
 func profile(t *testing.T, cfg *Config, name string) *Profile {
 	t.Helper()
-	for i := range cfg.Profiles {
-		if cfg.Profiles[i].Name == name {
-			return &cfg.Profiles[i]
+	p, ok := cfg.Profile(name)
+	if !ok {
+		t.Fatalf("no profile %q", name)
+	}
+	return p
+}
+
+func host(t *testing.T, cfg *Config, name string) *Host {
+	t.Helper()
+	h, ok := cfg.Host(name)
+	if !ok {
+		t.Fatalf("no host %q", name)
+	}
+	return h
+}
+
+// wantLine asserts that a line of err names key and holds every substring:
+// quote bounds a long path, so a temporary directory's path is not matched.
+func wantLine(t *testing.T, err error, key string, subs ...string) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("err = nil, want a line for %s", key)
+	}
+	for line := range strings.Lines(err.Error()) {
+		if strings.HasPrefix(strings.TrimPrefix(line, "config: "), key+": ") && containsAll(line, subs) {
+			return
 		}
 	}
-	t.Fatalf("no profile %q", name)
-	return nil
+	t.Errorf("err = %q, want a line for %s holding %q", err, key, subs)
+}
+
+func containsAll(s string, subs []string) bool {
+	for _, sub := range subs {
+		if !strings.Contains(s, sub) {
+			return false
+		}
+	}
+	return true
 }

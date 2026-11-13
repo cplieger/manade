@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/cplieger/go/health"
-	"github.com/cplieger/manade/internal/pool"
+	"github.com/cplieger/manade/internal/r5/pool"
 )
 
 func TestHealthChecksNameEachLease(t *testing.T) {

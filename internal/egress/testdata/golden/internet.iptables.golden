@@ -1,0 +1,90 @@
+# ipset restore -exist
+create manade-probe4 hash:ip family inet maxelem 65536
+flush manade-probe4
+create manade-target4 hash:ip family inet maxelem 65536
+flush manade-target4
+# iptables-restore --noflush
+*filter
+:MANADE-FWD - [0:0]
+:MANADE-OUT - [0:0]
+:MANADE-IN - [0:0]
+:DOCKER-USER - [0:0]
+-A MANADE-FWD -i manade+ -o manade+ -m set --match-set manade-probe4 src -m set --match-set manade-target4 dst
+-A MANADE-FWD -i manade+ -o manade+ -j DROP
+-A MANADE-FWD -m conntrack --ctstate RELATED,ESTABLISHED -j RETURN
+-A MANADE-FWD -d 10.0.0.50/32 -i manade+ -p tcp -m tcp --dport 5432 -j RETURN
+-A MANADE-FWD -d 192.168.2.0/24 -i manade+ -p tcp -m tcp --dport 8000:8100 -j RETURN
+-A MANADE-FWD -d 192.168.2.0/24 -i manade+ -p tcp -m tcp --dport 9000 -j RETURN
+-A MANADE-FWD -d 192.168.2.0/24 -i manade+ -p udp -m udp --dport 8000:8100 -j RETURN
+-A MANADE-FWD -d 192.168.2.0/24 -i manade+ -p udp -m udp --dport 9000 -j RETURN
+-A MANADE-FWD -d 10.0.0.0/8 -i manade+ -m set --match-set manade-probe4 src -m set --match-set manade-target4 dst
+-A MANADE-FWD -d 100.64.0.0/10 -i manade+ -m set --match-set manade-probe4 src -m set --match-set manade-target4 dst
+-A MANADE-FWD -d 169.254.0.0/16 -i manade+ -m set --match-set manade-probe4 src -m set --match-set manade-target4 dst
+-A MANADE-FWD -d 172.16.0.0/12 -i manade+ -m set --match-set manade-probe4 src -m set --match-set manade-target4 dst
+-A MANADE-FWD -d 192.168.0.0/16 -i manade+ -m set --match-set manade-probe4 src -m set --match-set manade-target4 dst
+-A MANADE-FWD -d 10.0.0.0/8 -i manade+ -j DROP
+-A MANADE-FWD -d 100.64.0.0/10 -i manade+ -j DROP
+-A MANADE-FWD -d 169.254.0.0/16 -i manade+ -j DROP
+-A MANADE-FWD -d 172.16.0.0/12 -i manade+ -j DROP
+-A MANADE-FWD -d 192.168.0.0/16 -i manade+ -j DROP
+-A MANADE-FWD -o manade+ -m conntrack --ctstate NEW -m set --match-set manade-probe4 src -m set --match-set manade-target4 dst
+-A MANADE-FWD -o manade+ -m conntrack --ctstate NEW -j DROP
+-A MANADE-FWD -m set --match-set manade-probe4 src -m set --match-set manade-target4 dst
+-A MANADE-OUT -o lo -j RETURN
+-A MANADE-OUT -m conntrack --ctstate RELATED,ESTABLISHED -j RETURN
+-A MANADE-OUT -d 1.1.1.1/32 -p tcp -m tcp --dport 53 -j RETURN
+-A MANADE-OUT -d 1.1.1.1/32 -p udp -m udp --dport 53 -j RETURN
+-A MANADE-OUT -d 8.8.8.8/32 -p tcp -m tcp --dport 53 -j RETURN
+-A MANADE-OUT -d 8.8.8.8/32 -p udp -m udp --dport 53 -j RETURN
+-A MANADE-OUT -d 10.0.0.50/32 -p tcp -m tcp --dport 5432 -j RETURN
+-A MANADE-OUT -d 192.168.2.0/24 -p tcp -m tcp --dport 8000:8100 -j RETURN
+-A MANADE-OUT -d 192.168.2.0/24 -p tcp -m tcp --dport 9000 -j RETURN
+-A MANADE-OUT -d 192.168.2.0/24 -p udp -m udp --dport 8000:8100 -j RETURN
+-A MANADE-OUT -d 192.168.2.0/24 -p udp -m udp --dport 9000 -j RETURN
+-A MANADE-OUT -d 10.0.0.0/8 ! -o manade+ -m set --match-set manade-probe4 src -m set --match-set manade-target4 dst
+-A MANADE-OUT -d 100.64.0.0/10 ! -o manade+ -m set --match-set manade-probe4 src -m set --match-set manade-target4 dst
+-A MANADE-OUT -d 169.254.0.0/16 ! -o manade+ -m set --match-set manade-probe4 src -m set --match-set manade-target4 dst
+-A MANADE-OUT -d 172.16.0.0/12 ! -o manade+ -m set --match-set manade-probe4 src -m set --match-set manade-target4 dst
+-A MANADE-OUT -d 192.168.0.0/16 ! -o manade+ -m set --match-set manade-probe4 src -m set --match-set manade-target4 dst
+-A MANADE-OUT -d 10.0.0.0/8 ! -o manade+ -j DROP
+-A MANADE-OUT -d 100.64.0.0/10 ! -o manade+ -j DROP
+-A MANADE-OUT -d 169.254.0.0/16 ! -o manade+ -j DROP
+-A MANADE-OUT -d 172.16.0.0/12 ! -o manade+ -j DROP
+-A MANADE-OUT -d 192.168.0.0/16 ! -o manade+ -j DROP
+-A MANADE-OUT -m set --match-set manade-probe4 src -m set --match-set manade-target4 dst
+-A MANADE-IN -i lo -j RETURN
+-A MANADE-IN -m conntrack --ctstate RELATED,ESTABLISHED -j RETURN
+-A MANADE-IN -i manade+ -m set --match-set manade-probe4 src -m set --match-set manade-target4 dst
+-A MANADE-IN -i manade+ -j DROP
+-A MANADE-IN -m set --match-set manade-probe4 src -m set --match-set manade-target4 dst
+-A DOCKER-USER -j MANADE-FWD
+COMMIT
+# ip6tables-restore --noflush
+*filter
+:MANADE-FWD - [0:0]
+:MANADE-OUT - [0:0]
+:MANADE-IN - [0:0]
+-A MANADE-FWD -i manade+ -o manade+ -j DROP
+-A MANADE-FWD -j DROP
+-A MANADE-FWD -m conntrack --ctstate RELATED,ESTABLISHED -j RETURN
+-A MANADE-FWD -o manade+ -m conntrack --ctstate NEW -j DROP
+-A MANADE-OUT -o lo -j RETURN
+-A MANADE-OUT -m conntrack --ctstate RELATED,ESTABLISHED -j RETURN
+-A MANADE-OUT -j DROP
+-A MANADE-IN -i lo -j RETURN
+-A MANADE-IN -m conntrack --ctstate RELATED,ESTABLISHED -j RETURN
+-A MANADE-IN -i manade+ -j DROP
+COMMIT
+# jumps
+filter FORWARD -j DOCKER-USER
+filter OUTPUT -j MANADE-OUT
+filter INPUT -j MANADE-IN
+ip6 filter FORWARD -j MANADE-FWD
+ip6 filter OUTPUT -j MANADE-OUT
+ip6 filter INPUT -j MANADE-IN
+# ip6tables-restore --noflush, where a nat table lists
+*nat
+:MANADE-NAT - [0:0]
+COMMIT
+# stale jumps, where a nat table lists
+ip6 nat POSTROUTING -j MANADE-NAT

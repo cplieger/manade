@@ -1,0 +1,21 @@
+# ipset restore -exist
+# iptables-restore --noflush
+*filter
+:MANADE-FWD - [0:0]
+:MANADE-OUT - [0:0]
+:MANADE-IN - [0:0]
+:DOCKER-USER - [0:0]
+COMMIT
+# ip6tables-restore --noflush
+*filter
+:MANADE-FWD - [0:0]
+:MANADE-OUT - [0:0]
+:MANADE-IN - [0:0]
+COMMIT
+# jumps
+# ip6tables-restore --noflush, where a nat table lists
+*nat
+:MANADE-NAT - [0:0]
+COMMIT
+# stale jumps, where a nat table lists
+ip6 nat POSTROUTING -j MANADE-NAT

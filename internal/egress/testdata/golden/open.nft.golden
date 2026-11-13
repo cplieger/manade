@@ -1,0 +1,4 @@
+table inet manade {}
+delete table inet manade
+table ip6 manade-nat {}
+delete table ip6 manade-nat

@@ -13,6 +13,7 @@ import (
 type fileProfile struct {
 	Capabilities             any         `yaml:"capabilities"`
 	Scopes                   *[]string   `yaml:"scopes"`
+	Hosts                    *[]string   `yaml:"hosts"`
 	RunnerImage              string      `yaml:"runner_image"`
 	Image                    string      `yaml:"image"`
 	User                     string      `yaml:"user"`
@@ -24,7 +25,6 @@ type fileProfile struct {
 	ShmSize                  string      `yaml:"shm_size"`
 	MaxLifetime              string      `yaml:"max_lifetime"`
 	IdleTimeout              string      `yaml:"idle_timeout"`
-	Network                  string      `yaml:"network"`
 	MaxRunners               string      `yaml:"max_runners"`
 	AllowPrivilegeEscalation string      `yaml:"allow_privilege_escalation"`
 	AllowRoot                string      `yaml:"allow_root"`
@@ -50,16 +50,10 @@ type fileMount struct {
 
 // The vocabularies. A value outside one refuses the config.
 const (
-	NetworkIsolated = "isolated"
-	NetworkBridge   = "bridge"
-	NetworkHost     = "host"
-
 	dockerNone       = "none"
 	DockerHostSocket = "host-socket"
 
-	runtimeRunc   = "runc"
-	runtimeRunsc  = "runsc"
-	RuntimeSysbox = "sysbox-runc"
+	runtimeRunc = "runc"
 
 	// ShippedDocker is the shipped image whose wrapper starts a daemon.
 	ShippedDocker = "docker"
@@ -71,9 +65,10 @@ const (
 
 var (
 	shippedImages = []string{"base", "build", "browser", ShippedDocker}
-	networks      = []string{NetworkIsolated, NetworkBridge, NetworkHost}
 	dockerModes   = []string{dockerNone, DockerHostSocket}
-	runtimes      = []string{runtimeRunc, runtimeRunsc, RuntimeSysbox}
+	// runtimes holds only runc: runsc and sysbox-runc would need the runtime
+	// inside the host image, which does not ship them.
+	runtimes = []string{runtimeRunc}
 )
 
 // linuxCapabilities is capabilities(7)'s list without the CAP_ prefix.
@@ -96,7 +91,7 @@ var dockerDefaultCapabilities = []string{
 }
 
 // parseMemory refuses a limit under 6 MiB, the least Docker accepts at create
-// (moby's linuxMinMemory).
+// (linuxMinMemory in https://github.com/moby/moby/blob/docker-v29.0.0/daemon/daemon_unix.go).
 func parseMemory(raw string) (int64, error) {
 	n, err := parseSize(raw)
 	if err == nil && n < 6<<20 {
@@ -112,7 +107,7 @@ var (
 	profileNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,31}$`)
 	// imageRefRe is the Docker reference grammar (distribution/reference),
 	// with sha256 the one digest algorithm.
-	imageRefRe = regexp.MustCompile(`^(?:(?:[a-zA-Z0-9]|[a-zA-Z0-9][a-zA-Z0-9-]*[a-zA-Z0-9])(?:\.(?:[a-zA-Z0-9]|[a-zA-Z0-9][a-zA-Z0-9-]*[a-zA-Z0-9]))*(?::[0-9]+)?/)?` +
+	imageRefRe = regexp.MustCompile(`^(?:(?:(?:[a-zA-Z0-9]|[a-zA-Z0-9][a-zA-Z0-9-]*[a-zA-Z0-9])(?:\.(?:[a-zA-Z0-9]|[a-zA-Z0-9][a-zA-Z0-9-]*[a-zA-Z0-9]))*|\[[a-fA-F0-9:]+\])(?::[0-9]+)?/)?` +
 		`[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*(?:/[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*)*` +
 		`(?::[\w][\w.-]{0,127})?(?:@sha256:[a-f0-9]{64})?$`)
 	// userRe admits uid:gid with neither 0; nine digits stay under the
@@ -130,7 +125,6 @@ type Profile struct {
 	Image       string
 	// User is a numeric non-root "uid:gid", or "" for the image's own user.
 	User    string
-	Network string
 	Docker  string
 	Runtime string
 	Command []string
@@ -139,7 +133,10 @@ type Profile struct {
 	Capabilities []string
 	// Scopes holds scope keys as written; nil means every scope. A key
 	// that names no configured scope serves nothing.
-	Scopes                   []string
+	Scopes []string
+	// Hosts lists the hosts that may serve the profile, in order of
+	// preference.
+	Hosts                    []string
 	Tmpfs                    []Tmpfs
 	Mounts                   []Mount
 	MilliCPUs                int64
@@ -195,23 +192,22 @@ func (p *Profile) Grants() []string {
 	add(p.AllowPrivilegeEscalation, "allow_privilege_escalation")
 	add(len(p.Capabilities) > 0, "capabilities")
 	add(p.AllowRoot, "allow_root")
-	add(p.Network != NetworkIsolated, "network")
 	add(p.Docker != dockerNone, "docker")
-	add(p.Runtime != runtimeRunc, "runtime")
 	add(p.Privileged, "privileged")
 	add(len(p.Mounts) > 0, "mounts")
 	return g
 }
 
-// RootHoldsAllCapabilities reports a Sysbox profile whose job can reach root:
-// Sysbox ignores Docker's capability settings unless its manager is set to
-// honour them, so root holds every capability in the container's user
-// namespace (https://github.com/nestybox/sysbox/blob/master/docs/user-guide/security.md#process-capabilities).
-func (p *Profile) RootHoldsAllCapabilities() bool {
-	return p.Runtime == RuntimeSysbox && p.AllowPrivilegeEscalation
+// profilePath is the error path of the profile named name, quoted when the
+// name is not a valid one.
+func profilePath(name string) string {
+	if !profileNameRe.MatchString(name) {
+		return "profiles." + quote(name)
+	}
+	return "profiles." + name
 }
 
-func (f *fileConfig) profiles(cfg *Config, p *problems) []Profile {
+func (f *fileConfig) profiles(p *problems) []Profile {
 	if len(f.Profiles) == 0 {
 		p.addf("profiles", "define at least one profile")
 	}
@@ -223,15 +219,14 @@ func (f *fileConfig) profiles(cfg *Config, p *problems) []Profile {
 	out := make([]Profile, 0, len(names))
 	for _, name := range names {
 		fp := f.Profiles[name]
-		out = append(out, fp.parse(cfg, name, p))
+		out = append(out, fp.parse(name, p))
 	}
 	return out
 }
 
-func (fp *fileProfile) parse(cfg *Config, name string, p *problems) Profile {
-	path := "profiles." + name
+func (fp *fileProfile) parse(name string, p *problems) Profile {
+	path := profilePath(name)
 	if !profileNameRe.MatchString(name) {
-		path = "profiles." + quote(name)
 		p.addf(path, "want a name of 1 to 32 lowercase letters, digits, dots, underscores or dashes")
 	}
 	at := func(key string) string { return path + "." + key }
@@ -241,8 +236,7 @@ func (fp *fileProfile) parse(cfg *Config, name string, p *problems) Profile {
 	if fp.User != "" && !userRe.MatchString(fp.User) {
 		p.add(at("user"), invalid("want a numeric non-root uid:gid such as 1001:1001", fp.User))
 	}
-	fp.resources(cfg, &pr, at, p)
-	pr.Network = oneOf(p, at("network"), fp.Network, NetworkIsolated, networks)
+	fp.resources(&pr, at, p)
 	pr.Docker = oneOf(p, at("docker"), fp.Docker, dockerNone, dockerModes)
 	pr.Runtime = oneOf(p, at("runtime"), fp.Runtime, runtimeRunc, runtimes)
 	pr.AllowPrivilegeEscalation = field(p, at("allow_privilege_escalation"), fp.AllowPrivilegeEscalation, "", parseBool)
@@ -253,7 +247,11 @@ func (fp *fileProfile) parse(cfg *Config, name string, p *problems) Profile {
 	if fp.Scopes != nil {
 		pr.Scopes = append([]string{}, *fp.Scopes...)
 	}
-	rules(&pr, at, p)
+	pr.Hosts = []string{DefaultHost}
+	if fp.Hosts != nil {
+		pr.Hosts = fp.hosts(at("hosts"), p)
+	}
+	ownRules(&pr, at, p)
 	return pr
 }
 
@@ -264,6 +262,8 @@ func (fp *fileProfile) image(pr *Profile, at func(string) string, p *problems) {
 	case fp.Image != "":
 		if len(fp.Image) > 512 || !imageRefRe.MatchString(fp.Image) {
 			p.add(at("image"), invalid("want an image reference", fp.Image))
+		} else if _, port := registry(fp.Image); port == 0 {
+			p.add(at("image"), invalid("want a registry port from 1 to 65535", fp.Image))
 		}
 		pr.Image = fp.Image
 	default:
@@ -286,7 +286,7 @@ func (fp *fileProfile) image(pr *Profile, at func(string) string, p *problems) {
 	}
 }
 
-func (fp *fileProfile) resources(cfg *Config, pr *Profile, at func(string) string, p *problems) {
+func (fp *fileProfile) resources(pr *Profile, at func(string) string, p *problems) {
 	pr.MilliCPUs = field(p, at("cpus"), fp.CPUs, "2", parseCPUs)
 	pr.Memory = field(p, at("memory"), fp.Memory, "4GiB", parseMemory)
 	pr.Swap = field(p, at("swap"), fp.Swap, "0", parseSize)
@@ -300,16 +300,6 @@ func (fp *fileProfile) resources(cfg *Config, pr *Profile, at func(string) strin
 	pr.MaxLifetime = field(p, at("max_lifetime"), fp.MaxLifetime, DefaultMaxLifetime.String(), parseDuration)
 	pr.IdleTimeout = field(p, at("idle_timeout"), fp.IdleTimeout, "10m", parseDuration)
 	pr.MaxRunners = int(field(p, at("max_runners"), fp.MaxRunners, "", positive(10000)))
-	c := cfg.Capacity
-	if c.MilliCPUs > 0 && pr.MilliCPUs > c.MilliCPUs {
-		p.addf(at("cpus"), "never fits capacity.cpus")
-	}
-	if c.Memory > 0 && pr.Memory > c.Memory {
-		p.addf(at("memory"), "never fits capacity.memory")
-	}
-	if c.Disk > 0 && pr.Disk > c.Disk {
-		p.addf(at("disk"), "never fits capacity.disk")
-	}
 }
 
 func oneOf(p *problems, path, raw, def string, vocab []string) string {
@@ -344,7 +334,7 @@ func capabilities(p *problems, path string, raw any) (caps []string, dockerDefau
 }
 
 // mounts parses the mounts and tmpfs. Docker refuses a repeated or root
-// target at create; CheckDaemon owns the protected bind sources.
+// target at create.
 func (fp *fileProfile) mounts(pr *Profile, at func(string) string, p *problems) {
 	absPath := func(path, raw string) string {
 		v, err := parseHostPath(raw)
@@ -377,9 +367,30 @@ func (fp *fileProfile) mounts(pr *Profile, at func(string) string, p *problems) 
 	}
 }
 
-// rules are the cross-field checks of the elevated-access table and the
-// shipped docker image.
-func rules(pr *Profile, at func(string) string, p *problems) {
+// hosts parses the profile's host list, which names at least one host and
+// none twice.
+func (fp *fileProfile) hosts(path string, p *problems) []string {
+	if len(*fp.Hosts) == 0 {
+		p.addf(path, "list at least one host, or leave hosts out for %s", DefaultHost)
+	}
+	var out []string
+	for i, name := range *fp.Hosts {
+		at := path + "[" + strconv.Itoa(i) + "]"
+		switch {
+		case !hostNameRe.MatchString(name):
+			p.add(at, invalid(hostNameRule, name))
+		case slices.Contains(out, name):
+			p.addf(at, "repeats host %s", quote(name))
+		default:
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+// ownRules are the profile's own cross-field checks: the elevated-access table
+// and the shipped docker image.
+func ownRules(pr *Profile, at func(string) string, p *problems) {
 	if g := pr.Grants(); len(g) > 0 && pr.Scopes == nil {
 		p.addf(at("scopes"), "an elevated profile must list its scopes (it sets %s)", strings.Join(g, ", "))
 	}
@@ -394,8 +405,8 @@ func rules(pr *Profile, at func(string) string, p *problems) {
 	if !pr.AllowPrivilegeEscalation {
 		p.addf(at("allow_privilege_escalation"), "runner_image: docker needs allow_privilege_escalation: true, because dockerd starts through sudo")
 	}
-	if !pr.Privileged && (pr.Runtime != RuntimeSysbox || !pr.DockerDefaultCaps) {
-		p.addf(at("runtime"), "runner_image: docker needs runtime: sysbox-runc with capabilities: docker-default, or privileged: true")
+	if !pr.Privileged {
+		p.addf(at("privileged"), "runner_image: docker needs privileged: true, because a job's own daemon needs it, so it runs only on an open host")
 	}
 	if pr.Docker == DockerHostSocket {
 		p.addf(at("docker"), "runner_image: docker cannot use host-socket: two daemons would claim one socket path")

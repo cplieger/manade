@@ -2,7 +2,7 @@ package config
 
 import (
 	"cmp"
-	"net/netip"
+	"maps"
 	"regexp"
 	"slices"
 	"strconv"
@@ -13,24 +13,14 @@ import (
 // The file's shape. Scalars decode as strings so every field is parsed here
 // with its own path in the error, never by go-yaml.
 type fileConfig struct {
+	Hosts    map[string]fileHost    `yaml:"hosts"`
 	Profiles map[string]fileProfile `yaml:"profiles"`
-	Capacity struct {
-		CPUs       string `yaml:"cpus"`
-		Memory     string `yaml:"memory"`
-		Disk       string `yaml:"disk"`
-		MaxRunners string `yaml:"max_runners"`
-	} `yaml:"capacity"`
-	Queue struct {
+	// Capacity is the one host's budget in a config without hosts.
+	Capacity *fileCapacity `yaml:"capacity"`
+	Queue    struct {
 		HeadReserveAfter string `yaml:"head_reserve_after"`
 	} `yaml:"queue"`
-	Images struct {
-		Refresh string `yaml:"refresh"`
-	} `yaml:"images"`
-	Network struct {
-		Subnet       string   `yaml:"subnet"`
-		BridgeSubnet string   `yaml:"bridge_subnet"`
-		DNS          []string `yaml:"dns"`
-	} `yaml:"network"`
+	Images fileImages  `yaml:"images"`
 	Scopes []fileScope `yaml:"scopes"`
 }
 
@@ -42,22 +32,6 @@ type fileScope struct {
 	InstallationID string `yaml:"installation_id"`
 }
 
-// Capacity is the pool's budget. Disk and MaxRunners are 0 when unset.
-type Capacity struct {
-	MilliCPUs  int64
-	Memory     int64
-	Disk       int64
-	MaxRunners int
-}
-
-// Network is the job networks' addressing. DNS is empty when jobs inherit
-// the daemon's resolvers.
-type Network struct {
-	Subnet       netip.Prefix
-	BridgeSubnet netip.Prefix
-	DNS          []netip.Addr
-}
-
 // ScopeKind is a scope's registration target.
 type ScopeKind int
 
@@ -65,7 +39,7 @@ type ScopeKind int
 const (
 	ScopeRepo ScopeKind = iota + 1
 	ScopeOrg
-	scopeEnterprise
+	ScopeEnterprise
 )
 
 // Scope is one registration target.
@@ -91,50 +65,42 @@ var (
 )
 
 func (f *fileConfig) apply(cfg *Config, p *problems) {
-	cfg.Capacity = f.capacity(p)
 	cfg.HeadReserveAfter = field(p, "queue.head_reserve_after", f.Queue.HeadReserveAfter, "2m", parseDuration)
-	cfg.ImageRefresh = field(p, "images.refresh", f.Images.Refresh, "6h", parseDuration)
-	if cfg.ImageRefresh > 0 && cfg.ImageRefresh < 10*time.Minute {
-		p.addf("images.refresh", "want at least 10m, got %s", quote(f.Images.Refresh))
-	}
-	cfg.Network = f.network(p)
+	refresh := parseRefresh(p, "images.refresh", cmp.Or(f.Images.Refresh, "1h"))
 	cfg.Scopes = f.scopes(cfg, p)
-	cfg.Profiles = f.profiles(cfg, p)
-}
-
-func (f *fileConfig) capacity(p *problems) Capacity {
-	if f.Capacity.CPUs == "" {
-		p.addf("capacity.cpus", "required")
-	}
-	if f.Capacity.Memory == "" {
-		p.addf("capacity.memory", "required")
-	}
-	return Capacity{
-		MilliCPUs:  field(p, "capacity.cpus", f.Capacity.CPUs, "", parseCPUs),
-		Memory:     field(p, "capacity.memory", f.Capacity.Memory, "", parsePositiveSize),
-		Disk:       field(p, "capacity.disk", f.Capacity.Disk, "", parsePositiveSize),
-		MaxRunners: int(field(p, "capacity.max_runners", f.Capacity.MaxRunners, "", positive(10000))),
-	}
-}
-
-func (f *fileConfig) network(p *problems) Network {
-	n := Network{
-		Subnet:       field(p, "network.subnet", f.Network.Subnet, "172.30.0.0/24", parseSubnet),
-		BridgeSubnet: field(p, "network.bridge_subnet", f.Network.BridgeSubnet, "172.30.1.0/24", parseSubnet),
-	}
-	if n.Subnet.IsValid() && n.BridgeSubnet.IsValid() && n.Subnet.Overlaps(n.BridgeSubnet) {
-		p.addf("network.bridge_subnet", "overlaps network.subnet")
-	}
-	// IPv6 is off on the job networks, and a loopback resolver would be the
-	// job container's own.
-	for i, raw := range f.Network.DNS {
-		a, err := netip.ParseAddr(raw)
-		if err != nil || !a.Is4() || a.IsUnspecified() || a.IsLoopback() || a.IsMulticast() {
-			p.add("network.dns["+strconv.Itoa(i)+"]", invalid("want a unicast IPv4 resolver address outside loopback", raw))
+	cfg.Hosts = f.hosts(refresh, p)
+	cfg.Profiles = f.profiles(p)
+	if cfg.Self != nil {
+		if _, ok := cfg.Host(cfg.Self.Name); !ok {
+			p.addf("hosts", "names no host %s, the MANADE_HOST of this host", quote(cfg.Self.Name))
 		}
-		n.DNS = append(n.DNS, a)
 	}
-	return n
+	cfg.check(p)
+}
+
+// hosts parses the hosts map, or the one default host the top-level capacity
+// describes when the file has no hosts.
+func (f *fileConfig) hosts(refresh time.Duration, p *problems) []Host {
+	if f.Hosts == nil {
+		h := fileHost{Capacity: f.Capacity}
+		return []Host{h.parse(DefaultHost, hostPath(DefaultHost), "capacity", refresh, p)}
+	}
+	if f.Capacity != nil {
+		p.addf("capacity", "set each host's budget under hosts.<name>.capacity when hosts is set")
+	}
+	if len(f.Hosts) == 0 {
+		p.addf("hosts", "define at least one host, or leave hosts out for one host named %s", DefaultHost)
+	}
+	out := make([]Host, 0, len(f.Hosts))
+	for _, name := range slices.Sorted(maps.Keys(f.Hosts)) {
+		path := hostPath(name)
+		if !hostNameRe.MatchString(name) {
+			p.add(path, invalid(hostNameRule, name))
+		}
+		fh := f.Hosts[name]
+		out = append(out, fh.parse(name, path, path+".capacity", refresh, p))
+	}
+	return out
 }
 
 func (f *fileConfig) scopes(cfg *Config, p *problems) []Scope {
@@ -194,8 +160,8 @@ func (fs *fileScope) target(cfg *Config, path string, p *problems) Scope {
 	if !ownerRe.MatchString(fs.Enterprise) {
 		p.add(path+".enterprise", invalid("want an enterprise slug", fs.Enterprise))
 	}
-	if cfg.GitHub.AppKey != nil {
+	if cfg.Orchestrator != nil && cfg.Orchestrator.GitHub.AppKey != nil {
 		p.addf(path+".enterprise", "an enterprise scope needs GITHUB_TOKEN: GitHub refuses App authentication for enterprise runners")
 	}
-	return Scope{Kind: scopeEnterprise, Owner: fs.Enterprise, Key: "enterprises/" + fs.Enterprise}
+	return Scope{Kind: ScopeEnterprise, Owner: fs.Enterprise, Key: "enterprises/" + fs.Enterprise}
 }
