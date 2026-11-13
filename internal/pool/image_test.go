@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"net/http"
 	"slices"
 	"strconv"
 	"strings"
@@ -725,4 +726,43 @@ func TestProbes(t *testing.T) {
 			t.Error("the pass removed a probe younger than probeAge")
 		}
 	})
+}
+
+func TestAnImageGoneFromTheCacheIsPulledAgain(t *testing.T) {
+	fx := imageFixture(t)
+	fx.boot(t)
+	if got := fx.serving("default"); got != "sha256:base1" {
+		t.Fatalf("serving = %q, want sha256:base1", got)
+	}
+	// Something outside the pool removed the image; the tag now names base2.
+	fx.dk.createErr = &docker.APIError{Op: "create", Code: http.StatusNotFound, Message: "No such image: sha256:base1"}
+	fx.dk.registry[baseRef] = shippedImage("sha256:base2")
+	fx.polled(appDefault, fx.at, &github.Stats{Assigned: 1})
+	fx.startAll(t)
+	if got := fx.serving("default"); got != "" {
+		t.Errorf("serving after the create's 404 = %q, want none until the pull", got)
+	}
+	// The pull's user check creates a probe, which the new image allows.
+	fx.dk.createErr = nil
+	if got := fx.refreshDue(t); !slices.Contains(got, baseRef) {
+		t.Fatalf("checks due = %v, want %s pulled again at once", got, baseRef)
+	}
+	if got := fx.serving("default"); got != "sha256:base2" {
+		t.Errorf("serving after the pull = %q, want sha256:base2", got)
+	}
+	fx.advance(startRetry)
+	if n := fx.startAll(t); n != 1 {
+		t.Errorf("starts after the pull = %d, want the retry", n)
+	}
+}
+
+func TestAnotherCreate404LeavesTheImageInService(t *testing.T) {
+	fx := imageFixture(t)
+	fx.boot(t)
+	fx.dk.createErr = &docker.APIError{Op: "create", Code: http.StatusNotFound, Message: "network manade-isolated not found"}
+	fx.polled(appDefault, fx.at, &github.Stats{Assigned: 1})
+	fx.startAll(t)
+	if got := fx.serving("default"); got != "sha256:base1" {
+		t.Errorf("serving = %q, want sha256:base1 kept", got)
+	}
 }

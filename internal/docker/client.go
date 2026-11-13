@@ -79,6 +79,13 @@ func (e *APIError) Error() string {
 	return "docker " + e.Op + ": status " + strconv.Itoa(e.Code) + ": " + e.Message
 }
 
+// ImageMissing reports a create the daemon refused because its image is
+// not in the cache, as when something outside the pool removed it.
+func ImageMissing(err error) bool {
+	e, ok := errors.AsType[*APIError](err)
+	return ok && e.Code == http.StatusNotFound && strings.Contains(strings.ToLower(e.Message), "no such image")
+}
+
 // Is matches errNotFound for a 404 and ErrConflict for a 409.
 func (e *APIError) Is(target error) bool {
 	return (target == errNotFound && e.Code == http.StatusNotFound) ||

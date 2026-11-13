@@ -340,3 +340,26 @@ func (p *Pool) cached(ctx context.Context, img *image) {
 		}
 	}
 }
+
+// imageGone takes id out of service for every profile of pr's image once
+// the daemon reports it gone, so the image counts as missing: nothing is
+// funded on it and it is pulled again at once, instead of every start
+// failing on an ID that no longer exists.
+func (p *Pool) imageGone(pr int, id string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	img := p.imgOf[pr]
+	gone := false
+	for _, q := range img.profiles {
+		if p.images[q] == id {
+			p.images[q] = ""
+			gone = true
+		}
+	}
+	if !gone {
+		return
+	}
+	img.due, img.retry, img.wait = true, time.Time{}, 0
+	wake(p.pull)
+	p.log.Warn("A profile's image is gone from Docker's cache, so it is pulled again", "image", img.ref, "id", id)
+}
