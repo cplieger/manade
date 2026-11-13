@@ -419,7 +419,9 @@ func TestListenCutsAHeldPoll(t *testing.T) {
 // is retried after 5 seconds.
 func TestListenCutsAHeldCreate(t *testing.T) {
 	prev := createTimeout
-	createTimeout = 50 * time.Millisecond
+	// Long enough that the retried create, which answers, is never cut on a
+	// loaded machine as well: only the held one may reach it.
+	createTimeout = time.Second
 	t.Cleanup(func() { createTimeout = prev })
 	lf := newListen(t)
 	lf.b.createFail, lf.b.createWith = 1, func(_ http.ResponseWriter, r *http.Request) { <-r.Context().Done() }
