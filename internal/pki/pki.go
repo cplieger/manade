@@ -5,6 +5,7 @@
 package pki
 
 import (
+	"bytes"
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -37,30 +38,36 @@ const Validity = 10 * 365 * 24 * time.Hour
 
 // Issue writes into root the CA (CADir, made when absent), the
 // orchestrator's TLS_DIR (OrchestratorDir, made when absent) and a TLS_DIR
-// per named host, and answers the directories it made. It checks every name
-// and refuses a host whose directory exists before it writes anything, and
-// each directory appears whole or not at all.
+// per named host, and answers the directories it made. Before it writes
+// anything it checks every name, refuses a host whose directory exists, and
+// refuses an existing OrchestratorDir whose ca.pem is not the CA in use; each
+// directory appears whole or not at all, and survives a power loss once
+// Issue returns.
 func Issue(root string, hosts []string, now time.Time) ([]string, error) {
 	if err := checkHosts(root, hosts); err != nil {
 		return nil, err
 	}
-	ca, made, err := loadOrMakeCA(root, now)
+	ca, found, err := loadCA(root, now)
+	if err != nil {
+		return nil, err
+	}
+	orch := filepath.Join(root, OrchestratorDir)
+	orchExists, err := checkOrchestrator(orch, ca, found)
 	if err != nil {
 		return nil, err
 	}
 	var out []string
-	if made {
+	if !found {
+		if ca, err = makeCA(filepath.Join(root, CADir), now); err != nil {
+			return nil, err
+		}
 		out = append(out, filepath.Join(root, CADir))
 	}
-	orch := filepath.Join(root, OrchestratorDir)
-	switch _, serr := os.Lstat(orch); {
-	case errors.Is(serr, os.ErrNotExist):
+	if !orchExists {
 		if err := ca.party(orch, hostapi.OrchestratorFiles, hostapi.OrchestratorName, x509.ExtKeyUsageClientAuth, now); err != nil {
 			return out, err
 		}
 		out = append(out, orch)
-	case serr != nil:
-		return out, fmt.Errorf("pki: %w", serr)
 	}
 	for _, h := range hosts {
 		dir := filepath.Join(root, h)
@@ -72,14 +79,35 @@ func Issue(root string, hosts []string, now time.Time) ([]string, error) {
 	return out, nil
 }
 
+// checkOrchestrator answers whether orch exists, refusing one the CA ca did
+// not issue or that has no CA beside it (found false): hosts issued now
+// would trust a CA the orchestrator's certificate is not from.
+func checkOrchestrator(orch string, ca *authority, found bool) (bool, error) {
+	_, err := os.Lstat(orch)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		return false, nil
+	case err != nil:
+		return false, fmt.Errorf("pki: %w", err)
+	case !found:
+		return false, fmt.Errorf("pki: %s exists but its CA %s does not, so new hosts would not trust the orchestrator; restore %s, or remove %s and every host directory to issue the whole pool again", orch, CADir, CADir, orch)
+	}
+	got, err := os.ReadFile(filepath.Join(orch, hostapi.CAFile))
+	if err != nil {
+		return false, fmt.Errorf("pki: %w", err)
+	}
+	if !bytes.Equal(got, ca.pem) {
+		return false, fmt.Errorf("pki: %s is not from the CA in %s; restore that CA, or remove %s and every host directory to issue the whole pool again", filepath.Join(orch, hostapi.CAFile), CADir, orch)
+	}
+	return true, nil
+}
+
 func checkHosts(root string, hosts []string) error {
 	var errs []error
 	for i, h := range hosts {
 		switch {
 		case config.CheckHostName(h) != nil:
 			errs = append(errs, fmt.Errorf("host %q: %w", h, config.CheckHostName(h)))
-		case h == CADir || h == OrchestratorDir:
-			errs = append(errs, fmt.Errorf("host %s: the name of a directory pki keeps for itself; rename the host", h))
 		case slices.Contains(hosts[:i], h):
 			errs = append(errs, fmt.Errorf("host %s: named twice", h))
 		default:
@@ -99,8 +127,8 @@ type authority struct {
 	pem  []byte
 }
 
-// loadOrMakeCA reads root's CA, or makes one when CADir is absent.
-func loadOrMakeCA(root string, now time.Time) (ca *authority, made bool, err error) {
+// loadCA reads root's CA; found is false when CADir is absent.
+func loadCA(root string, now time.Time) (ca *authority, found bool, err error) {
 	dir := filepath.Join(root, CADir)
 	certPEM, err := os.ReadFile(filepath.Join(dir, hostapi.CAFile))
 	switch {
@@ -108,8 +136,7 @@ func loadOrMakeCA(root string, now time.Time) (ca *authority, made bool, err err
 		if _, serr := os.Lstat(dir); serr == nil {
 			return nil, false, fmt.Errorf("pki: %s holds no %s; remove it, or point at the pool's own directory", dir, hostapi.CAFile)
 		}
-		ca, err = makeCA(dir, now)
-		return ca, err == nil, err
+		return nil, false, nil
 	case err != nil:
 		return nil, false, fmt.Errorf("pki: %w", err)
 	}
@@ -120,11 +147,10 @@ func loadOrMakeCA(root string, now time.Time) (ca *authority, made bool, err err
 	if err != nil {
 		return nil, false, fmt.Errorf("pki: %w", err)
 	}
-	ca, err = parseCA(certPEM, keyPEM, now)
-	if err != nil {
+	if ca, err = parseCA(certPEM, keyPEM, now); err != nil {
 		return nil, false, fmt.Errorf("pki: %s: %w", dir, err)
 	}
-	return ca, false, nil
+	return ca, true, nil
 }
 
 func parseCA(certPEM, keyPEM []byte, now time.Time) (*authority, error) {
@@ -219,7 +245,9 @@ type file struct {
 }
 
 // writeDir makes dir with files, through a temporary directory beside it
-// renamed into place, so a failure leaves no partial dir.
+// renamed into place, so a failure or a power loss leaves no partial dir:
+// each file and the temporary directory are synced before the rename, and
+// the parent after it.
 func writeDir(dir string, mode os.FileMode, files map[string]file) (err error) {
 	tmp, err := os.MkdirTemp(filepath.Dir(dir), "."+filepath.Base(dir)+".tmp-")
 	if err != nil {
@@ -231,20 +259,47 @@ func writeDir(dir string, mode os.FileMode, files map[string]file) (err error) {
 		}
 	}()
 	for name, f := range files {
-		if err := os.WriteFile(filepath.Join(tmp, name), f.data, f.mode); err != nil {
-			return fmt.Errorf("pki: %w", err)
-		}
-		if err := os.Chmod(filepath.Join(tmp, name), f.mode); err != nil {
+		if err := writeSynced(filepath.Join(tmp, name), f); err != nil {
 			return fmt.Errorf("pki: %w", err)
 		}
 	}
 	if err := os.Chmod(tmp, mode); err != nil {
 		return fmt.Errorf("pki: %w", err)
 	}
+	if err := syncDir(tmp); err != nil {
+		return fmt.Errorf("pki: %w", err)
+	}
 	if err := os.Rename(tmp, dir); err != nil {
 		return fmt.Errorf("pki: %w", err)
 	}
+	if err := syncDir(filepath.Dir(dir)); err != nil {
+		return fmt.Errorf("pki: %s is written but not durable: %w", dir, err)
+	}
 	return nil
+}
+
+func writeSynced(path string, f file) error {
+	out, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, f.mode)
+	if err != nil {
+		return err
+	}
+	_, err = out.Write(f.data)
+	if err == nil {
+		// The umask narrows OpenFile's mode; the files' modes are exact.
+		err = out.Chmod(f.mode)
+	}
+	if err == nil {
+		err = out.Sync()
+	}
+	return errors.Join(err, out.Close())
+}
+
+func syncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	return errors.Join(d.Sync(), d.Close())
 }
 
 // serial is a random 127-bit serial number, as RFC 5280 4.1.2.2 asks: positive

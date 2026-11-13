@@ -127,11 +127,13 @@ func TestServerTLSLoadChecksItsOwnFiles(t *testing.T) {
 			t.Errorf("err = %v", err)
 		}
 	})
-	t.Run("a host named as the CA", func(t *testing.T) {
-		if _, err := ServerTLS(t.TempDir(), "ca"); err == nil || !strings.Contains(err.Error(), "rename the host") {
-			t.Errorf("err = %v", err)
-		}
-	})
+	for _, name := range []string{"ca", "orchestrator"} {
+		t.Run("a host named "+name, func(t *testing.T) {
+			if _, err := ServerTLS(t.TempDir(), name); err == nil || !strings.Contains(err.Error(), "other than ca and orchestrator") {
+				t.Errorf("err = %v", err)
+			}
+		})
+	}
 }
 
 func TestListenUnix(t *testing.T) {

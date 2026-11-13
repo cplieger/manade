@@ -8,19 +8,24 @@ package hostapi
 import (
 	"net/netip"
 	"time"
+
+	"github.com/cplieger/manade/internal/docker"
 )
 
 // The bounds of each request, shared by the server, which cuts a request at
 // its bound, and the client, which waits a little longer for that answer.
 const (
-	// CallTimeout is the longest one daemon call in the host may take.
-	CallTimeout = 3 * time.Minute
 	// quickTimeout bounds a request the host answers from memory.
 	quickTimeout = 30 * time.Second
 	// callBound bounds a request that makes one daemon call.
-	callBound = CallTimeout + quickTimeout
-	// deleteBound bounds a DELETE: a stop, the diag copy and a removal.
-	deleteBound = 3*CallTimeout + quickTimeout
+	callBound = docker.CallTimeout + quickTimeout
+	// DeleteStopGrace is the longest stop grace DeleteRunner gives a
+	// runner before its kill: Docker's own default stop timeout.
+	DeleteStopGrace = 10 * time.Second
+	// deleteBound bounds a DELETE by the calls Backend.DeleteRunner may
+	// make: the diag copy, the stop with its grace, an inspect and a
+	// removal of the runner's container, and of one orphan.
+	deleteBound = DeleteStopGrace + 6*docker.CallTimeout + quickTimeout
 	// eventsBound ends an events stream, after which the client reconnects
 	// and lists again.
 	eventsBound = time.Hour
@@ -250,7 +255,7 @@ type GitHubStatus struct {
 }
 
 // LatencyBuckets are the upper bounds, in seconds, of a CallLatency's
-// buckets: from an idle daemon's tens of milliseconds to CallTimeout.
+// buckets: from an idle daemon's tens of milliseconds to docker.CallTimeout.
 var LatencyBuckets = []float64{0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 180}
 
 // CallLatency is a histogram of one daemon call's latency.

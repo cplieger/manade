@@ -127,6 +127,14 @@ func TestClientTypedErrors(t *testing.T) {
 			t.Errorf("err = %#v", err)
 		}
 	})
+	t.Run("not ready on one line", func(t *testing.T) {
+		c := unixClient(t, &fakeBackend{err: &NotReadyError{Profile: "small\nlevel=ERROR", Reason: "pulling\r\nforged", Detail: "x"}})
+		_, err := c.CreateRunner(t.Context(), &req)
+		nr, ok := errors.AsType[*NotReadyError](err)
+		if !ok || strings.ContainsAny(err.Error(), "\r\n") || strings.ContainsAny(nr.Profile+string(nr.Reason), "\r\n") || !strings.Contains(nr.Profile, "small") {
+			t.Errorf("err = %q (%#v), want one line", err, err)
+		}
+	})
 	for name, sentinel := range map[string]error{"unknown profile": ErrUnknownProfile, "refused profile": ErrProfileRefused} {
 		t.Run(name, func(t *testing.T) {
 			c := unixClient(t, &fakeBackend{err: sentinel})

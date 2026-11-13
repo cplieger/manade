@@ -92,11 +92,13 @@ const (
 	// it (it may have exited since).
 	Done Outcome = iota + 1
 	// Failed is a call the daemon refused, or a create whose container
-	// never appeared; Result.Err says why. Nothing is in flight.
+	// never appeared or drew warnings; Result.Err says why. Nothing is in
+	// flight, and an ID with it is a container left for the caller to
+	// remove.
 	Failed
 	// Pending is a call whose fate is unknown because a call timed out or
-	// ctx ended: the caller tries again later and never removes the
-	// container meanwhile.
+	// ctx ended: the caller makes the same call again later (a Create
+	// again under the same name) and never removes the container meanwhile.
 	Pending
 )
 
@@ -115,9 +117,11 @@ var errCreateWarnings = errors.New("docker create: the daemon warned")
 // Create creates a container named name, labelled managed over any labels in
 // req. A create that times out is followed by an inspect of name: a
 // container there means the create succeeded, and a 404 is inspected again
-// for one more CallTimeout before the create is judged failed. A create the
-// daemon refuses for its image fails with an error matching
-// ErrImageMissing.
+// for one more CallTimeout before the create is judged failed. A name
+// already in use by a managed container carrying every label of req is that
+// create's own container, made by an earlier call, and is Done; any other
+// holder fails the create with ErrConflict. A create the daemon refuses for
+// its image fails with an error matching ErrImageMissing.
 func (c *Client) Create(ctx context.Context, name string, req *CreateRequest) Result {
 	body := *req
 	body.Labels = c.managedLabels(req.Labels)
@@ -133,10 +137,30 @@ func (c *Client) Create(ctx context.Context, name string, req *CreateRequest) Re
 		return c.created(ctx, out.ID, out.Warnings)
 	case ctx.Err() != nil:
 		return Result{Outcome: Pending, Err: err}
+	case errors.Is(err, ErrConflict):
+		return c.adopt(ctx, name, req.Labels, err)
 	case !timedOut:
 		return Result{Outcome: Failed, Err: err}
 	}
 	return c.afterCreateTimeout(ctx, name, err)
+}
+
+// adopt judges a create refused because name is in use: Done when the
+// holder is managed and carries labels, Failed otherwise.
+func (c *Client) adopt(ctx context.Context, name string, labels map[string]string, callErr error) Result {
+	ctr, found, err := c.InspectContainer(ctx, name)
+	switch {
+	case err != nil:
+		return Result{Outcome: Pending, Err: errors.Join(callErr, err)}
+	case !found || ctr.Config.Labels[LabelManaged] != managedValue:
+		return Result{Outcome: Failed, Err: callErr}
+	}
+	for k, v := range labels {
+		if k != LabelManaged && k != LabelCreated && ctr.Config.Labels[k] != v {
+			return Result{Outcome: Failed, Err: callErr}
+		}
+	}
+	return Result{Outcome: Done, ID: ctr.ID}
 }
 
 // created removes a container the daemon warned about and fails it.
@@ -148,26 +172,25 @@ func (c *Client) created(ctx context.Context, id string, warnings []string) Resu
 	text, _ := textsafe.SanitizeSingleLineCapped(strings.Join(warnings, "; "), 4*errorTextLimit, "…")
 	werr := fmt.Errorf("%w: %s", errCreateWarnings, text)
 	if err := c.remove(ctx, id); err != nil {
-		return Result{Outcome: Pending, ID: id, Err: errors.Join(werr, err)}
+		return Result{Outcome: Failed, ID: id, Err: errors.Join(werr, err)}
 	}
 	return Result{Outcome: Failed, Err: werr}
 }
 
 // afterCreateTimeout judges a create whose call timed out by inspecting name
-// until a container appears or one more CallTimeout passes. Only a daemon
-// that has answered 404 lets the window's end fail the create; one that
-// never answers leaves it pending.
+// until a container appears or one more CallTimeout passes. The window's end
+// fails the create only when the last inspect answered 404; an inspect that
+// errs, the window's end cutting it included, leaves it pending.
 func (c *Client) afterCreateTimeout(ctx context.Context, name string, callErr error) Result {
-	wctx, cancel := context.WithTimeout(ctx, CallTimeout)
+	end := time.Now().Add(CallTimeout)
+	wctx, cancel := context.WithDeadline(ctx, end)
 	defer cancel()
 	tick := time.NewTicker(createPoll)
 	defer tick.Stop()
 	missing := fmt.Errorf("%w; no container %s appeared within a further %s", callErr, name, CallTimeout)
-	for answered := false; ; answered = true {
+	for {
 		ctr, found, err := c.inspectIn(wctx, name)
 		switch {
-		case err != nil && answered && ctx.Err() == nil && wctx.Err() != nil:
-			return Result{Outcome: Failed, Err: missing}
 		case err != nil:
 			return Result{Outcome: Pending, Err: errors.Join(callErr, err)}
 		case found:
@@ -179,6 +202,11 @@ func (c *Client) afterCreateTimeout(ctx context.Context, name string, callErr er
 		case <-wctx.Done():
 			return Result{Outcome: Failed, Err: missing}
 		case <-tick.C:
+		}
+		// A tick ready together with the window's end must not start an
+		// inspect the window would cut; wctx.Err may not be set yet then.
+		if !time.Now().Before(end) && ctx.Err() == nil {
+			return Result{Outcome: Failed, Err: missing}
 		}
 	}
 }

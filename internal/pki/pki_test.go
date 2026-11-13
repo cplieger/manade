@@ -142,8 +142,8 @@ func TestIssueRefusals(t *testing.T) {
 		"not a DNS label":  {hosts: []string{"Nas"}, want: "lowercase DNS label"},
 		"an IP literal":    {hosts: []string{"10.0.0.1"}, want: "lowercase DNS label"},
 		"a path":           {hosts: []string{"../x"}, want: "lowercase DNS label"},
-		"the CA's name":    {hosts: []string{"ca"}, want: "keeps for itself"},
-		"the orchestrator": {hosts: []string{"orchestrator"}, want: "keeps for itself"},
+		"the CA's name":    {hosts: []string{CADir}, want: "other than ca and orchestrator"},
+		"the orchestrator": {hosts: []string{OrchestratorDir}, want: "other than ca and orchestrator"},
 		"named twice":      {hosts: []string{"nas", "nas"}, want: "named twice"},
 		"an existing host": {hosts: []string{"nas"}, want: "remove it to issue", setup: func(t *testing.T, root string) { mkdir(t, filepath.Join(root, "nas")) }},
 		"a CA without key": {hosts: []string{"nas"}, want: "without its key", setup: func(t *testing.T, root string) {
@@ -151,6 +151,28 @@ func TestIssueRefusals(t *testing.T) {
 				t.Fatal(err)
 			}
 			if err := os.Remove(filepath.Join(root, "ca", "ca-key.pem")); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		"an orchestrator without its CA": {hosts: []string{"nas"}, want: "restore ca", setup: func(t *testing.T, root string) {
+			if _, err := Issue(root, nil, now); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.RemoveAll(filepath.Join(root, CADir)); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		"an orchestrator from another CA": {hosts: []string{"nas"}, want: "is not from the CA in ca", setup: func(t *testing.T, root string) {
+			other := t.TempDir()
+			for _, r := range []string{root, other} {
+				if _, err := Issue(r, nil, now); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.RemoveAll(filepath.Join(root, CADir)); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Rename(filepath.Join(other, CADir), filepath.Join(root, CADir)); err != nil {
 				t.Fatal(err)
 			}
 		}},

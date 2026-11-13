@@ -62,25 +62,76 @@ func TestCreate(t *testing.T) {
 	t.Run("another refusal is a failed create, not a missing image", func(t *testing.T) {
 		d := newDaemon(t, "1.51")
 		d.handle("POST /containers/create", func(w http.ResponseWriter, _ *http.Request) {
-			writeError(w, http.StatusConflict, "name in use")
+			writeError(w, http.StatusBadRequest, "invalid mount config")
 		})
 		res := d.dial(t).Create(t.Context(), "r1", req)
-		if res.Outcome != Failed || errors.Is(res.Err, ErrImageMissing) || !errors.Is(res.Err, ErrConflict) || len(d.seen(http.MethodGet, "/containers/r1/json")) != 0 {
+		if res.Outcome != Failed || errors.Is(res.Err, ErrImageMissing) || len(d.seen(http.MethodGet, "/containers/r1/json")) != 0 {
 			t.Errorf("Create = %+v", res)
+		}
+	})
+	inUse := func(w http.ResponseWriter, _ *http.Request) {
+		writeError(w, http.StatusConflict, `Conflict. The container name "/r1" is already in use`)
+	}
+	holder := func(labels map[string]string) http.HandlerFunc {
+		return func(w http.ResponseWriter, _ *http.Request) {
+			a := inspectAnswer("c0", StateCreated)
+			a["Config"] = map[string]any{"Labels": labels}
+			writeJSON(w, http.StatusOK, a)
+		}
+	}
+	t.Run("a name held by this create's own container is done", func(t *testing.T) {
+		d := newDaemon(t, "1.51")
+		d.handle("POST /containers/create", inUse)
+		d.handle("GET /containers/r1/json", holder(map[string]string{LabelManaged: "true", LabelCreated: "2000-01-01T00:00:00Z", "manade.runner": "r1"}))
+		res := d.dial(t).Create(t.Context(), "r1", req)
+		if res.Outcome != Done || res.ID != "c0" || res.Err != nil {
+			t.Errorf("Create = %+v, want done with the holder's ID", res)
+		}
+	})
+	t.Run("a name held by another container fails with ErrConflict", func(t *testing.T) {
+		for name, labels := range map[string]map[string]string{
+			"other labels": {LabelManaged: "true", "manade.runner": "r2"},
+			"not managed":  {"manade.runner": "r1"},
+		} {
+			t.Run(name, func(t *testing.T) {
+				d := newDaemon(t, "1.51")
+				d.handle("POST /containers/create", inUse)
+				d.handle("GET /containers/r1/json", holder(labels))
+				res := d.dial(t).Create(t.Context(), "r1", req)
+				if res.Outcome != Failed || !errors.Is(res.Err, ErrConflict) || res.ID != "" {
+					t.Errorf("Create = %+v", res)
+				}
+				if del := d.seen(http.MethodDelete, "/containers/c0"); len(del) != 0 {
+					t.Errorf("removed the holder: %+v", del)
+				}
+			})
 		}
 	})
 	t.Run("warnings remove the container and fail the create", func(t *testing.T) {
 		d := newDaemon(t, "1.51")
 		d.handle("POST /containers/create", func(w http.ResponseWriter, _ *http.Request) {
-			writeJSON(w, http.StatusCreated, map[string]any{"Id": "c1", "Warnings": []string{"", "Your kernel does not support swap limit\ncapabilities"}})
+			writeJSON(w, http.StatusCreated, map[string]any{"Id": "c1", "Warnings": []string{"", "Your kernel does not support memory limit capabilities or the cgroup\nis not mounted. Limitation discarded."}})
 		})
 		d.handle("DELETE /containers/{id}", noContent)
 		res := d.dial(t).Create(t.Context(), "r1", req)
-		if res.Outcome != Failed || !errors.Is(res.Err, errCreateWarnings) || strings.Contains(res.Err.Error(), "\n") || !strings.Contains(res.Err.Error(), "swap limit") {
+		if res.Outcome != Failed || !errors.Is(res.Err, errCreateWarnings) || strings.Contains(res.Err.Error(), "\n") || !strings.Contains(res.Err.Error(), "Limitation discarded") {
 			t.Errorf("Create = %+v", res)
 		}
 		if del := d.seen(http.MethodDelete, "/containers/c1"); len(del) != 1 || del[0].query["force"][0] != "1" {
 			t.Errorf("deletes = %+v", del)
+		}
+	})
+	t.Run("warnings whose removal fails leave a failed create with its container", func(t *testing.T) {
+		d := newDaemon(t, "1.51")
+		d.handle("POST /containers/create", func(w http.ResponseWriter, _ *http.Request) {
+			writeJSON(w, http.StatusCreated, map[string]any{"Id": "c1", "Warnings": []string{"Limitation discarded."}})
+		})
+		d.handle("DELETE /containers/{id}", func(w http.ResponseWriter, _ *http.Request) {
+			writeError(w, http.StatusInternalServerError, "driver busy")
+		})
+		res := d.dial(t).Create(t.Context(), "r1", req)
+		if res.Outcome != Failed || res.ID != "c1" || !errors.Is(res.Err, errCreateWarnings) {
+			t.Errorf("Create = %+v, want failed with c1 left to remove", res)
 		}
 	})
 	t.Run("a create answered after its timeout, with the container there, is created", func(t *testing.T) {
@@ -123,6 +174,28 @@ func TestCreate(t *testing.T) {
 			res := d.dial(t).Create(t.Context(), "r1", req)
 			if res.Outcome != Failed || !errors.Is(res.Err, context.DeadlineExceeded) || time.Since(start) != 2*CallTimeout {
 				t.Errorf("Create = %+v after %s, want failed at %s", res, time.Since(start), 2*CallTimeout)
+			}
+		})
+	})
+	t.Run("an inspect cut by the window's end after a 404 is pending", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			d := newDaemon(t, "1.51")
+			d.handle("POST /containers/create", hold)
+			var n atomic.Int32
+			d.handle("GET /containers/r1/json", func(w http.ResponseWriter, r *http.Request) {
+				if n.Add(1) == 1 {
+					writeError(w, http.StatusNotFound, "No such container: r1")
+					return
+				}
+				hold(w, r)
+			})
+			d.handle("DELETE /containers/{id}", noContent)
+			res := d.dial(t).Create(t.Context(), "r1", req)
+			if res.Outcome != Pending || n.Load() != 2 {
+				t.Errorf("Create = %+v after %d inspects, want pending after 2", res, n.Load())
+			}
+			if del := d.seen(http.MethodDelete, "/containers/r1"); len(del) != 0 {
+				t.Errorf("removed: %+v", del)
 			}
 		})
 	})

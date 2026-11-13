@@ -12,6 +12,8 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+
+	"github.com/cplieger/manade/internal/config"
 )
 
 // The files of a TLS_DIR: the pool's CA, and each party's certificate and
@@ -21,8 +23,7 @@ const (
 	OrchestratorFiles = "orchestrator"
 )
 
-// CertFile and KeyFile are the certificate and key file names of the party
-// named name.
+// CertFile is the certificate file name of the party named name.
 func CertFile(name string) string { return name + ".pem" }
 
 // KeyFile is the key file of the party named name.
@@ -32,8 +33,8 @@ func KeyFile(name string) string { return name + "-key.pem" }
 // client certificate the pool's CA signed for client authentication with
 // OrchestratorName as a DNS name.
 func ServerTLS(dir, name string) (*tls.Config, error) {
-	if CertFile(name) == CAFile {
-		return nil, fmt.Errorf("TLS_DIR: a host named %s has a certificate file named as the CA's; rename the host", name)
+	if err := config.CheckHostName(name); err != nil {
+		return nil, fmt.Errorf("TLS_DIR: host %q: %w", name, err)
 	}
 	pool, cert, err := loadPair(dir, name, x509.ExtKeyUsageServerAuth, name)
 	if err != nil {

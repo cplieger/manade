@@ -264,8 +264,10 @@ func answerError(op string, resp *http.Response) error {
 	msg, _ := textsafe.SanitizeSingleLineCapped(body.Message, errorTextLimit, "…")
 	switch body.Code {
 	case codeNotReady:
+		profile, _ := textsafe.SanitizeSingleLineCapped(body.Profile, errorTextLimit, "…")
+		reason, _ := textsafe.SanitizeSingleLineCapped(string(body.Reason), errorTextLimit, "…")
 		detail, _ := textsafe.SanitizeSingleLineCapped(body.Detail, errorTextLimit, "…")
-		return &NotReadyError{Profile: body.Profile, Reason: body.Reason, Detail: detail}
+		return &NotReadyError{Profile: profile, Reason: Reason(reason), Detail: detail}
 	case codeUnknownProfile:
 		return fmt.Errorf("%w: %s", ErrUnknownProfile, msg)
 	case codeRefused:

@@ -75,7 +75,10 @@ type Host struct {
 	// protected are the paths no job on a host that is not open may
 	// reach, each also with its symlinks resolved.
 	protected []string
-	plat      Platform
+	// binds are the bind sources of the profiles the host serves, with
+	// their forms resolved when the host started, before any job ran.
+	binds []bindSource
+	plat  Platform
 }
 
 // NewHost builds the specs of host h of cfg on platform plat.
@@ -85,7 +88,7 @@ func NewHost(cfg *config.Config, h *config.Host, plat *Platform) *Host {
 	for _, p := range paths {
 		prot = append(prot, withResolved(p)...)
 	}
-	return &Host{host: h, protected: prot, plat: *plat}
+	return &Host{host: h, protected: prot, binds: bindSources(cfg, h.Name), plat: *plat}
 }
 
 // ErrUnenforceable is a profile asking for a limit its host's kernel or
@@ -193,9 +196,7 @@ func (h *Host) limits(p *config.Profile, cpus []int) (*docker.HostConfig, error)
 	default:
 		hc.CpusetCpus = cpuList(cpus)
 	}
-	if h.plat.Swap {
-		hc.MemorySwap = p.Memory + p.Swap
-	}
+	hc.MemorySwap = h.memorySwap(p.Memory + p.Swap)
 	if h.plat.PIDs {
 		pids := p.PIDs
 		hc.PidsLimit = &pids
@@ -215,6 +216,18 @@ func (h *Host) limits(p *config.Profile, cpus []int) (*docker.HostConfig, error)
 		hc.Tmpfs[t.Path] = "size=" + strconv.FormatInt(t.Size, 10) + ",exec"
 	}
 	return hc, nil
+}
+
+// memorySwap is the MemorySwap for a memory-plus-swap limit of total. On a
+// kernel without swap accounting it is -1: Docker warns on any other value
+// with a memory limit (verifyPlatformContainerResources,
+// https://github.com/moby/moby/blob/docker-v29.0.0/daemon/daemon_unix.go),
+// and a create with a warning is removed and failed.
+func (h *Host) memorySwap(total int64) int64 {
+	if !h.plat.Swap {
+		return -1
+	}
+	return total
 }
 
 func cpuList(cpus []int) string {
@@ -248,9 +261,7 @@ func (h *Host) Probe(pr *Probe) *docker.CreateRequest {
 		SecurityOpt: []string{"no-new-privileges:true"},
 		LogConfig:   docker.LogConfig{Type: "json-file", Config: map[string]string{"max-size": "1m", "max-file": "1"}},
 	}
-	if h.plat.Swap {
-		hc.MemorySwap = ProbeMemory
-	}
+	hc.MemorySwap = h.memorySwap(ProbeMemory)
 	if h.plat.PIDs {
 		pids := int64(probePIDs)
 		hc.PidsLimit = &pids

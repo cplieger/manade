@@ -69,7 +69,8 @@ const (
 // State maps a runner's labelled container and the host's record of it to
 // the runner a list shows; either may be nil. It answers false for a runner
 // with neither, which is not listed. A failed record with a container lists
-// the container as an orphan under it.
+// the container as an orphan under it, and any other record whose container
+// the host removed itself (RemovedBy set) lists exited once it is gone.
 func State(c *Container, r *Record) (Runner, bool) {
 	if c == nil && r == nil {
 		return Runner{}, false
@@ -81,6 +82,8 @@ func State(c *Container, r *Record) (Runner, bool) {
 		if c != nil {
 			run.Orphans = []string{c.ID}
 		}
+	case c == nil && r.RemovedBy != "":
+		run.State = StateExited
 	case c == nil:
 		run.State, run.Reason = recorded(r, ReasonRemovedOutside)
 	case c.State == DockerCreated && r == nil:

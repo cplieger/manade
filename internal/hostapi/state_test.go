@@ -18,7 +18,10 @@ func TestState(t *testing.T) {
 		"starting": {State: RecordStarting},
 		"started":  {State: RecordStarted},
 		"failed":   {State: RecordFailed, Reason: "create refused"},
-		"none":     nil,
+		// The host removed the container itself.
+		"startedRemoved": {State: RecordStarted, RemovedBy: "pool: idle"},
+		"failedRemoved":  {State: RecordFailed, Reason: "create refused", RemovedBy: "pool: idle"},
+		"none":           nil,
 	}
 	failed := want{state: StateFailed, reason: "create refused", listed: true}
 	orphaned := want{state: StateFailed, reason: "create refused", orphan: true, listed: true}
@@ -26,11 +29,13 @@ func TestState(t *testing.T) {
 	exited := want{state: StateExited, exited: true, listed: true}
 	cases := map[string]map[string]want{
 		"": {
-			"creating": {state: StateCreating, listed: true},
-			"starting": {state: StateStarting, listed: true},
-			"started":  {state: StateFailed, reason: ReasonRemovedOutside, listed: true},
-			"failed":   failed,
-			"none":     {},
+			"creating":       {state: StateCreating, listed: true},
+			"starting":       {state: StateStarting, listed: true},
+			"started":        {state: StateFailed, reason: ReasonRemovedOutside, listed: true},
+			"failed":         failed,
+			"startedRemoved": {state: StateExited, listed: true},
+			"failedRemoved":  failed,
+			"none":           {},
 		},
 		DockerCreated: {
 			"creating": {state: StateCreating, listed: true},
@@ -40,6 +45,7 @@ func TestState(t *testing.T) {
 			"none":     {state: StateFailed, reason: ReasonHostRestarted, listed: true},
 		},
 	}
+
 	for _, s := range []string{DockerRunning, DockerPaused, DockerRestarting} {
 		cases[s] = map[string]want{"creating": running, "starting": running, "started": running, "failed": orphaned, "none": running}
 	}
@@ -70,6 +76,9 @@ func TestState(t *testing.T) {
 				}
 				if !listed {
 					return
+				}
+				if r != nil && got.RemovedBy != r.RemovedBy {
+					t.Errorf("removed_by = %q, want %q", got.RemovedBy, r.RemovedBy)
 				}
 				if got.State != w.state || got.Reason != w.reason {
 					t.Errorf("state = %s %q, want %s %q", got.State, got.Reason, w.state, w.reason)

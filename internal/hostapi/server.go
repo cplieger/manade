@@ -30,8 +30,9 @@ type Backend interface {
 	Runners(ctx context.Context) ([]Runner, error)
 	// DeleteRunner stops and removes the runner's container and any orphan
 	// under it and drops its record; with diag it first copies the runner's
-	// _diag folder as a tar of at most DiagLimit bytes, nil when there is
-	// none. A runner with no container is no error.
+	// _diag folder as a tar, nil when there is none. A runner with no
+	// container is no error. It makes at most six daemon calls, each within
+	// docker.CallTimeout, and gives the stop at most DeleteStopGrace.
 	DeleteRunner(ctx context.Context, name string, diag bool) ([]byte, error)
 	// Logs answers the runner's last tail lines, or ErrUnknownRunner.
 	Logs(ctx context.Context, name string, tail int) ([]byte, error)
@@ -243,6 +244,10 @@ func (s *Server) deleteRunner(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.writeBackendError(w, err)
 		return
+	}
+	if len(diag) > DiagLimit {
+		s.log.Warn("A deleted runner's _diag tar passed the limit and was dropped", "runner", name, "bytes", len(diag), "limit", DiagLimit)
+		diag = nil
 	}
 	if diag == nil {
 		w.WriteHeader(http.StatusNoContent)

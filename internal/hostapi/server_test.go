@@ -2,10 +2,12 @@ package hostapi
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -199,6 +201,19 @@ func TestDeleteRunner(t *testing.T) {
 		resp, body := do(t, http.MethodDelete, srv.URL+"/v1/runners/r1?diag=1", "")
 		if resp.StatusCode != http.StatusOK || string(body) != "tar bytes" || !b.diagAsk || resp.Header.Get("Content-Type") != "application/x-tar" {
 			t.Errorf("answer %d %q diag %v", resp.StatusCode, body, b.diagAsk)
+		}
+	})
+	t.Run("an oversized diag is dropped with a warning and answers 204", func(t *testing.T) {
+		var logs bytes.Buffer
+		b := &fakeBackend{diag: make([]byte, DiagLimit+1)}
+		srv := httptest.NewServer(NewServer(b, "inst-1", slog.New(slog.NewTextHandler(&logs, nil))).Handler())
+		t.Cleanup(srv.Close)
+		resp, body := do(t, http.MethodDelete, srv.URL+"/v1/runners/r1?diag=1", "")
+		if resp.StatusCode != http.StatusNoContent || len(body) != 0 || len(b.deleted) != 1 {
+			t.Errorf("answer %d with %d bytes, deleted %v; want 204 and the runner deleted", resp.StatusCode, len(body), b.deleted)
+		}
+		if l := logs.String(); !strings.Contains(l, "level=WARN") || !strings.Contains(l, "runner=r1") || !strings.Contains(l, "bytes=8388609") {
+			t.Errorf("logs = %q, want one WARN naming the runner and the size", l)
 		}
 	})
 	t.Run("diag asked with no container answers 204", func(t *testing.T) {

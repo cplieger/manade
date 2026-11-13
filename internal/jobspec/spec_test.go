@@ -85,14 +85,14 @@ func TestRunnerQuotaAndPinning(t *testing.T) {
 			t.Error("a quota host took pinned CPUs")
 		}
 	})
-	t.Run("a kernel without pids or swap accounting gets neither", func(t *testing.T) {
+	t.Run("a kernel without pids or swap accounting gets no pids limit and unlimited swap", func(t *testing.T) {
 		h, _ := testHost(t, false, Platform{})
 		req, err := h.Runner(profile(), runner())
 		if err != nil {
 			t.Fatal(err)
 		}
-		if hc := req.HostConfig; hc.PidsLimit != nil || hc.MemorySwap != 0 {
-			t.Errorf("limits = %+v, want no pids limit and no swap field", hc)
+		if hc := req.HostConfig; hc.PidsLimit != nil || hc.MemorySwap != -1 || hc.Memory != 4<<30 {
+			t.Errorf("limits = %+v, want no pids limit, the memory limit and MemorySwap -1", hc)
 		}
 	})
 }
@@ -288,6 +288,107 @@ func TestRunnerMounts(t *testing.T) {
 	})
 }
 
+func TestRunnerMountNesting(t *testing.T) {
+	// serve gives host nas profiles small (binding src read-only, or
+	// writable) and big (binding other, writable when otherWritable).
+	serve := func(h *Host, src string, writable bool, other string, otherWritable bool) *config.Profile {
+		small := profile()
+		small.Hosts = []string{"nas"}
+		small.Mounts = []config.Mount{{Source: src, Target: "/cache", Bind: true, ReadOnly: !writable}}
+		big := profile()
+		big.Name, big.Hosts = "big", []string{"nas"}
+		big.Mounts = []config.Mount{{Source: other, Target: "/work", Bind: true, ReadOnly: !otherWritable}}
+		h.binds = bindSources(&config.Config{Profiles: []config.Profile{*small, *big}}, "nas")
+		return small
+	}
+	mkdirs := func(t *testing.T, dirs ...string) {
+		t.Helper()
+		for _, d := range dirs {
+			if err := os.MkdirAll(d, 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	t.Run("a link into another profile's writable source is refused, after a swap too", func(t *testing.T) {
+		h, root := testHost(t, false, Platform{})
+		work, elsewhere := filepath.Join(root, "data", "work"), filepath.Join(root, "data", "elsewhere")
+		mkdirs(t, filepath.Join(work, "x"), elsewhere)
+		link := filepath.Join(root, "data", "link")
+		if err := os.Symlink(filepath.Join(work, "x"), link); err != nil {
+			t.Fatal(err)
+		}
+		small := serve(h, link, false, work, true)
+		_, err := h.Runner(small, runner())
+		if !errors.Is(err, ErrMountRefused) || !strings.Contains(err.Error(), "profile small") || !strings.Contains(err.Error(), "profile big's jobs may write") {
+			t.Fatalf("Runner = %v, want the source refused naming both profiles", err)
+		}
+		// A job on big replaces x with a link out of its mount.
+		x := filepath.Join(work, "x")
+		if err := os.Remove(x); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(elsewhere, x); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := h.Runner(small, runner()); !errors.Is(err, ErrMountRefused) {
+			t.Errorf("Runner after the swap = %v, want refused", err)
+		}
+	})
+	t.Run("a writable source another's link reached at the start stays refused after a swap", func(t *testing.T) {
+		h, root := testHost(t, false, Platform{})
+		work, elsewhere := filepath.Join(root, "data", "work"), filepath.Join(root, "data", "elsewhere")
+		mkdirs(t, filepath.Join(work, "x"), elsewhere)
+		link := filepath.Join(root, "data", "link")
+		if err := os.Symlink(filepath.Join(work, "x"), link); err != nil {
+			t.Fatal(err)
+		}
+		small := serve(h, work, true, link, false)
+		x := filepath.Join(work, "x")
+		if err := os.Remove(x); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(elsewhere, x); err != nil {
+			t.Fatal(err)
+		}
+		_, err := h.Runner(small, runner())
+		if !errors.Is(err, ErrMountRefused) || !strings.Contains(err.Error(), "writable to jobs and an ancestor of "+x) {
+			t.Errorf("Runner = %v, want refused for the start-time form", err)
+		}
+	})
+	t.Run("a writable link to an ancestor of another source is refused", func(t *testing.T) {
+		h, root := testHost(t, false, Platform{})
+		parent := filepath.Join(root, "data", "parent")
+		mkdirs(t, filepath.Join(parent, "child"))
+		link := filepath.Join(root, "data", "up")
+		if err := os.Symlink(parent, link); err != nil {
+			t.Fatal(err)
+		}
+		small := serve(h, link, true, filepath.Join(parent, "child"), false)
+		_, err := h.Runner(small, runner())
+		if !errors.Is(err, ErrMountRefused) || !strings.Contains(err.Error(), "writable to jobs and an ancestor of") || !strings.Contains(err.Error(), "profile big") {
+			t.Errorf("Runner = %v, want the source refused naming both profiles", err)
+		}
+	})
+	t.Run("sources apart, equal, or nested read-only pass", func(t *testing.T) {
+		h, root := testHost(t, false, Platform{})
+		a, b := filepath.Join(root, "data", "a"), filepath.Join(root, "data", "b")
+		mkdirs(t, filepath.Join(a, "sub"), b)
+		for name, tc := range map[string]struct {
+			src, other    string
+			writable, own bool
+		}{
+			"apart, both writable":  {src: a, other: b, writable: true, own: true},
+			"equal, both writable":  {src: a, other: a, writable: true, own: true},
+			"nested, both readonly": {src: filepath.Join(a, "sub"), other: a},
+		} {
+			small := serve(h, tc.src, tc.writable, tc.other, tc.own)
+			if _, err := h.Runner(small, runner()); err != nil {
+				t.Errorf("%s: Runner = %v", name, err)
+			}
+		}
+	})
+}
+
 func TestNewHostProtects(t *testing.T) {
 	root := t.TempDir()
 	real := filepath.Join(root, "real-tls")
@@ -321,4 +422,11 @@ func TestProbe(t *testing.T) {
 	if listener.OpenStdin || listener.StdinOnce || listener.AttachStdin || listener.Labels[LabelProbe] != "run-1" {
 		t.Errorf("listener = %+v", listener)
 	}
+	t.Run("a kernel without swap accounting gets unlimited swap", func(t *testing.T) {
+		h, _ := testHost(t, false, Platform{})
+		hc := h.Probe(&Probe{Name: "manade-probe-2", Run: "run-2", ImageID: "sha256:probe"}).HostConfig
+		if hc.Memory != 32<<20 || hc.MemorySwap != -1 {
+			t.Errorf("probe memory = %d, swap = %d, want 32 MiB and -1", hc.Memory, hc.MemorySwap)
+		}
+	})
 }
