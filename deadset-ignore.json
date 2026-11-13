@@ -90,6 +90,30 @@
       "symbol": "go://github.com/cplieger/manade/internal/hostapi#ProbeCheck",
       "path": "internal/hostapi/types.go",
       "reason": "staging: the supervisor (build plan item 5) fills this part of the status and the orchestrator (item 7) reads it; delete this entry there"
+    },
+    {
+      "code": "DS1501",
+      "symbol": "go://github.com/cplieger/manade/internal/docker#ErrConflict",
+      "path": "internal/docker/client.go",
+      "reason": "staging: the supervisor (build plan item 5) retries a removal answered 409; delete this entry there"
+    },
+    {
+      "code": "DS1501",
+      "symbol": "go://github.com/cplieger/manade/internal/docker#ErrImageMissing",
+      "path": "internal/docker/client.go",
+      "reason": "staging: the supervisor (build plan item 5) takes an image out of service on a create refused for it; delete this entry there"
+    },
+    {
+      "code": "DS1501",
+      "symbol": "go://github.com/cplieger/manade/internal/docker#APIError",
+      "path": "internal/docker/client.go",
+      "reason": "staging: the supervisor (build plan item 5) reads a refused call's status and message; delete this entry there"
+    },
+    {
+      "code": "DS1101",
+      "symbol": "go://github.com/cplieger/manade/internal/docker#APIError.Error",
+      "path": "internal/docker/client.go",
+      "reason": "staging: an APIError reaches error formatting once the supervisor (build plan item 5) logs a refused call; delete this entry there"
     }
   ]
 }
