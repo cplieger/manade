@@ -43,6 +43,13 @@ func TestLogs(t *testing.T) {
 			_, _ = w.Write(append(frame(1, strings.Repeat("c", LogKeep+99)+"\n"), frame(1, "end\n")...))
 		case "keepOnALineStart":
 			_, _ = w.Write(append(frame(1, strings.Repeat("d", 99)+"\n"), frame(2, strings.Repeat("e", LogKeep-5)+"\nend\n")...))
+		case "blankLines":
+			_, _ = w.Write(frame(1, "step\n\nfailed\n"))
+		case "blankLinesCRLF":
+			_, _ = w.Write(frame(1, "step\r\n\r\nfailed\r\n"))
+		case "trailingBlankLine":
+			_, _ = w.Write(frame(1, "a\n\n"))
+		case "empty":
 		case "overInsideAFrame":
 			_, _ = w.Write(frame(1, strings.Repeat("b", 5<<20)))
 		default:
@@ -76,6 +83,24 @@ func TestLogs(t *testing.T) {
 		lines, err := c.Logs(t.Context(), "keepOnALineStart", 50)
 		if err != nil || len(lines) != 2 || lines[0] != strings.Repeat("e", LogKeep-5) || lines[1] != "end" {
 			t.Errorf("Logs = %d lines, %v; want the e line and end", len(lines), err)
+		}
+	})
+	for _, id := range []string{"blankLines", "blankLinesCRLF"} {
+		t.Run(id, func(t *testing.T) {
+			lines, err := c.Logs(t.Context(), id, 50)
+			if want := []string{"step", "", "failed"}; err != nil || !slices.Equal(lines, want) {
+				t.Errorf("Logs = %q, %v; want %q", lines, err, want)
+			}
+		})
+	}
+	t.Run("keepsABlankLastLine", func(t *testing.T) {
+		if lines, err := c.Logs(t.Context(), "trailingBlankLine", 50); err != nil || !slices.Equal(lines, []string{"a", ""}) {
+			t.Errorf("Logs = %q, %v; want [a \"\"]", lines, err)
+		}
+	})
+	t.Run("answersNoLinesForAnEmptyLog", func(t *testing.T) {
+		if lines, err := c.Logs(t.Context(), "empty", 50); err != nil || len(lines) != 0 {
+			t.Errorf("Logs = %q, %v; want no lines", lines, err)
 		}
 	})
 	t.Run("refusesAnUnframedStream", func(t *testing.T) {

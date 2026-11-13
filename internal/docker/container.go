@@ -115,15 +115,13 @@ type Result struct {
 var errCreateWarnings = errors.New("docker create: the daemon warned")
 
 // Create creates a container named name, labelled managed over any labels in
-// req. A create that times out is followed by an inspect of name, and a 404
-// is inspected again for one more CallTimeout before the create is judged
-// failed; a name already in use is inspected too. A container found either
-// way is this create's own, made by this or an earlier call, only when it is
-// managed and carries every label of req: any other holder fails the create
-// with no ID (ErrConflict when the name was in use). Its own container that
-// lacks a limit req sets fails with its ID and errLimitDiscarded. A create
-// the daemon refuses for its image fails with an error matching
-// ErrImageMissing.
+// req. A create refused because name is in use, or whose call timed out, is
+// followed by an inspect of name, and after a timeout a 404 is inspected again
+// for one more CallTimeout before the create fails. A container found so is
+// this create's own only when it is managed and carries every label of req;
+// another holder fails the create with no ID (ErrConflict for a name in use),
+// and its own lacking a limit req sets fails with its ID and errLimitDiscarded.
+// A create refused for its image fails with an error matching ErrImageMissing.
 func (c *Client) Create(ctx context.Context, name string, req *CreateRequest) Result {
 	body := *req
 	body.Labels = c.managedLabels(req.Labels)

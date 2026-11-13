@@ -275,10 +275,11 @@ func (s *Server) logs(w http.ResponseWriter, r *http.Request) {
 		s.writeBackendError(w, err)
 		return
 	}
-	if len(b) > logLimit {
-		b = b[len(b)-logLimit:]
-		if i := bytes.IndexByte(b, '\n'); i >= 0 {
-			b = b[i+1:]
+	if cut := len(b) - logLimit; cut > 0 {
+		onALine := b[cut-1] == '\n'
+		b = b[cut:]
+		if !onALine {
+			_, b, _ = bytes.Cut(b, []byte("\n"))
 		}
 	}
 	s.writeBytes(w, "text/plain; charset=utf-8", b, logLimit)

@@ -58,23 +58,24 @@ func (c *Client) Logs(ctx context.Context, id string, n int) ([]string, error) {
 	if partial {
 		_, text, _ = bytes.Cut(text, []byte("\n"))
 	}
-	lines := bytes.Split(bytes.TrimRight(text, "\n"), []byte("\n"))
+	if len(text) == 0 {
+		return nil, nil
+	}
+	lines := bytes.Split(bytes.TrimSuffix(text, []byte("\n")), []byte("\n"))
 	if len(lines) > n {
 		lines = lines[len(lines)-n:]
 	}
 	out := make([]string, 0, len(lines))
 	for _, l := range lines {
-		if len(l) > 0 {
-			out = append(out, string(bytes.TrimSuffix(l, []byte("\r"))))
-		}
+		out = append(out, string(bytes.TrimSuffix(l, []byte("\r"))))
 	}
 	return out, nil
 }
 
 // demux joins the payloads of a multiplexed log stream, keeping the last
-// LogKeep bytes; partial is whether those start inside a line. A container without a TTY, as every runner is, frames its
-// output with an 8-byte header: the stream (0, 1 or 2), three zero bytes and
-// the payload's big-endian length
+// LogKeep bytes; partial is whether those start inside a line. A container
+// without a TTY, as every runner is, frames its output with an 8-byte header:
+// the stream (0, 1 or 2), three zero bytes and the payload's big-endian length
 // (https://docs.docker.com/reference/api/engine/version/v1.51/#tag/Container/operation/ContainerAttach).
 // A stream that ends inside a frame fails with io.ErrUnexpectedEOF.
 func demux(r io.Reader) (out []byte, partial bool, err error) {

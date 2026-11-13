@@ -141,12 +141,13 @@ func ListenUnix(path string, uid int) (net.Listener, error) {
 	}
 	ul.SetUnlinkOnClose(false)
 	err = errors.Join(os.Chmod(tmp, 0o600), os.Lchown(tmp, uid, -1))
-	if err == nil {
-		err = os.Rename(tmp, path)
-	}
 	var fi os.FileInfo
 	if err == nil {
-		fi, err = os.Lstat(path)
+		fi, err = os.Lstat(tmp)
+	}
+	// The rename is the last step that can fail: nothing removes path after it.
+	if err == nil {
+		err = os.Rename(tmp, path)
 	}
 	if err != nil {
 		_ = ul.Close()

@@ -262,6 +262,21 @@ func TestLogs(t *testing.T) {
 			t.Errorf("tail = %d bytes ending %q", len(body), body[max(0, len(body)-20):])
 		}
 	})
+	t.Run("an oversize tail with no whole line is empty", func(t *testing.T) {
+		srv := serve(t, &fakeBackend{logs: []byte(strings.Repeat("x", logLimit+1))})
+		resp, body := do(t, http.MethodGet, srv.URL+"/v1/runners/r1/logs", "")
+		if resp.StatusCode != http.StatusOK || len(body) != 0 {
+			t.Errorf("answer %d with %d bytes, want 200 with none", resp.StatusCode, len(body))
+		}
+	})
+	t.Run("an oversize tail keeps a line its window starts on", func(t *testing.T) {
+		window := strings.Repeat("abc\n", logLimit/4)
+		srv := serve(t, &fakeBackend{logs: []byte("x\n" + window)})
+		_, body := do(t, http.MethodGet, srv.URL+"/v1/runners/r1/logs", "")
+		if string(body) != window {
+			t.Errorf("tail = %d bytes starting %q, want the %d-byte window", len(body), body[:min(len(body), 8)], len(window))
+		}
+	})
 	t.Run("an unknown runner is 404", func(t *testing.T) {
 		srv := serve(t, &fakeBackend{err: ErrUnknownRunner})
 		resp, body := do(t, http.MethodGet, srv.URL+"/v1/runners/r1/logs", "")
