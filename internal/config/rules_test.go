@@ -183,6 +183,7 @@ func TestInternetOffRegistry(t *testing.T) {
 	t.Parallel()
 	const off = "    egress: {internet: false}\n"
 	allow := func(entry string) string { return "    egress: {internet: false, allow: [" + entry + "]}\n" }
+	const off6 = "    egress: {internet: false, ipv6: true}\n"
 	for _, tc := range []struct{ name, lines, image, want string }{
 		{"hubShortName", off, "alpine:3.22", `profiles.p.image: "alpine:3.22" is on Docker Hub, which host "h" cannot reach with egress.internet: false`},
 		{"hubOrgName", off, "acme/runner:1", `"acme/runner:1" is on Docker Hub`},
@@ -194,6 +195,7 @@ func TestInternetOffRegistry(t *testing.T) {
 		{"ipUDPOnly", allow("{to: 10.0.0.0/24, ports: [5000], protocol: udp}"), "10.0.0.5:5000/runner", "on TCP port 5000"},
 		{"ipBelowRange", allow("{to: 10.0.0.0/24, ports: [\"6000-7000\"]}"), "10.0.0.5:5000/runner", "on TCP port 5000"},
 		{"ipOtherAddress", allow("{to: 10.0.1.0/24, ports: [443]}"), "10.0.0.5/runner", "on TCP port 443"},
+		{"ipv6NoAllow", off6, "[fd00::5]:5000/runner", `profiles.p.image: "[fd00::5]:5000/runner" is on the registry fd00::5, which no allow entry of host "h" covers on TCP port 5000`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -207,6 +209,7 @@ func TestInternetOffRegistry(t *testing.T) {
 		{"ipAllowed", allow("{to: 10.0.0.0/24, ports: [5000]}"), "10.0.0.5:5000/runner"},
 		{"ipAllowedRange", allow("{to: 10.0.0.5, ports: [\"400-500\"], protocol: both}"), "10.0.0.5/runner"},
 		{"hubWithInternet", "", "alpine:3.22"},
+		{"ipv6Allowed", "    egress: {internet: false, ipv6: true, allow: [{to: \"fd00::/64\", ports: [5000]}]}\n", "[fd00::5]:5000/runner"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -242,6 +245,8 @@ func TestRegistry(t *testing.T) {
 		{"Registry/runner", "Registry", 443},
 		{"10.0.0.5/runner@sha256:" + hex64, "10.0.0.5", 443},
 		{"10.0.0.5:0/runner", "10.0.0.5", 0},
+		{"[fd00::5]:5000/runner", "fd00::5", 5000},
+		{"[fd00::5]/runner:1", "fd00::5", 443},
 	} {
 		t.Run(tc.ref, func(t *testing.T) {
 			t.Parallel()

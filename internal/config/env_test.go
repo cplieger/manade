@@ -174,10 +174,136 @@ func TestLoadRelativeConfigFile(t *testing.T) {
 	t.Setenv("MANADE_HOST", "h")
 	t.Setenv("TLS_DIR", dir+"/tls")
 	_, err := Load(t.Context(), RoleHost)
-	wantErr(t, err,
-		`TLS_DIR: "`+dir+`/tls" lies at or under the config file's directory "`+dir+`"`,
-		`hosts.h.registry_auth: "`+dir+`/auth.json" lies at or under the config file's directory "`+dir+`"`,
-		`profiles.p.mounts[0].bind: "`+dir+`/data" reaches `+dir+`, which host "h" protects`)
+	const under = "lies at or under the config file's directory"
+	wantLine(t, err, "TLS_DIR", under)
+	wantLine(t, err, "hosts.h.registry_auth", under)
+	wantLine(t, err, "profiles.p.mounts[0].bind", " reaches "+dir+`, which host "h" protects`)
+}
+
+// touch writes path and its directories, and answers path.
+func touch(t *testing.T, path, content string) string {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// symlink makes link point at target and answers link.
+func symlink(t *testing.T, target, link string) string {
+	t.Helper()
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	return link
+}
+
+func TestLoadOrchestratorSecretsUnderConfig(t *testing.T) {
+	const under = "lies at or under the config file's directory"
+	t.Run("tlsDirAndTokenFile", func(t *testing.T) {
+		clearEnv(t)
+		dir := t.TempDir()
+		t.Setenv("CONFIG_FILE", touch(t, dir+"/config.yaml", withProfile("")))
+		t.Setenv("TLS_DIR", dir+"/tls")
+		t.Setenv("GITHUB_TOKEN_FILE", touch(t, dir+"/token", "test-token"))
+		_, err := Load(t.Context(), RoleOrchestrator)
+		wantLine(t, err, "TLS_DIR", under, "give the TLS files a mount of their own")
+		wantLine(t, err, "GITHUB_TOKEN_FILE", under, "give the file a mount of its own")
+	})
+	t.Run("appKeyFile", func(t *testing.T) {
+		clearEnv(t)
+		dir := t.TempDir()
+		t.Setenv("CONFIG_FILE", touch(t, dir+"/config.yaml", withProfile("")))
+		t.Setenv("GITHUB_APP_CLIENT_ID", "Iv1.test")
+		t.Setenv("GITHUB_APP_PRIVATE_KEY_FILE", touch(t, dir+"/keys/app.pem", string(testPEM())))
+		_, err := Load(t.Context(), RoleOrchestrator)
+		wantLine(t, err, "GITHUB_APP_PRIVATE_KEY_FILE", under)
+	})
+	t.Run("relativeTokenFile", func(t *testing.T) {
+		clearEnv(t)
+		dir := t.TempDir()
+		t.Chdir(dir)
+		t.Setenv("CONFIG_FILE", touch(t, dir+"/config.yaml", withProfile("")))
+		touch(t, dir+"/token", "test-token")
+		t.Setenv("GITHUB_TOKEN_FILE", "token")
+		_, err := Load(t.Context(), RoleOrchestrator)
+		wantLine(t, err, "GITHUB_TOKEN_FILE", under)
+	})
+	t.Run("ownMounts", func(t *testing.T) {
+		clearEnv(t)
+		dir := t.TempDir()
+		t.Setenv("CONFIG_FILE", touch(t, dir+"/config/config.yaml", withProfile("")))
+		t.Setenv("TLS_DIR", dir+"/secrets/tls")
+		t.Setenv("GITHUB_TOKEN_FILE", touch(t, dir+"/secrets/token", "test-token"))
+		if _, err := Load(t.Context(), RoleOrchestrator); err != nil {
+			t.Fatalf("err = %v", err)
+		}
+	})
+	t.Run("shippedDefaults", func(t *testing.T) {
+		cfg := &Config{File: "/config/config.yaml", Orchestrator: &Orchestrator{
+			GitHub: GitHub{Token: newSecret("test-token")}, PoolName: "manade", TLSDir: "/secrets/tls",
+			secretFiles: []secretPath{{key: "GITHUB_APP_PRIVATE_KEY_FILE", path: "/secrets/github-app.pem"}},
+		}}
+		mustBuild(t, cfg, withProfile(""))
+	})
+}
+
+// A symlink into the config file's directory is refused like a path under
+// it; one that does not exist yet is compared as written.
+func TestLoadSymlinkIntoConfigDir(t *testing.T) {
+	const under = "lies at or under the config file's directory"
+	host := func(t *testing.T, lines string) string {
+		t.Helper()
+		clearEnv(t)
+		dir := t.TempDir()
+		t.Setenv("CONFIG_FILE", touch(t, dir+"/config/config.yaml", oneHost(lines, "")))
+		t.Setenv("MANADE_HOST", "h")
+		return dir
+	}
+	t.Run("tlsDir", func(t *testing.T) {
+		dir := host(t, "")
+		touch(t, dir+"/config/tls/h.pem", "")
+		t.Setenv("TLS_DIR", symlink(t, dir+"/config/tls", dir+"/tls"))
+		_, err := Load(t.Context(), RoleHost)
+		wantLine(t, err, "TLS_DIR", under)
+	})
+	t.Run("registryAuth", func(t *testing.T) {
+		dir := t.TempDir()
+		auth := symlink(t, touch(t, dir+"/config/auth.json", "{}"), dir+"/auth.json")
+		clearEnv(t)
+		t.Setenv("CONFIG_FILE", touch(t, dir+"/config/config.yaml", oneHost("    registry_auth: "+auth+"\n", "")))
+		t.Setenv("MANADE_HOST", "h")
+		_, err := Load(t.Context(), RoleHost)
+		wantLine(t, err, "hosts.h.registry_auth", under)
+	})
+	t.Run("configDir", func(t *testing.T) {
+		dir := host(t, "")
+		t.Setenv("CONFIG_FILE", symlink(t, dir+"/config", dir+"/link")+"/config.yaml")
+		if err := os.Mkdir(dir+"/config/tls", 0o700); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("TLS_DIR", dir+"/config/tls")
+		_, err := Load(t.Context(), RoleHost)
+		wantLine(t, err, "TLS_DIR", under)
+	})
+	t.Run("tokenFile", func(t *testing.T) {
+		clearEnv(t)
+		dir := t.TempDir()
+		t.Setenv("CONFIG_FILE", touch(t, dir+"/config/config.yaml", withProfile("")))
+		t.Setenv("GITHUB_TOKEN_FILE", symlink(t, touch(t, dir+"/config/token", "test-token"), dir+"/token"))
+		_, err := Load(t.Context(), RoleOrchestrator)
+		wantLine(t, err, "GITHUB_TOKEN_FILE", under)
+	})
+	t.Run("absent", func(t *testing.T) {
+		dir := host(t, "")
+		t.Setenv("TLS_DIR", dir+"/tls")
+		if _, err := Load(t.Context(), RoleHost); err != nil {
+			t.Fatalf("err = %v", err)
+		}
+	})
 }
 
 func TestLoadFileBounds(t *testing.T) {

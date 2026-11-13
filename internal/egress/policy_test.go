@@ -5,6 +5,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -175,6 +176,58 @@ func TestGenerateLearnedTimeoutCeiling(t *testing.T) {
 			for _, w := range tc.want {
 				if !strings.Contains(tc.payload(rs), w) {
 					t.Errorf("payload lacks %q:\n%s", w, tc.payload(rs))
+				}
+			}
+		})
+	}
+}
+
+// A GitHub name has no private answer, and the learned set's accept comes
+// before the private and IPv6 drops, so such an answer must not open them.
+func TestGenerateLearnedLeavesBlockedOut(t *testing.T) {
+	t.Parallel()
+	const hour = time.Hour
+	in := Input{
+		Host: &config.Host{Name: "offline", DNS: config.DefaultDNS, Egress: config.Egress{
+			IPv6: true, Block6: []netip.Prefix{pfx("2a01:e0a:1::/48")},
+		}},
+		Job6:  pfx("fdc6:6d61:6e61:6465::/64"),
+		State: State{Own64: pfx("2a01:e0a:1259:2711::/64")},
+	}
+	kept := []string{"140.82.112.3", "2606:50c0:8000::153"}
+	left := []string{
+		"10.1.2.3", "192.168.0.9", "172.16.5.5", "100.64.0.1", "169.254.169.254",
+		"fc00::1", "fd12::5", "fe80::1", "2001:db8::1", "64:ff9b::a01:203",
+		"2a01:e0a:1:5::1", "2a01:e0a:1259:2711::9", "::1",
+	}
+	for _, a := range slices.Concat(kept, left) {
+		in.State.GitHub = append(in.State.GitHub, Learned{Addr: addr(a), Left: hour})
+	}
+	in.State.GitHub = append(in.State.GitHub, Learned{Addr: addr("::ffff:10.9.9.9"), Left: hour})
+	left = append(left, "10.9.9.9")
+	for _, tc := range []struct {
+		payload func(*Ruleset) string
+		name    string
+		be      Backend
+	}{
+		{func(rs *Ruleset) string { return rs.NFT }, "nftables", NFTables},
+		{func(rs *Ruleset) string { return rs.IPSet }, "iptables", IPTables},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			rs, err := Generate(&in, tc.be)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := tc.payload(rs)
+			for _, a := range kept {
+				if !strings.Contains(got, " "+a+" timeout") {
+					t.Errorf("payload lacks the learned %s:\n%s", a, got)
+				}
+			}
+			for _, a := range left {
+				if strings.Contains(got, " "+a+" timeout") {
+					t.Errorf("payload holds the blocked %s:\n%s", a, got)
 				}
 			}
 		})

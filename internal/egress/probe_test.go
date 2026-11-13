@@ -121,6 +121,35 @@ func TestPlanProbe(t *testing.T) {
 			},
 		},
 		{
+			// Without internet the output chain drops port 53 to a public
+			// original resolver too; a loopback one is the machine's own.
+			name: "internet off, public and loopback originals",
+			in: func() *ProbeInput {
+				in := probeInput(config.Egress{}, addr("1.1.1.1"))
+				in.Original.Addrs = append(in.Original.Addrs, addr("8.8.4.4"), addr("127.0.0.53"), addr("1.1.1.1"))
+				return in
+			}(),
+			want: []want{
+				{job, block, "172.18.0.1:7464"},
+				{job, block, "172.18.0.1:1"},
+				{job, block, "172.19.0.1:1"},
+				{job, block, "172.19.0.1:53"},
+				{job, block, "10.0.0.53:53"},
+				{job, block, "172.18.0.3:7465"},
+				github,
+				{job, block, "9.9.9.9:443"},
+				jobLookup,
+				{job, KindNoIPv6, "[2606:4700:4700::1111]:443"},
+				{output, block, "172.19.0.1:1"},
+				{output, block, "172.19.0.1:53"},
+				{output, block, "10.0.0.53:53"},
+				{output, block, "8.8.4.4:53"},
+				{output, block, "1.1.1.1:1"},
+				outLookup,
+				{output, KindNoIPv6, "[2606:4700:4700::1111]:443"},
+			},
+		},
+		{
 			name: "a private configured resolver and an IPv6 original without ipv6",
 			in: func() *ProbeInput {
 				in := probeInput(config.Egress{Internet: true}, addr("10.0.0.54"))
@@ -369,6 +398,28 @@ func TestPlanBound(t *testing.T) {
 			}
 		})
 	}
+	t.Run("internet off, two resolvers", func(t *testing.T) {
+		t.Parallel()
+		p := PlanProbe(probeInput(config.Egress{}, addr("1.1.1.1"), addr("8.8.8.8")))
+		var got []time.Duration
+		for _, c := range p.Checks {
+			if c.Kind == KindResolve {
+				got = append(got, c.Timeout)
+			}
+		}
+		// The embedded resolver's one upstream is the supervisor's
+		// forwarder; the output leg asks each resolver for 3 s.
+		if want := []time.Duration{4 * time.Second, 6 * time.Second}; !slices.Equal(got, want) {
+			t.Errorf("lookup timeouts = %v, want %v", got, want)
+		}
+		// The job leg's six blocks, GitHub, 9.9.9.9 and NoIPv6 at 3 s and
+		// its lookup at 4 s, each with 2 s of slack; the output leg's five
+		// blocks and NoIPv6 at 3 s and its lookup at 6 s.
+		want := 12*call + (9*(3+2)+(4+2))*time.Second + (6*3+6)*time.Second
+		if b := p.Bound(call); b != want {
+			t.Errorf("Bound = %v, want %v", b, want)
+		}
+	})
 	t.Run("exchanges summing past the call timeout", func(t *testing.T) {
 		t.Parallel()
 		e := config.Egress{Internet: true}

@@ -254,23 +254,44 @@ func (rs *Ruleset) build(in *Input) {
 		rs.nat = &rule{family: ipv6, oif: iface{name: jobBridges.name, glob: true, not: true}, saddr: in.Job6, action: masquerade}
 	}
 	if !e.Internet {
-		rs.sets = append(rs.sets, set{name: setGitHub4, family: ipv4, timeout: true, elems: learned(in.State.GitHub, ipv4)})
+		rs.sets = append(rs.sets, set{name: setGitHub4, family: ipv4, timeout: true, elems: in.learned(ipv4)})
 		if v6 {
-			rs.sets = append(rs.sets, set{name: setGitHub6, family: ipv6, timeout: true, elems: learned(in.State.GitHub, ipv6)})
+			rs.sets = append(rs.sets, set{name: setGitHub6, family: ipv6, timeout: true, elems: in.learned(ipv6)})
 		}
 	}
 }
 
-// learned answers the addresses of family f that still have time left, at
-// most learnedMax of them.
-func learned(all []Learned, f family) []Learned {
+// learned answers the learned addresses of family f that still have time
+// left, at most learnedMax of them. It leaves out any address the internet
+// rules drop, private and IPv6-blocked space: the set's accept precedes
+// those drops, so one such answer for a GitHub name would open the LAN.
+func (in *Input) learned(f family) []Learned {
+	block := in.block6()
+	blocked := func(a netip.Addr) bool {
+		if a.Is4() {
+			return slices.ContainsFunc(config.PrivateRanges, func(p netip.Prefix) bool { return p.Contains(a) })
+		}
+		return !globalUnicast6.Contains(a) || slices.ContainsFunc(block, func(p netip.Prefix) bool { return p.Contains(a) })
+	}
 	var out []Learned
-	for _, l := range all {
-		if l.Left > 0 && l.Addr.Unmap().Is4() == (f == ipv4) && len(out) < learnedMax {
-			out = append(out, Learned{Addr: l.Addr.Unmap(), Left: l.Left})
+	for _, l := range in.State.GitHub {
+		a := l.Addr.Unmap()
+		if l.Left > 0 && a.Is4() == (f == ipv4) && !blocked(a) && len(out) < learnedMax {
+			out = append(out, Learned{Addr: a, Left: l.Left})
 		}
 	}
 	return out
+}
+
+// block6 answers the IPv6 prefixes jobs never reach on this host.
+func (in *Input) block6() []netip.Prefix {
+	block := slices.Concat(blocked6, in.Host.Egress.Block6)
+	for _, p := range []netip.Prefix{in.State.Self64, in.State.Own64} {
+		if p.IsValid() {
+			block = append(block, p)
+		}
+	}
+	return outermost(block)
 }
 
 // destinations are the rules forward and output share, with no interface
@@ -291,13 +312,7 @@ func destinations(in *Input, v6, global6 bool) []rule {
 	}
 	rs = append(rs, rule{daddr: config.PrivateRanges, action: drop})
 	if v6 {
-		block := slices.Concat(blocked6, e.Block6)
-		for _, p := range []netip.Prefix{in.State.Self64, in.State.Own64} {
-			if p.IsValid() {
-				block = append(block, p)
-			}
-		}
-		rs = append(rs, rule{daddr: outermost(block), action: drop})
+		rs = append(rs, rule{daddr: in.block6(), action: drop})
 		if global6 {
 			rs = append(rs, rule{daddr: []netip.Prefix{globalUnicast6}, notDaddr: true, action: drop})
 		} else {

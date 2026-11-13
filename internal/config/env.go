@@ -26,7 +26,10 @@ type Orchestrator struct {
 	PoolName          string
 	DiagDir           string
 	// TLSDir holds ca.pem, orchestrator.pem and orchestrator-key.pem.
-	TLSDir        string
+	TLSDir string
+	// secretFiles are the credential _FILE paths the environment names,
+	// made absolute.
+	secretFiles   []secretPath
 	DiagRetention time.Duration
 }
 
@@ -116,6 +119,18 @@ func readOrchestrator() (*Orchestrator, []error) {
 			errs = append(errs, fmt.Errorf("GITHUB_PROXY: %w", err))
 		}
 		o.GitHub.Proxy = proxy
+	}
+	for _, key := range []envx.Key{"GITHUB_APP_PRIVATE_KEY_FILE", "GITHUB_TOKEN_FILE"} {
+		raw := envx.String(key)
+		if raw == "" {
+			continue
+		}
+		abs, err := filepath.Abs(raw)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", key, err))
+			continue
+		}
+		o.secretFiles = append(o.secretFiles, secretPath{key: string(key), path: abs, remedy: "the file a mount of its own"})
 	}
 	errs = append(errs, readCredential(&o.GitHub)...)
 	return o, errs

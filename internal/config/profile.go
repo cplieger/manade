@@ -91,7 +91,7 @@ var dockerDefaultCapabilities = []string{
 }
 
 // parseMemory refuses a limit under 6 MiB, the least Docker accepts at create
-// (moby's linuxMinMemory).
+// (linuxMinMemory in https://github.com/moby/moby/blob/docker-v29.0.0/daemon/daemon_unix.go).
 func parseMemory(raw string) (int64, error) {
 	n, err := parseSize(raw)
 	if err == nil && n < 6<<20 {
@@ -107,7 +107,7 @@ var (
 	profileNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,31}$`)
 	// imageRefRe is the Docker reference grammar (distribution/reference),
 	// with sha256 the one digest algorithm.
-	imageRefRe = regexp.MustCompile(`^(?:(?:[a-zA-Z0-9]|[a-zA-Z0-9][a-zA-Z0-9-]*[a-zA-Z0-9])(?:\.(?:[a-zA-Z0-9]|[a-zA-Z0-9][a-zA-Z0-9-]*[a-zA-Z0-9]))*(?::[0-9]+)?/)?` +
+	imageRefRe = regexp.MustCompile(`^(?:(?:(?:[a-zA-Z0-9]|[a-zA-Z0-9][a-zA-Z0-9-]*[a-zA-Z0-9])(?:\.(?:[a-zA-Z0-9]|[a-zA-Z0-9][a-zA-Z0-9-]*[a-zA-Z0-9]))*|\[[a-fA-F0-9:]+\])(?::[0-9]+)?/)?` +
 		`[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*(?:/[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*)*` +
 		`(?::[\w][\w.-]{0,127})?(?:@sha256:[a-f0-9]{64})?$`)
 	// userRe admits uid:gid with neither 0; nine digits stay under the

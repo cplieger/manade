@@ -105,3 +105,27 @@ func host(t *testing.T, cfg *Config, name string) *Host {
 	}
 	return h
 }
+
+// wantLine asserts that a line of err names key and holds every substring:
+// quote bounds a long path, so a temporary directory's path is not matched.
+func wantLine(t *testing.T, err error, key string, subs ...string) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("err = nil, want a line for %s", key)
+	}
+	for line := range strings.Lines(err.Error()) {
+		if strings.HasPrefix(strings.TrimPrefix(line, "config: "), key+": ") && containsAll(line, subs) {
+			return
+		}
+	}
+	t.Errorf("err = %q, want a line for %s holding %q", err, key, subs)
+}
+
+func containsAll(s string, subs []string) bool {
+	for _, sub := range subs {
+		if !strings.Contains(s, sub) {
+			return false
+		}
+	}
+	return true
+}

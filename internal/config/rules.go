@@ -3,6 +3,7 @@ package config
 import (
 	"net/netip"
 	"path"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -23,13 +24,14 @@ const registryPort = 443
 // check runs the rules that join a host's section to the profiles it serves
 // and to the environment. Every field is parsed by then.
 func (c *Config) check(p *problems) {
-	confDir := c.configDir()
-	if c.Self != nil && pathinside.Root(confDir).Contains(c.Self.TLSDir) {
-		p.addf("TLS_DIR", "%s lies at or under the config file's directory %s, which every host on this machine mounts; give the TLS files a mount of their own",
-			quote(c.Self.TLSDir), quote(confDir))
+	for _, s := range c.secretPaths() {
+		if c.underConfig(s.path, true) {
+			p.addf(s.key, "%s lies at or under the config file's directory %s, which every host on this machine mounts; give %s",
+				quote(s.path), quote(c.configDir()), s.remedy)
+		}
 	}
 	for i := range c.Hosts {
-		checkHost(&c.Hosts[i], confDir, p)
+		c.checkHost(&c.Hosts[i], p)
 	}
 	for i := range c.Profiles {
 		c.checkProfile(&c.Profiles[i], p)
@@ -39,7 +41,51 @@ func (c *Config) check(p *problems) {
 
 func (c *Config) configDir() string { return path.Dir(c.File) }
 
-func checkHost(h *Host, confDir string, p *problems) {
+// secretPath is a path of this role's own that holds a secret, and what its
+// refusal asks the operator to give.
+type secretPath struct{ key, path, remedy string }
+
+// secretPaths answers this role's own secret paths from the environment.
+func (c *Config) secretPaths() []secretPath {
+	const tls = "the TLS files a mount of their own"
+	switch {
+	case c.Self != nil:
+		return []secretPath{{"TLS_DIR", c.Self.TLSDir, tls}}
+	case c.Orchestrator != nil:
+		return append([]secretPath{{"TLS_DIR", c.Orchestrator.TLSDir, tls}}, c.Orchestrator.secretFiles...)
+	}
+	return nil
+}
+
+// underConfig reports whether p, unless empty, lies at or under the config
+// file's directory. A local p is a path of this process's own container, so
+// it is also compared with its and the directory's symlinks resolved; a path
+// that does not exist yet is compared as written.
+func (c *Config) underConfig(p string, local bool) bool {
+	if p == "" {
+		return false
+	}
+	dirs, paths := []string{c.configDir()}, []string{p}
+	if local {
+		dirs, paths = withResolved(dirs[0]), withResolved(p)
+	}
+	for _, d := range dirs {
+		if slices.ContainsFunc(paths, pathinside.Root(d).Contains) {
+			return true
+		}
+	}
+	return false
+}
+
+// withResolved answers p and, when it exists, p with its symlinks resolved.
+func withResolved(p string) []string {
+	if r, err := filepath.EvalSymlinks(p); err == nil && r != p {
+		return []string{p, r}
+	}
+	return []string{p}
+}
+
+func (c *Config) checkHost(h *Host, p *problems) {
 	at := func(key string) string { return hostPath(h.Name) + "." + key }
 	checkEgress(&h.Egress, at, p)
 	checkSubnet(h, at, p)
@@ -50,9 +96,10 @@ func checkHost(h *Host, confDir string, p *problems) {
 			}
 		}
 	}
-	if h.RegistryAuth != "" && pathinside.Root(confDir).Contains(h.RegistryAuth) {
+	own := c.Self != nil && c.Self.Name == h.Name
+	if c.underConfig(h.RegistryAuth, own) {
 		p.addf(at("registry_auth"), "%s lies at or under the config file's directory %s, which every host on this machine mounts; give the file a mount of its own",
-			quote(h.RegistryAuth), quote(confDir))
+			quote(h.RegistryAuth), quote(c.configDir()))
 	}
 }
 
@@ -190,9 +237,9 @@ func checkRegistry(pr *Profile, h *Host, at func(string) string, p *problems) {
 }
 
 // registry answers an image reference's registry name and port, with ""
-// for Docker Hub and port 0 for one out of range. The first component is a
-// registry only when it holds a dot, a colon or an upper-case letter, or is
-// localhost, as in splitDockerDomain of
+// for Docker Hub, an IPv6 host without its brackets and port 0 for one out
+// of range. The first component is a registry only when it holds a dot, a
+// colon or an upper-case letter, or is localhost, as in splitDockerDomain of
 // https://github.com/distribution/reference/blob/main/normalize.go.
 func registry(ref string) (name string, port uint16) {
 	first, _, ok := strings.Cut(ref, "/")
@@ -200,6 +247,10 @@ func registry(ref string) (name string, port uint16) {
 		return "", registryPort
 	}
 	name, rawPort, hasPort := strings.Cut(first, ":")
+	if rest, ok := strings.CutPrefix(first, "["); ok {
+		name, rest, _ = strings.Cut(rest, "]")
+		rawPort, hasPort = strings.CutPrefix(rest, ":")
+	}
 	port = registryPort
 	if hasPort {
 		n, err := strconv.ParseUint(rawPort, 10, 16)

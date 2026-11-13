@@ -83,6 +83,7 @@ func TestProfileImageFields(t *testing.T) {
 		{"onlyRunnerImage", "runner_image: build", "build", ""},
 		{"neither", "", "base", ""},
 		{"registryPort", "image: registry.local:5000/team/runner", "", "registry.local:5000/team/runner"},
+		{"ipv6Registry", `image: "[fd00::5]:5000/team/runner"`, "", "[fd00::5]:5000/team/runner"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -127,6 +128,9 @@ func TestProfileInvalidForms(t *testing.T) {
 		{"runnerImageUnknown", "runner_image: ubuntu", "profiles.p.runner_image: want one of base, build, browser, docker"},
 		{"imageUppercase", "image: Alpine", "profiles.p.image: want an image reference"},
 		{"imageShortDigest", "image: alpine@sha256:abc", "profiles.p.image"},
+		{"imageIPv6Unbracketed", `image: "fd00::5:5000/runner"`, "profiles.p.image: want an image reference"},
+		{"imageIPv6Unclosed", `image: "[fd00::5:5000/runner"`, "profiles.p.image: want an image reference"},
+		{"imageIPv6PortOutOfRange", `image: "[fd00::5]:70000/runner"`, "profiles.p.image: want a registry port from 1 to 65535"},
 		{"commandEmpty", "command: []", "profiles.p.command: want the runner's path"},
 		{"commandRelative", "command: [run.sh]", "profiles.p.command[0]: want an absolute, clean path"},
 		{"commandDotDot", "command: [/home/runner/../run.sh]", "profiles.p.command[0]"},

@@ -19,7 +19,8 @@ const (
 	// EmbeddedUpstreamWait and embeddedUpstreams are Docker's embedded
 	// resolver's per-upstream wait and upstream count, extIOTimeout and
 	// maxExtDNS in https://github.com/moby/moby/blob/docker-v29.0.0/daemon/libnetwork/resolver.go.
-	// The supervisor's forwarder must give up on each upstream within it.
+	// On an internet: false host its one upstream is the supervisor's
+	// forwarder, which must answer each query within it in total.
 	EmbeddedUpstreamWait = 4 * time.Second
 	embeddedUpstreams    = 3
 	// ExchangeSlack is added to a job-leg check's timeout for its exchange
@@ -211,7 +212,7 @@ func (p *planner) jobLeg() {
 			p.blockLocal("the job network's gateway", gw, 1)
 		}
 		p.gateway()
-		for _, r := range p.resolvers(true) {
+		for _, r := range p.privateResolvers() {
 			p.block("a private resolver, reached directly", r, 53)
 		}
 		p.blockLocal("another job", in.Listener, in.ListenerPort)
@@ -221,11 +222,19 @@ func (p *planner) jobLeg() {
 	if !p.e.Open && !p.e.Internet {
 		p.block("a public address outside GitHub's names", outsideGitHub.Addr(), outsideGitHub.Port())
 	}
-	p.add(&Check{
-		Name: "a lookup through the job's resolver", Kind: KindResolve, Addr: GitHubAPI,
-		Timeout: time.Duration(min(len(p.in.Host.DNS), embeddedUpstreams)) * EmbeddedUpstreamWait,
-	})
+	p.add(&Check{Name: "a lookup through the job's resolver", Kind: KindResolve, Addr: GitHubAPI, Timeout: p.jobLookup()})
 	p.ipv6()
+}
+
+// jobLookup is the embedded resolver's wait across the upstreams it asks:
+// the configured resolvers, or on an internet: false host the supervisor's
+// forwarder alone.
+func (p *planner) jobLookup() time.Duration {
+	n := min(len(p.in.Host.DNS), embeddedUpstreams)
+	if !p.e.Open && !p.e.Internet {
+		n = 1
+	}
+	return time.Duration(n) * EmbeddedUpstreamWait
 }
 
 // gateway adds the outward gateway's ports 1 and 53, 53 only when no
@@ -285,10 +294,8 @@ func (p *planner) outputLeg() {
 		return
 	}
 	p.gateway()
-	for _, r := range p.resolvers(false) {
-		if !slices.Contains(p.in.Host.DNS, r) {
-			p.block("an original resolver the host does not use", r, 53)
-		}
+	for _, r := range p.unconfiguredOriginals() {
+		p.block("an original resolver the host does not use", r, 53)
 	}
 	for _, r := range p.in.Host.DNS {
 		if !p.e.Internet || private(r) {
@@ -301,14 +308,19 @@ func (p *planner) outputLeg() {
 	}
 }
 
-// resolvers answers the private resolvers among the original ones and,
-// with configured, the configured ones too.
-func (p *planner) resolvers(configured bool) []netip.Addr {
-	all := slices.Clone(p.in.Original.Addrs)
-	if configured {
-		all = append(all, p.in.Host.DNS...)
-	}
+// privateResolvers answers the private resolvers, original and configured.
+func (p *planner) privateResolvers() []netip.Addr {
+	all := slices.Concat(p.in.Original.Addrs, p.in.Host.DNS)
 	return slices.DeleteFunc(all, func(a netip.Addr) bool { return !private(a) })
+}
+
+// unconfiguredOriginals answers the original resolvers the output chain
+// drops port 53 to: the private ones, and without internet the public ones
+// too. Loopback ones live in the machine's namespace.
+func (p *planner) unconfiguredOriginals() []netip.Addr {
+	return slices.DeleteFunc(slices.Clone(p.in.Original.Addrs), func(a netip.Addr) bool {
+		return slices.Contains(p.in.Host.DNS, a) || a.IsLoopback() || (p.e.Internet && !private(a))
+	})
 }
 
 // private reports whether a is a LAN address: inside the private IPv4

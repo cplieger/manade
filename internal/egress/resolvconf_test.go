@@ -51,6 +51,11 @@ func TestParseResolvConf(t *testing.T) {
 			file: "nameserver fe80::1%eth0\n# ExtServers: [host(fe80::1%2)]\n",
 			want: []netip.Addr{addr("fe80::1")},
 		},
+		{
+			name: "mapped IPv4 read as IPv4",
+			file: "nameserver ::ffff:10.0.0.53\nnameserver ::ffff:127.0.0.11\n# ExtServers: [host(::ffff:10.0.0.54)]\n",
+			want: []netip.Addr{addr("10.0.0.53"), addr("10.0.0.54")},
+		},
 		{name: "empty", unknown: true},
 		{name: "an empty ExtServers comment", file: "nameserver 127.0.0.11\n# ExtServers: []\n", unknown: true},
 	} {

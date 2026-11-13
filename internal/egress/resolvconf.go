@@ -14,8 +14,8 @@ var dockerResolver = netip.MustParseAddr("127.0.0.11")
 // the host rewrote it.
 type Resolvers struct {
 	// Addrs are the nameservers the file named, then the upstreams its
-	// ExtServers comment lists, each once and in that order, with no zone
-	// and Docker's embedded resolver left out.
+	// ExtServers comment lists, each once and in that order, unmapped, with
+	// no zone and Docker's embedded resolver left out.
 	Addrs []netip.Addr
 	// Unknown is true when Addrs is empty: the file named only Docker's
 	// embedded resolver, or nothing, and no ExtServers comment listed its
@@ -46,9 +46,9 @@ func ParseResolvConf(data []byte) Resolvers {
 	}
 	var out []netip.Addr
 	for _, a := range slices.Concat(named, ext) {
-		// The rules and the probe key on addresses; a zone names an
-		// interface of the machine's that neither has.
-		a = a.WithZone("")
+		// The rules key on addresses: a zone names a machine interface they
+		// lack, and a mapped IPv4 address is reached as IPv4.
+		a = a.WithZone("").Unmap()
 		if a != dockerResolver && !slices.Contains(out, a) {
 			out = append(out, a)
 		}
