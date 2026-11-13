@@ -274,8 +274,12 @@ func ipsetDefs(out []byte) map[string]ipsetDef {
 }
 
 // saved is one table of iptables-save's output: each chain's rules in order,
-// after "-A <chain> ", with counters dropped.
-type saved map[string][]string
+// after "-A <chain> ", and beside them the packets -c listed for each, 0
+// without -c.
+type saved struct {
+	rules   map[string][]string
+	packets map[string][]uint64
+}
 
 // parseSave parses iptables-save output, with or without -c, into its
 // tables. A chain declared with no rule is present with none.
@@ -286,9 +290,9 @@ func parseSave(out []byte) map[string]saved {
 		line = strings.TrimRight(line, "\n")
 		switch {
 		case strings.HasPrefix(line, "*"):
-			cur = saved{}
+			cur = saved{rules: map[string][]string{}, packets: map[string][]uint64{}}
 			tables[line[1:]] = cur
-		case cur != nil:
+		case cur.rules != nil:
 			cur.add(line)
 		}
 	}
@@ -298,19 +302,23 @@ func parseSave(out []byte) map[string]saved {
 // add records one line of a table: a chain declaration or a rule.
 func (sv saved) add(line string) {
 	if decl, ok := strings.CutPrefix(line, ":"); ok {
-		if name, _, ok := strings.Cut(decl, " "); ok && sv[name] == nil {
-			sv[name] = []string{}
+		if name, _, ok := strings.Cut(decl, " "); ok && sv.rules[name] == nil {
+			sv.rules[name] = []string{}
 		}
 		return
 	}
-	if strings.HasPrefix(line, "[") {
-		if _, rest, ok := strings.Cut(line, "] "); ok {
+	var packets uint64
+	if c, ok := strings.CutPrefix(line, "["); ok {
+		if counts, rest, ok := strings.Cut(c, "] "); ok {
+			p, _, _ := strings.Cut(counts, ":")
+			packets, _ = strconv.ParseUint(p, 10, 64)
 			line = rest
 		}
 	}
 	if rest, ok := strings.CutPrefix(line, "-A "); ok {
 		if name, r, ok := strings.Cut(rest, " "); ok {
-			sv[name] = append(sv[name], r)
+			sv.rules[name] = append(sv.rules[name], r)
+			sv.packets[name] = append(sv.packets[name], packets)
 		}
 	}
 }

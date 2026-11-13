@@ -57,7 +57,9 @@ type nftSetDef struct {
 type nftTableState struct {
 	chains map[string]nftChainDef
 	rules  map[string][]string
-	sets   map[string]nftSetDef
+	// packets are each listed rule's counter, 0 for a rule without one.
+	packets map[string][]uint64
+	sets    map[string]nftSetDef
 }
 
 func (rs *Ruleset) compareNFT(data []byte) []error {
@@ -224,7 +226,7 @@ func addNFTObject(tables map[string]*nftTableState, kind string, raw json.RawMes
 	}
 	t := tables[key]
 	if t == nil {
-		t = &nftTableState{chains: map[string]nftChainDef{}, rules: map[string][]string{}, sets: map[string]nftSetDef{}}
+		t = &nftTableState{chains: map[string]nftChainDef{}, rules: map[string][]string{}, packets: map[string][]uint64{}, sets: map[string]nftSetDef{}}
 		tables[key] = t
 	}
 	switch kind {
@@ -239,10 +241,31 @@ func addNFTObject(tables map[string]*nftTableState, kind string, raw json.RawMes
 		}
 	case "rule":
 		t.rules[hdr.Chain] = append(t.rules[hdr.Chain], canonRule(raw))
+		t.packets[hdr.Chain] = append(t.packets[hdr.Chain], rulePackets(raw))
 	case "set":
 		t.sets[hdr.Name] = parseSetDef(raw)
 	}
 	return nil
+}
+
+// rulePackets answers the packets of a listed rule's counter expression.
+func rulePackets(raw json.RawMessage) uint64 {
+	var r struct {
+		Expr []struct {
+			Counter *struct {
+				Packets uint64 `json:"packets"`
+			} `json:"counter"`
+		} `json:"expr"`
+	}
+	if json.Unmarshal(raw, &r) != nil {
+		return 0
+	}
+	for _, e := range r.Expr {
+		if e.Counter != nil {
+			return e.Counter.Packets
+		}
+	}
+	return 0
 }
 
 func parseSetDef(raw json.RawMessage) nftSetDef {
@@ -518,7 +541,7 @@ func (rs *Ruleset) compareIPT(rb *ReadBack) []error {
 	}
 	jumps := append(slices.Clone(rs.Jumps), Jump{Table: tableFilter, Chain: iptDocker, Target: iptFwd})
 	for _, j := range jumps {
-		rules := byFamily[j.IPv6][j.Table][j.Chain]
+		rules := byFamily[j.IPv6][j.Table].rules[j.Chain]
 		if len(rules) == 0 || rules[0] != "-j "+j.Target {
 			errs = append(errs, fmt.Errorf("%s %s %s: the jump to %s is not its first rule", tool(j.IPv6), j.Table, j.Chain, j.Target))
 		}
@@ -531,7 +554,7 @@ func compareOpenIPT(byFamily map[bool]map[string]saved) []error {
 	var errs []error
 	for _, f := range []family{ipv4, ipv6} {
 		for _, name := range ownChains(f) {
-			if rules := byFamily[f == ipv6][tableFilter][name]; len(rules) > 0 {
+			if rules := byFamily[f == ipv6][tableFilter].rules[name]; len(rules) > 0 {
 				errs = append(errs, fmt.Errorf("%s filter %s holds rules on an open host: %s", tool(f == ipv6), name, rules[0]))
 			}
 		}
@@ -556,7 +579,7 @@ func (rs *Ruleset) compareIPSets(defs map[string]ipsetDef) []error {
 }
 
 func compareChain(where, name string, table saved, want []string) error {
-	got, ok := table[name]
+	got, ok := table.rules[name]
 	if !ok {
 		return fmt.Errorf("%s: chain %s is missing", where, name)
 	}

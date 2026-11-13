@@ -162,6 +162,9 @@ type rule struct {
 	notDaddr           bool
 	// nd matches ICMPv6 neighbour solicitations and advertisements.
 	nd bool
+	// after marks a counting rule that follows the chain's drops, which a
+	// probe packet reaches only when no drop took it.
+	after bool
 }
 
 // chain is one of the three filter chains, named by its hook.
@@ -370,9 +373,10 @@ func counted(rules []rule, v6 bool) []rule {
 		}
 		out = append(out, *r)
 	}
-	out = append(out, (&rule{}).counter(ipv4))
+	after := &rule{after: true}
+	out = append(out, after.counter(ipv4))
 	if v6 {
-		out = append(out, (&rule{}).counter(ipv6))
+		out = append(out, after.counter(ipv6))
 	}
 	return out
 }

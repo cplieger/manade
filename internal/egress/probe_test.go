@@ -1,0 +1,329 @@
+package egress
+
+import (
+	"fmt"
+	"net/netip"
+	"slices"
+	"testing"
+	"time"
+
+	"github.com/cplieger/manade/internal/config"
+)
+
+// want is one planned check as the test reads it: leg, kind and address.
+type want struct {
+	leg  Leg
+	kind Kind
+	addr string
+}
+
+func (w want) String() string { return fmt.Sprintf("%d/%d %s", w.leg, w.kind, w.addr) }
+
+func planned(p *Plan) []want {
+	out := make([]want, len(p.Checks))
+	for i, c := range p.Checks {
+		out[i] = want{leg: c.Leg, kind: c.Kind, addr: c.Addr}
+	}
+	return out
+}
+
+// probeInput is a host on the job network 172.18.0.0/24 behind the outward
+// gateway 172.19.0.1, whose original resolv.conf named 192.168.1.87.
+func probeInput(e config.Egress, dns ...netip.Addr) *ProbeInput {
+	if len(dns) == 0 {
+		dns = config.DefaultDNS
+	}
+	in := &ProbeInput{
+		Host:           &config.Host{Name: "default", DNS: dns, Egress: e},
+		Original:       Resolvers{Addrs: []netip.Addr{addr("192.168.1.87")}},
+		JobGateway:     addr("172.18.0.1"),
+		Listener:       addr("172.18.0.3"),
+		OutwardGateway: addr("172.19.0.1"),
+		APIPort:        7464,
+		ListenerPort:   7465,
+	}
+	if e.IPv6 {
+		in.JobGateway6 = addr("fdc6:6d61:6e61:6465::1")
+		in.Listener6 = addr("fdc6:6d61:6e61:6465::3")
+		in.OutwardGateway6 = addr("fd4d:6169:6e65::1")
+		in.Own6 = addr("fd4d:6169:6e65::2")
+	}
+	return in
+}
+
+func TestPlanProbe(t *testing.T) {
+	t.Parallel()
+	const (
+		job    = LegJob
+		output = LegOutput
+		block  = KindBlock
+	)
+	github := want{leg: job, kind: KindReach, addr: "api.github.com:443"}
+	jobLookup := want{leg: job, kind: KindResolve, addr: "api.github.com"}
+	outLookup := want{leg: output, kind: KindResolve, addr: "api.github.com"}
+	for _, tc := range []struct {
+		in   *ProbeInput
+		name string
+		want []want
+	}{
+		{
+			name: "internet",
+			in: probeInput(config.Egress{Internet: true, Allow: []config.Allow{
+				{To: pfx("10.0.0.50/32"), Protocol: config.ProtocolTCP, Ports: ports([2]uint16{5432, 5432})},
+				{To: pfx("192.168.2.0/24"), Protocol: config.ProtocolBoth, Ports: ports([2]uint16{8000, 8100})},
+				{To: pfx("192.168.3.0/31"), Protocol: config.ProtocolTCP, Ports: ports([2]uint16{22, 22})},
+				{To: pfx("192.168.4.4/32"), Protocol: config.ProtocolUDP, Ports: ports([2]uint16{514, 514})},
+			}}),
+			want: []want{
+				{job, block, "172.18.0.1:7464"},
+				{job, block, "172.18.0.1:1"},
+				{job, block, "172.19.0.1:1"},
+				{job, block, "172.19.0.1:53"},
+				{job, block, "192.168.1.87:53"},
+				{job, block, "172.18.0.3:7465"},
+				github, jobLookup,
+				{job, KindNoIPv6, "[2606:4700:4700::1111]:443"},
+				{job, KindTry, "10.0.0.50:5432"},
+				{job, KindTry, "192.168.2.1:8000"},
+				{job, KindTry, "192.168.3.0:22"},
+				{output, block, "172.19.0.1:1"},
+				{output, block, "172.19.0.1:53"},
+				{output, block, "192.168.1.87:53"},
+				outLookup,
+				{output, KindNoIPv6, "[2606:4700:4700::1111]:443"},
+			},
+		},
+		{
+			// A configured resolver at the outward gateway keeps port 53
+			// open from the host's stack only; jobs reach it through their
+			// embedded resolver alone. Without internet every configured
+			// resolver's other ports are dropped.
+			name: "internet off, a resolver at the gateway, originals unknown",
+			in: func() *ProbeInput {
+				in := probeInput(config.Egress{}, addr("172.19.0.1"), addr("1.1.1.1"))
+				in.Original = Resolvers{Unknown: true}
+				in.APIPort = 0
+				return in
+			}(),
+			want: []want{
+				{job, block, "172.18.0.1:1"},
+				{job, block, "172.19.0.1:1"},
+				{job, block, "172.19.0.1:53"},
+				{job, block, "172.18.0.3:7465"},
+				github,
+				{job, block, "9.9.9.9:443"},
+				jobLookup,
+				{job, KindNoIPv6, "[2606:4700:4700::1111]:443"},
+				{output, block, "172.19.0.1:1"},
+				{output, block, "1.1.1.1:1"},
+				outLookup,
+				{output, KindNoIPv6, "[2606:4700:4700::1111]:443"},
+			},
+		},
+		{
+			name: "a private configured resolver and an IPv6 original without ipv6",
+			in: func() *ProbeInput {
+				in := probeInput(config.Egress{Internet: true}, addr("192.168.1.77"))
+				in.Original.Addrs = append(in.Original.Addrs, addr("fd00::53"), addr("127.0.0.53"), addr("8.8.4.4"))
+				in.JobGateway6 = addr("fdc6:6d61:6e61:6465::1")
+				return in
+			}(),
+			want: []want{
+				{job, block, "172.18.0.1:7464"},
+				{job, block, "172.18.0.1:1"},
+				{job, block, "172.19.0.1:1"},
+				{job, block, "172.19.0.1:53"},
+				{job, block, "192.168.1.87:53"},
+				{job, block, "192.168.1.77:53"},
+				{job, block, "172.18.0.3:7465"},
+				github, jobLookup,
+				{job, KindNoIPv6, "[2606:4700:4700::1111]:443"},
+				{output, block, "172.19.0.1:1"},
+				{output, block, "172.19.0.1:53"},
+				{output, block, "192.168.1.87:53"},
+				{output, block, "192.168.1.77:1"},
+				outLookup,
+				{output, KindNoIPv6, "[2606:4700:4700::1111]:443"},
+			},
+		},
+		{
+			name: "ipv6 with the /64 learned",
+			in: func() *ProbeInput {
+				in := probeInput(config.Egress{Internet: true, IPv6: true})
+				in.Self64 = pfx("2a01:e0a:1259:2710::/64")
+				return in
+			}(),
+			want: []want{
+				{job, block, "172.18.0.1:7464"},
+				{job, block, "172.18.0.1:1"},
+				{job, block, "[fdc6:6d61:6e61:6465::1]:7464"},
+				{job, block, "[fdc6:6d61:6e61:6465::1]:1"},
+				{job, block, "172.19.0.1:1"},
+				{job, block, "172.19.0.1:53"},
+				{job, block, "192.168.1.87:53"},
+				{job, block, "172.18.0.3:7465"},
+				{job, block, "[fdc6:6d61:6e61:6465::3]:7465"},
+				github, jobLookup,
+				{job, KindReach, "[2606:4700:4700::1111]:443"},
+				{job, block, "[fd4d:6169:6e65::2]:1"},
+				{job, block, "[fd4d:6169:6e65::1]:1"},
+				{job, block, "[2a01:e0a:1259:2710::1]:1"},
+				{output, block, "172.19.0.1:1"},
+				{output, block, "172.19.0.1:53"},
+				{output, block, "192.168.1.87:53"},
+				outLookup,
+			},
+		},
+		{
+			// Until the /64 is learned the IPv6 internet check fails on
+			// its own: job IPv6 stays dropped (design §5.1).
+			name: "ipv6 with the /64 unlearned",
+			in:   probeInput(config.Egress{Internet: true, IPv6: true}),
+			want: []want{
+				{job, block, "172.18.0.1:7464"},
+				{job, block, "172.18.0.1:1"},
+				{job, block, "[fdc6:6d61:6e61:6465::1]:7464"},
+				{job, block, "[fdc6:6d61:6e61:6465::1]:1"},
+				{job, block, "172.19.0.1:1"},
+				{job, block, "172.19.0.1:53"},
+				{job, block, "192.168.1.87:53"},
+				{job, block, "172.18.0.3:7465"},
+				{job, block, "[fdc6:6d61:6e61:6465::3]:7465"},
+				github, jobLookup,
+				{job, KindReach, "[2606:4700:4700::1111]:443"},
+				{job, block, "[fd4d:6169:6e65::2]:1"},
+				{job, block, "[fd4d:6169:6e65::1]:1"},
+				{output, block, "172.19.0.1:1"},
+				{output, block, "172.19.0.1:53"},
+				{output, block, "192.168.1.87:53"},
+				outLookup,
+			},
+		},
+		{
+			name: "ipv6 with internet off",
+			in: func() *ProbeInput {
+				in := probeInput(config.Egress{IPv6: true})
+				in.Self64 = pfx("2a01:e0a:1259:2710::/64")
+				return in
+			}(),
+			want: []want{
+				{job, block, "172.18.0.1:7464"},
+				{job, block, "172.18.0.1:1"},
+				{job, block, "[fdc6:6d61:6e61:6465::1]:7464"},
+				{job, block, "[fdc6:6d61:6e61:6465::1]:1"},
+				{job, block, "172.19.0.1:1"},
+				{job, block, "172.19.0.1:53"},
+				{job, block, "192.168.1.87:53"},
+				{job, block, "172.18.0.3:7465"},
+				{job, block, "[fdc6:6d61:6e61:6465::3]:7465"},
+				github,
+				{job, block, "9.9.9.9:443"},
+				jobLookup,
+				{job, block, "[2606:4700:4700::1111]:443"},
+				{job, block, "[fd4d:6169:6e65::2]:1"},
+				{job, block, "[fd4d:6169:6e65::1]:1"},
+				{output, block, "172.19.0.1:1"},
+				{output, block, "172.19.0.1:53"},
+				{output, block, "192.168.1.87:53"},
+				{output, block, "1.1.1.1:1"},
+				{output, block, "8.8.8.8:1"},
+				outLookup,
+			},
+		},
+		{
+			name: "open",
+			in:   probeInput(config.Egress{Open: true}),
+			want: []want{github, jobLookup, outLookup},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := planned(PlanProbe(tc.in)); !slices.Equal(got, tc.want) {
+				t.Errorf("checks:\n got %v\nwant %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestPlanProbeTargetsAndTimeouts(t *testing.T) {
+	t.Parallel()
+	p := PlanProbe(probeInput(config.Egress{Internet: true}, addr("1.1.1.1"), addr("8.8.8.8"), addr("9.9.9.9")))
+	for _, c := range p.Checks {
+		t.Run(fmt.Sprintf("%d %s", c.Leg, c.Addr), func(t *testing.T) {
+			t.Parallel()
+			wantTimeout := ConnectTimeout
+			switch {
+			case c.Kind == KindResolve && c.Leg == LegJob:
+				// The probe asks the job's embedded resolver once.
+				wantTimeout = 3 * time.Second
+			case c.Kind == KindResolve:
+				// 3 s for each of the three configured resolvers.
+				wantTimeout = 9 * time.Second
+			}
+			if c.Timeout != wantTimeout {
+				t.Errorf("Timeout = %v, want %v", c.Timeout, wantTimeout)
+			}
+			wantExchange := time.Duration(0)
+			if c.Leg == LegJob {
+				wantExchange = c.Timeout + 2*time.Second
+			}
+			if c.Exchange() != wantExchange {
+				t.Errorf("Exchange = %v, want %v", c.Exchange(), wantExchange)
+			}
+			if c.Kind == KindBlock {
+				if ap := netip.MustParseAddrPort(c.Addr); ap.Addr() != c.Target {
+					t.Errorf("Target = %v, want the dialled address %v", c.Target, ap.Addr())
+				}
+			} else if c.Target.IsValid() {
+				t.Errorf("Target = %v on a check that is not a block", c.Target)
+			}
+			if c.Name == "" {
+				t.Error("the check has no name")
+			}
+		})
+	}
+}
+
+func TestPlanBound(t *testing.T) {
+	t.Parallel()
+	const call = 3 * time.Minute
+	t.Run("the internet plan", func(t *testing.T) {
+		t.Parallel()
+		p := PlanProbe(probeInput(config.Egress{Internet: true}))
+		// Twelve calls; the job leg's six blocks, its GitHub connection and
+		// its NoIPv6 check at 3 s and its lookup at 3 s for one resolver,
+		// each with 2 s of slack; the output leg's three blocks and NoIPv6
+		// at 3 s and its lookup at 3 s for each of the two default
+		// resolvers.
+		want := 12*call + 9*(3+2)*time.Second + (4*3+2*3)*time.Second
+		if got := p.Bound(call); got != want {
+			t.Errorf("Bound = %v, want %v", got, want)
+		}
+		if got := p.Deadline(call); got != 2*want {
+			t.Errorf("Deadline = %v, want %v", got, 2*want)
+		}
+	})
+	t.Run("exchanges summing past the call timeout", func(t *testing.T) {
+		t.Parallel()
+		e := config.Egress{Internet: true}
+		for i := range 40 {
+			e.Allow = append(e.Allow, config.Allow{
+				To: pfx("10.0.0.1/32"), Protocol: config.ProtocolTCP,
+				Ports: ports([2]uint16{uint16(8000 + i), uint16(8000 + i)}),
+			})
+		}
+		p := PlanProbe(probeInput(e))
+		var exchanges time.Duration
+		for i := range p.Checks {
+			exchanges += p.Checks[i].Exchange()
+		}
+		if exchanges <= call {
+			t.Fatalf("the exchanges sum to %v, want more than the %v call timeout", exchanges, call)
+		}
+		// The call timeout bounds the attach's 101 answer only, so every
+		// exchange adds to the bound beside the twelve calls.
+		if got, least := p.Bound(call), 12*call+exchanges; got < least {
+			t.Errorf("Bound = %v, want at least %v", got, least)
+		}
+	})
+}
