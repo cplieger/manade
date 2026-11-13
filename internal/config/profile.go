@@ -377,8 +377,8 @@ func (fp *fileProfile) hosts(path string, p *problems) []string {
 	for i, name := range *fp.Hosts {
 		at := path + "[" + strconv.Itoa(i) + "]"
 		switch {
-		case !hostNameRe.MatchString(name):
-			p.add(at, invalid(hostNameRule, name))
+		case CheckHostName(name) != nil:
+			p.add(at, CheckHostName(name))
 		case slices.Contains(out, name):
 			p.addf(at, "repeats host %s", quote(name))
 		default:

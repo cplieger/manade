@@ -21,6 +21,14 @@ var hostNameRe = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 
 const hostNameRule = "want a lowercase DNS label: letters, digits and dashes, at most 63, not starting or ending with a dash"
 
+// CheckHostName refuses a name no hosts key may have.
+func CheckHostName(name string) error {
+	if !hostNameRe.MatchString(name) {
+		return invalid(hostNameRule, name)
+	}
+	return nil
+}
+
 // DefaultDNS are a host's resolvers when its section names none.
 var DefaultDNS = []netip.Addr{netip.MustParseAddr("1.1.1.1"), netip.MustParseAddr("8.8.8.8")}
 

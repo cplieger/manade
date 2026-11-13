@@ -142,8 +142,8 @@ func readSelf() (*Self, []error) {
 	switch {
 	case s.Name == "":
 		errs = append(errs, errors.New("MANADE_HOST: required, the hosts key this host serves"))
-	case !hostNameRe.MatchString(s.Name):
-		errs = append(errs, fmt.Errorf("MANADE_HOST: %w", invalid(hostNameRule, s.Name)))
+	case CheckHostName(s.Name) != nil:
+		errs = append(errs, fmt.Errorf("MANADE_HOST: %w", CheckHostName(s.Name)))
 	default:
 		var err error
 		if s.Listen, err = parseListen(envx.String("MANADE_API_LISTEN"), s.Name); err != nil {
