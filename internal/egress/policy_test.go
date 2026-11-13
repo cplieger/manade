@@ -74,7 +74,7 @@ func scenarios() []scenario {
 		{name: "ipv6", in: Input{Host: v6Host(true), Job6: job6, State: learned}},
 		{name: "ipv6-unlearned", in: Input{Host: v6Host(true), Job6: job6}},
 		{name: "ipv6-internet-off", in: Input{Host: v6Host(false), Job6: job6, State: off6State}},
-		{name: "open", in: Input{Host: &config.Host{Name: "open", DNS: config.DefaultDNS, Egress: config.Egress{Open: true}}}},
+		{name: "open", in: Input{Host: &config.Host{Name: "open", DNS: config.DefaultDNS, Egress: config.Egress{Open: true, Internet: true}}}},
 	}
 }
 
@@ -197,6 +197,7 @@ func TestGenerateLearnedLeavesBlockedOut(t *testing.T) {
 	kept := []string{"140.82.112.3", "2606:50c0:8000::153"}
 	left := []string{
 		"10.1.2.3", "192.168.0.9", "172.16.5.5", "100.64.0.1", "169.254.169.254",
+		"224.0.0.251", "239.255.255.250", "255.255.255.255", "127.0.0.1", "0.0.0.0",
 		"fc00::1", "fd12::5", "fe80::1", "2001:db8::1", "64:ff9b::a01:203",
 		"2a01:e0a:1:5::1", "2a01:e0a:1259:2711::9", "::1",
 	}

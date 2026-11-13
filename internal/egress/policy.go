@@ -203,7 +203,7 @@ func Generate(in *Input, b Backend) (*Ruleset, error) {
 		return nil, errors.New("egress: no host section")
 	}
 	e := &in.Host.Egress
-	rs := &Ruleset{Backend: b, open: e.Open, ipv6: e.IPv6 && !e.Open}
+	rs := &Ruleset{Backend: b, open: e.Open, ipv6: e.IPv6}
 	if !e.Open {
 		if err := in.check(); err != nil {
 			return nil, err
@@ -269,7 +269,7 @@ func (in *Input) learned(f family) []Learned {
 	block := in.block6()
 	blocked := func(a netip.Addr) bool {
 		if a.Is4() {
-			return slices.ContainsFunc(config.PrivateRanges, func(p netip.Prefix) bool { return p.Contains(a) })
+			return !a.IsGlobalUnicast() || slices.ContainsFunc(config.PrivateRanges, func(p netip.Prefix) bool { return p.Contains(a) })
 		}
 		return !globalUnicast6.Contains(a) || slices.ContainsFunc(block, func(p netip.Prefix) bool { return p.Contains(a) })
 	}

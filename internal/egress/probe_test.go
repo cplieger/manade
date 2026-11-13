@@ -297,7 +297,7 @@ func TestPlanProbe(t *testing.T) {
 		},
 		{
 			name: "open",
-			in:   probeInput(config.Egress{Open: true}),
+			in:   probeInput(config.Egress{Open: true, Internet: true}),
 			want: []want{github, jobLookup, outLookup},
 		},
 	} {
@@ -320,8 +320,9 @@ func TestPlanProbeTargetsAndTimeouts(t *testing.T) {
 			switch {
 			case c.Kind == KindResolve && c.Leg == LegJob:
 				// Docker's embedded resolver waits 4 s on each of the
-				// three configured resolvers in turn.
-				wantTimeout = 12 * time.Second
+				// three configured resolvers in turn, and relays the last
+				// answer within 1 s.
+				wantTimeout = 13 * time.Second
 			case c.Kind == KindResolve:
 				// 3 s for each of the three configured resolvers.
 				wantTimeout = 9 * time.Second
@@ -350,6 +351,15 @@ func TestPlanProbeTargetsAndTimeouts(t *testing.T) {
 	}
 }
 
+// moby's embedded resolver gives up on its upstream after 4 s
+// (extIOTimeout), so the forwarder must answer strictly before then.
+func TestForwarderBudgetInsideEmbeddedWait(t *testing.T) {
+	t.Parallel()
+	if ForwarderBudget <= 0 || ForwarderBudget >= 4*time.Second {
+		t.Errorf("ForwarderBudget = %v, want above 0 and under the embedded resolver's 4s", ForwarderBudget)
+	}
+}
+
 func TestPlanBound(t *testing.T) {
 	t.Parallel()
 	const call = 3 * time.Minute
@@ -358,10 +368,10 @@ func TestPlanBound(t *testing.T) {
 		p := PlanProbe(probeInput(config.Egress{Internet: true}))
 		// Twelve calls; the job leg's six blocks, its GitHub connection and
 		// its NoIPv6 check at 3 s and its lookup at 4 s for each of the two
-		// default resolvers, each with 2 s of slack; the output leg's three
-		// blocks and NoIPv6 at 3 s and its lookup at 3 s for each of the
-		// two default resolvers.
-		want := 12*call + (8*(3+2)+(2*4+2))*time.Second + (4*3+2*3)*time.Second
+		// default resolvers plus 1 s, each with 2 s of slack; the output
+		// leg's three blocks and NoIPv6 at 3 s and its lookup at 3 s for
+		// each of the two default resolvers.
+		want := 12*call + (8*(3+2)+(2*4+1+2))*time.Second + (4*3+2*3)*time.Second
 		if got := p.Bound(call); got != want {
 			t.Errorf("Bound = %v, want %v", got, want)
 		}
@@ -374,13 +384,14 @@ func TestPlanBound(t *testing.T) {
 		dns         []netip.Addr
 		job, output time.Duration
 	}{
-		// The embedded resolver asks three upstreams at most.
-		{"two resolvers", []netip.Addr{addr("1.1.1.1"), addr("8.8.8.8")}, 8 * time.Second, 6 * time.Second},
-		{"four resolvers", []netip.Addr{addr("1.1.1.1"), addr("8.8.8.8"), addr("9.9.9.9"), addr("8.8.4.4")}, 12 * time.Second, 12 * time.Second},
+		// The embedded resolver asks three upstreams at most, 4 s each,
+		// and relays the last answer within 1 s.
+		{"two resolvers", []netip.Addr{addr("1.1.1.1"), addr("8.8.8.8")}, 9 * time.Second, 6 * time.Second},
+		{"four resolvers", []netip.Addr{addr("1.1.1.1"), addr("8.8.8.8"), addr("9.9.9.9"), addr("8.8.4.4")}, 13 * time.Second, 12 * time.Second},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			p := PlanProbe(probeInput(config.Egress{Open: true}, tc.dns...))
+			p := PlanProbe(probeInput(config.Egress{Open: true, Internet: true}, tc.dns...))
 			var got []time.Duration
 			for _, c := range p.Checks {
 				if c.Kind == KindResolve {
@@ -408,14 +419,14 @@ func TestPlanBound(t *testing.T) {
 			}
 		}
 		// The embedded resolver's one upstream is the supervisor's
-		// forwarder; the output leg asks each resolver for 3 s.
-		if want := []time.Duration{4 * time.Second, 6 * time.Second}; !slices.Equal(got, want) {
+		// forwarder, plus 1 s; the output leg asks each resolver for 3 s.
+		if want := []time.Duration{5 * time.Second, 6 * time.Second}; !slices.Equal(got, want) {
 			t.Errorf("lookup timeouts = %v, want %v", got, want)
 		}
 		// The job leg's six blocks, GitHub, 9.9.9.9 and NoIPv6 at 3 s and
-		// its lookup at 4 s, each with 2 s of slack; the output leg's five
+		// its lookup at 5 s, each with 2 s of slack; the output leg's five
 		// blocks and NoIPv6 at 3 s and its lookup at 6 s.
-		want := 12*call + (9*(3+2)+(4+2))*time.Second + (6*3+6)*time.Second
+		want := 12*call + (9*(3+2)+(5+2))*time.Second + (6*3+6)*time.Second
 		if b := p.Bound(call); b != want {
 			t.Errorf("Bound = %v, want %v", b, want)
 		}

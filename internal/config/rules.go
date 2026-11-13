@@ -226,6 +226,7 @@ func checkRegistry(pr *Profile, h *Host, at func(string) string, p *problems) {
 	}
 	name, port := registry(pr.Image)
 	addr, err := netip.ParseAddr(name)
+	addr = addr.Unmap()
 	switch {
 	case name == "":
 		p.addf(at("image"), "%s is on Docker Hub, which host %s cannot reach with egress.internet: false; use an image on ghcr.io or on a registry its allow entries cover",

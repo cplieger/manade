@@ -16,13 +16,19 @@ const (
 	// LookupTimeout bounds each configured resolver the output leg's lookup
 	// asks, once, so it never waits out resolv.conf's 5 s and two attempts.
 	LookupTimeout = 3 * time.Second
-	// EmbeddedUpstreamWait and embeddedUpstreams are Docker's embedded
+	// embeddedUpstreamWait and embeddedUpstreams are Docker's embedded
 	// resolver's per-upstream wait and upstream count, extIOTimeout and
 	// maxExtDNS in https://github.com/moby/moby/blob/docker-v29.0.0/daemon/libnetwork/resolver.go.
-	// On an internet: false host its one upstream is the supervisor's
-	// forwarder, which must answer each query within it in total.
-	EmbeddedUpstreamWait = 4 * time.Second
+	embeddedUpstreamWait = 4 * time.Second
 	embeddedUpstreams    = 3
+	// ForwarderBudget bounds an internet: false host's forwarder, its
+	// embedded resolver's one upstream, on each query across every resolver
+	// it asks (SERVFAIL past it): strictly inside embeddedUpstreamWait, so
+	// its answer lands before that wait gives up.
+	ForwarderBudget = embeddedUpstreamWait - 500*time.Millisecond
+	// lookupMargin is the job-leg lookup's time past the embedded
+	// resolver's last upstream wait, to relay an answer that came at its end.
+	lookupMargin = time.Second
 	// ExchangeSlack is added to a job-leg check's timeout for its exchange
 	// over the probe container's attached stream.
 	ExchangeSlack = 2 * time.Second
@@ -88,7 +94,9 @@ type Check struct {
 	Name string
 	// Addr is the host:port a connection check dials, or the name a
 	// KindResolve check looks up.
-	Addr    string
+	Addr string
+	// Timeout is the probe binary's deadline for the whole check: one
+	// connection, or one lookup through every resolver it asks.
 	Timeout time.Duration
 	Leg     Leg
 	Kind    Kind
@@ -219,22 +227,22 @@ func (p *planner) jobLeg() {
 		p.blockLocal("another job, over IPv6", in.Listener6, in.ListenerPort)
 	}
 	p.add(&Check{Name: "GitHub's API", Kind: KindReach, Addr: net.JoinHostPort(GitHubAPI, "443")})
-	if !p.e.Open && !p.e.Internet {
+	if !p.e.Internet {
 		p.block("a public address outside GitHub's names", outsideGitHub.Addr(), outsideGitHub.Port())
 	}
 	p.add(&Check{Name: "a lookup through the job's resolver", Kind: KindResolve, Addr: GitHubAPI, Timeout: p.jobLookup()})
 	p.ipv6()
 }
 
-// jobLookup is the embedded resolver's wait across the upstreams it asks:
-// the configured resolvers, or on an internet: false host the supervisor's
-// forwarder alone.
+// jobLookup is the embedded resolver's wait across the upstreams it asks,
+// the configured resolvers or on an internet: false host the supervisor's
+// forwarder alone, plus lookupMargin.
 func (p *planner) jobLookup() time.Duration {
 	n := min(len(p.in.Host.DNS), embeddedUpstreams)
-	if !p.e.Open && !p.e.Internet {
+	if !p.e.Internet {
 		n = 1
 	}
-	return time.Duration(n) * EmbeddedUpstreamWait
+	return time.Duration(n)*embeddedUpstreamWait + lookupMargin
 }
 
 // gateway adds the outward gateway's ports 1 and 53, 53 only when no

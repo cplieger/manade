@@ -29,8 +29,10 @@ type Egress struct {
 	Allow    []Allow
 	Block6   []netip.Prefix
 	Internet bool
-	Open     bool
-	IPv6     bool
+	// Open holds only with Internet true, IPv6 false and no Allow or
+	// Block6: checkEgress refuses those keys beside it.
+	Open bool
+	IPv6 bool
 	// The keys the file wrote, which the rules refuse beside open or where
 	// nothing is learned, whatever their value.
 	internetSet, ipv6Set, ipv6EchoSet bool

@@ -12,6 +12,12 @@
       "symbol": "go://github.com/cplieger/manade/internal/config#Secret.LogValue",
       "path": "internal/config/config.go",
       "reason": "staging: slog reaches LogValue once cmd/manade loads this package (build plan item 5); delete this entry there and give LogValue and String the DS1102 directives a reachable Secret needs"
+    },
+    {
+      "code": "DS1101",
+      "symbol": "go://github.com/cplieger/manade/internal/egress#ForwarderBudget",
+      "path": "internal/egress/probe.go",
+      "reason": "staging: the internet: false host's DNS forwarder bounds each query with ForwarderBudget (build plan item 5); delete this entry there"
     }
   ]
 }
