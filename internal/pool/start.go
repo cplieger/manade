@@ -56,7 +56,9 @@ func (p *Pool) runStarts(ctx context.Context) {
 // owed records a starting runner for each assignment a scale set holds a
 // reservation for and no runner serves: max(0, its funded assignments -
 // its live runners - the ended runners GitHub may still count, set.end).
-// Each record takes over its assignment's slot.
+// Each record takes over its assignment's slot. Unbacked assignments the
+// budget now covers are funded first: GitHub never cancels an assignment
+// whose scale set keeps polling, so one left unfunded would wait forever.
 func (p *Pool) owed() []*runner {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -66,6 +68,10 @@ func (p *Pool) owed() []*runner {
 		img := p.images[s.profile]
 		if p.stopping || s.scope.public || img == "" || now.Before(s.retryAt) {
 			continue
+		}
+		if s.asg.unbacked > 0 {
+			pending := max(0, s.asg.stats.Assigned-s.asg.unbacked-len(s.runners)-s.spending(now))
+			s.asg.unbacked -= min(s.asg.unbacked, max(0, p.fits(s, pending+s.asg.unbacked)-pending))
 		}
 		n := s.asg.stats.Assigned - s.asg.unbacked - len(s.runners) - s.spending(now)
 		for range n {

@@ -81,7 +81,7 @@ func (*Pool) rotate(s *set, start time.Time) bool {
 
 // Opened takes a new session's statistics. Assignments past the scale
 // set's runners take reservations from the budget as far as it covers
-// them; the rest are unbacked, and GitHub cancels them.
+// them; the rest are unbacked until the budget covers them (owed).
 func (p *Pool) Opened(ss github.ScaleSet, st github.Stats) {
 	p.mu.Lock()
 	s := p.set(ss)

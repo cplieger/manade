@@ -608,6 +608,41 @@ func TestBootBacksAssignmentsAfterOtherHoldings(t *testing.T) {
 			t.Errorf("unbacked = %d, want 4: app's 2 slots leave room for 2", unbacked)
 		}
 	})
+	t.Run("fundedOnceTheBudgetFrees", func(t *testing.T) {
+		// Live on 2026-11-13: a restart left one assignment unfunded and
+		// GitHub kept it assigned, so the job never got a runner.
+		fx := newFixture(t)
+		fx.polled(appDefault, fx.at, &github.Stats{Assigned: 2})
+		if n := fx.startAll(t); n != 2 {
+			t.Fatalf("app starts = %d, want 2", n)
+		}
+		fx.p.Opened(libDefault, github.Stats{Assigned: 6})
+		if n := fx.startAll(t); n != 2 {
+			t.Fatalf("lib starts at boot = %d, want the 2 the budget covers", n)
+		}
+		fx.p.mu.Lock()
+		var app []string
+		for name := range fx.p.set(appDefault).runners {
+			app = append(app, name)
+		}
+		fx.p.mu.Unlock()
+		for _, name := range app {
+			fx.dk.exit(name, 0, false)
+		}
+		fx.polled(appDefault, fx.at, &github.Stats{},
+			github.Event{Kind: github.Completed, Runner: app[0], RunID: 1, Name: "job-0", Result: "succeeded", Finished: epoch},
+			github.Event{Kind: github.Completed, Runner: app[1], RunID: 1, Name: "job-1", Result: "succeeded", Finished: epoch})
+		fx.reconcile(t)
+		if n := fx.startAll(t); n != 2 {
+			t.Errorf("lib starts once app's runners end = %d, want 2 more", n)
+		}
+		fx.p.mu.Lock()
+		unbacked := fx.p.set(libDefault).asg.unbacked
+		fx.p.mu.Unlock()
+		if unbacked != 2 {
+			t.Errorf("unbacked = %d, want 2 still waiting for the budget", unbacked)
+		}
+	})
 	t.Run("theProfileCap", func(t *testing.T) {
 		capped := strings.Replace(layout, "default: {cpus: 2,", "default: {max_runners: 1, cpus: 2,", 1)
 		fx := newFixtureFrom(t, load(t, capped), appDefault, appLarge, libDefault, orgDefault)

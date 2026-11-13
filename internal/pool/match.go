@@ -25,7 +25,8 @@ type assignments struct {
 	kept  map[jobKey]struct{}
 	stats github.Stats
 	// unbacked is how many assignments the previous process left that the
-	// budget could not fund at boot; they hold no reservation.
+	// budget has not funded yet; they hold no reservation until owed funds
+	// them.
 	unbacked int
 }
 
