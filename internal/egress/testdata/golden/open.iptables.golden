@@ -1,0 +1,15 @@
+# ipset restore -exist
+# iptables-restore --noflush
+*filter
+:MANADE-FWD - [0:0]
+:MANADE-OUT - [0:0]
+:MANADE-IN - [0:0]
+:DOCKER-USER - [0:0]
+COMMIT
+# ip6tables-restore --noflush
+*filter
+:MANADE-FWD - [0:0]
+:MANADE-OUT - [0:0]
+:MANADE-IN - [0:0]
+COMMIT
+# jumps

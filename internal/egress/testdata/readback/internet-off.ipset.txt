@@ -1,0 +1,23 @@
+Name: manade-probe4
+Type: hash:ip
+Revision: 6
+Header: family inet hashsize 1024 maxelem 65536 bucketsize 12 initval 0x0cde47e6
+Size in memory: 216
+References: 18
+Number of entries: 0
+
+Name: manade-target4
+Type: hash:ip
+Revision: 6
+Header: family inet hashsize 1024 maxelem 65536 bucketsize 12 initval 0xccd675f5
+Size in memory: 216
+References: 18
+Number of entries: 0
+
+Name: manade-gh4
+Type: hash:ip
+Revision: 6
+Header: family inet hashsize 1024 maxelem 65536 timeout 600 bucketsize 12 initval 0x81690daa
+Size in memory: 344
+References: 2
+Number of entries: 2

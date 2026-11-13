@@ -1,0 +1,54 @@
+table inet manade {}
+delete table inet manade
+table ip6 manade-nat {}
+delete table ip6 manade-nat
+table inet manade {
+	set manade-probe4 {
+		type ipv4_addr
+	}
+	set manade-target4 {
+		type ipv4_addr
+	}
+	set manade-gh4 {
+		type ipv4_addr
+		flags timeout
+		size 65536
+		elements = { 140.82.112.3 timeout 3600s, 140.82.112.4 timeout 1801s }
+	}
+	chain forward {
+		type filter hook forward priority filter - 10; policy accept;
+		iifname "manade*" oifname "manade*" ip saddr @manade-probe4 ip daddr @manade-target4 counter
+		iifname "manade*" oifname "manade*" drop
+		meta nfproto ipv6 drop
+		ct state established,related accept
+		iifname "manade*" ip daddr @manade-gh4 accept
+		iifname "manade*" ip daddr { 10.0.0.0/8, 100.64.0.0/10, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16 } ip saddr @manade-probe4 ip daddr @manade-target4 counter
+		iifname "manade*" ip daddr { 10.0.0.0/8, 100.64.0.0/10, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16 } drop
+		iifname "manade*" ip saddr @manade-probe4 ip daddr @manade-target4 counter
+		iifname "manade*" meta nfproto ipv4 drop
+		oifname "manade*" ip saddr @manade-probe4 ip daddr @manade-target4 ct state new counter
+		oifname "manade*" ct state new drop
+		ip saddr @manade-probe4 ip daddr @manade-target4 counter
+	}
+	chain output {
+		type filter hook output priority filter - 10; policy accept;
+		oifname "lo" accept
+		ct state established,related accept
+		meta nfproto ipv6 drop
+		ip daddr { 1.1.1.1, 192.168.1.53 } meta l4proto { tcp, udp } th dport 53 accept
+		ip daddr @manade-gh4 accept
+		oifname != "manade*" ip daddr { 10.0.0.0/8, 100.64.0.0/10, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16 } ip saddr @manade-probe4 ip daddr @manade-target4 counter
+		oifname != "manade*" ip daddr { 10.0.0.0/8, 100.64.0.0/10, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16 } drop
+		oifname != "manade*" ip saddr @manade-probe4 ip daddr @manade-target4 counter
+		oifname != "manade*" meta nfproto ipv4 drop
+		ip saddr @manade-probe4 ip daddr @manade-target4 counter
+	}
+	chain input {
+		type filter hook input priority filter - 10; policy accept;
+		iifname "lo" accept
+		ct state established,related accept
+		iifname "manade*" ip saddr @manade-probe4 ip daddr @manade-target4 counter
+		iifname "manade*" drop
+		ip saddr @manade-probe4 ip daddr @manade-target4 counter
+	}
+}

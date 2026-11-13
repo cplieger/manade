@@ -50,6 +50,13 @@ func checkHost(h *Host, confDir string, p *problems) {
 	at := func(key string) string { return hostPath(h.Name) + "." + key }
 	checkEgress(&h.Egress, at, p)
 	checkSubnet(h, at, p)
+	if !h.Egress.IPv6 && !h.Egress.Open {
+		for _, r := range h.DNS {
+			if r.Is6() {
+				p.addf(at("dns"), "%s is IPv6, which needs egress.ipv6: true: without it the host turns IPv6 off in its own network", r)
+			}
+		}
+	}
 	if h.RegistryAuth != "" && pathinside.Root(confDir).Contains(h.RegistryAuth) {
 		p.addf(at("registry_auth"), "%s lies at or under the config file's directory %s, which every host on this machine mounts; give the file a mount of its own",
 			quote(h.RegistryAuth), quote(confDir))

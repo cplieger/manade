@@ -34,6 +34,7 @@ func TestHostEgressRules(t *testing.T) {
 		{"subnetContainsResolver", "    dns: [1.1.1.1, 10.20.0.53]\n    network: {subnet: 10.20.0.0/24}\n", []string{"hosts.h.network.subnet: 10.20.0.0/24 contains the resolver 10.20.0.53 of hosts.h.dns"}},
 		{"subnetOverlapsAllow", "    network: {subnet: 10.20.5.0/24}\n    egress: {allow: [{to: 10.20.0.0/16, ports: [22]}]}\n", []string{"hosts.h.network.subnet: 10.20.5.0/24 overlaps 10.20.0.0/16 of hosts.h.egress.allow[0]"}},
 		{"subnetInsideAllow", "    network: {subnet: 10.20.0.0/16}\n    egress: {allow: [{to: 10.20.5.7, ports: [22]}]}\n", []string{"hosts.h.network.subnet: 10.20.0.0/16 overlaps 10.20.5.7 of hosts.h.egress.allow[0]"}},
+		{"dnsIPv6WithoutIPv6", "    dns: [1.1.1.1, \"2606:4700:4700::1111\"]\n", []string{"hosts.h.dns: 2606:4700:4700::1111 is IPv6, which needs egress.ipv6: true"}},
 		{"registryAuthUnderConfig", "    registry_auth: /config/registry/auth.json\n", []string{`hosts.h.registry_auth: "/config/registry/auth.json" lies at or under the config file's directory "/config"`, "a mount of its own"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -56,6 +57,8 @@ func TestHostEgressAccepted(t *testing.T) {
 		{"ipv6InternetOffNoEcho", "    egress: {ipv6: true, internet: false}\n"},
 		{"block6WithIPv6", "    egress: {ipv6: true, block6: [\"2001:db8:1::/48\"]}\n"},
 		{"subnetBesideResolverAndAllow", "    dns: [10.20.1.53]\n    network: {subnet: 10.20.0.0/24}\n    egress: {allow: [{to: 10.20.2.0/24, ports: [22]}]}\n"},
+		{"dnsIPv6WithIPv6", "    dns: [\"2606:4700:4700::1111\"]\n    egress: {ipv6: true}\n"},
+		{"dnsIPv6OnOpenHost", "    dns: [\"2606:4700:4700::1111\"]\n    egress: {open: true}\n"},
 		{"registryAuthOwnMount", "    registry_auth: /registry/auth.json\n"},
 		{"registryAuthBesideConfigDir", "    registry_auth: /configs/auth.json\n"},
 	} {
