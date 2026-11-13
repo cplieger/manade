@@ -27,8 +27,20 @@ var DefaultDNS = []netip.Addr{netip.MustParseAddr("1.1.1.1"), netip.MustParseAdd
 // DefaultSocket is the host API's socket path for the host named name.
 func DefaultSocket(name string) string { return "/run/manade/hosts/" + name + "/api.sock" }
 
+// hostPath is the error path of the host named name, quoted when the name is
+// not a valid one.
+func hostPath(name string) string {
+	if !hostNameRe.MatchString(name) {
+		return "hosts." + quote(name)
+	}
+	return "hosts." + name
+}
+
 // apiPort is the host API's TCP port when an address names none.
 const apiPort = "7464"
+
+// hostTLSDir is a host's TLS_DIR when its environment names none.
+const hostTLSDir = "/tls"
 
 const schemeHTTPS = "https"
 

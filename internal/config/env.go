@@ -116,7 +116,7 @@ func readOrchestrator() (*Orchestrator, []error) {
 
 func readSelf() (*Self, []error) {
 	var errs []error
-	s := &Self{Name: envx.String("MANADE_HOST"), TLSDir: cmp.Or(envx.String("TLS_DIR"), "/tls"), APIUID: 65532}
+	s := &Self{Name: envx.String("MANADE_HOST"), TLSDir: cmp.Or(envx.String("TLS_DIR"), hostTLSDir), APIUID: 65532}
 	switch {
 	case s.Name == "":
 		errs = append(errs, errors.New("MANADE_HOST: required, the hosts key this host serves"))

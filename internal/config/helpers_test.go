@@ -55,6 +55,12 @@ func withProfile(body string) string {
 	return header + "profiles:\n  p: {" + body + "}\n"
 }
 
+// withOpenProfile is withProfile with the one host, default, open.
+func withOpenProfile(body string) string {
+	return scopes + "hosts:\n  default:\n    capacity: {cpus: 16, memory: 64GiB}\n    egress: {open: true}\n" +
+		"profiles:\n  p: {" + body + "}\n"
+}
+
 // withHosts builds scopes, the hosts block hosts (indented under hosts:)
 // and one plain profile "p" listing every host named in names.
 func withHosts(hosts, names string) string {

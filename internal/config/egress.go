@@ -30,9 +30,9 @@ type Egress struct {
 	Internet bool
 	Open     bool
 	IPv6     bool
-	// ipv6EchoSet reports an ipv6_echo the file wrote, which the rules
-	// refuse where nothing is learned.
-	ipv6EchoSet bool
+	// The keys the file wrote, which the rules refuse beside open or where
+	// nothing is learned, whatever their value.
+	internetSet, ipv6Set, ipv6EchoSet bool
 }
 
 // Allow is one private destination jobs may reach.
@@ -68,6 +68,8 @@ func (fe *fileEgress) parse(path string, p *problems) Egress {
 		Internet:    field(p, at("internet"), fe.Internet, "true", parseBool),
 		Open:        field(p, at("open"), fe.Open, "false", parseBool),
 		IPv6:        field(p, at("ipv6"), fe.IPv6, "false", parseBool),
+		internetSet: fe.Internet != "",
+		ipv6Set:     fe.IPv6 != "",
 		ipv6EchoSet: fe.IPv6Echo != "",
 	}
 	if echo := field(p, at("ipv6_echo"), fe.IPv6Echo, DefaultIPv6Echo, parseEcho); e.IPv6 && e.Internet {

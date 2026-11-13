@@ -198,6 +198,15 @@ func (p *Profile) Grants() []string {
 	return g
 }
 
+// profilePath is the error path of the profile named name, quoted when the
+// name is not a valid one.
+func profilePath(name string) string {
+	if !profileNameRe.MatchString(name) {
+		return "profiles." + quote(name)
+	}
+	return "profiles." + name
+}
+
 func (f *fileConfig) profiles(p *problems) []Profile {
 	if len(f.Profiles) == 0 {
 		p.addf("profiles", "define at least one profile")
@@ -216,9 +225,8 @@ func (f *fileConfig) profiles(p *problems) []Profile {
 }
 
 func (fp *fileProfile) parse(name string, p *problems) Profile {
-	path := "profiles." + name
+	path := profilePath(name)
 	if !profileNameRe.MatchString(name) {
-		path = "profiles." + quote(name)
 		p.addf(path, "want a name of 1 to 32 lowercase letters, digits, dots, underscores or dashes")
 	}
 	at := func(key string) string { return path + "." + key }
@@ -243,7 +251,7 @@ func (fp *fileProfile) parse(name string, p *problems) Profile {
 	if fp.Hosts != nil {
 		pr.Hosts = fp.hosts(at("hosts"), p)
 	}
-	rules(&pr, at, p)
+	ownRules(&pr, at, p)
 	return pr
 }
 
@@ -254,6 +262,8 @@ func (fp *fileProfile) image(pr *Profile, at func(string) string, p *problems) {
 	case fp.Image != "":
 		if len(fp.Image) > 512 || !imageRefRe.MatchString(fp.Image) {
 			p.add(at("image"), invalid("want an image reference", fp.Image))
+		} else if _, port := registry(fp.Image); port == 0 {
+			p.add(at("image"), invalid("want a registry port from 1 to 65535", fp.Image))
 		}
 		pr.Image = fp.Image
 	default:
@@ -378,9 +388,9 @@ func (fp *fileProfile) hosts(path string, p *problems) []string {
 	return out
 }
 
-// rules are the profile's own cross-field checks: the elevated-access table
+// ownRules are the profile's own cross-field checks: the elevated-access table
 // and the shipped docker image.
-func rules(pr *Profile, at func(string) string, p *problems) {
+func ownRules(pr *Profile, at func(string) string, p *problems) {
 	if g := pr.Grants(); len(g) > 0 && pr.Scopes == nil {
 		p.addf(at("scopes"), "an elevated profile must list its scopes (it sets %s)", strings.Join(g, ", "))
 	}

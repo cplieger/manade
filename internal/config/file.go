@@ -75,6 +75,7 @@ func (f *fileConfig) apply(cfg *Config, p *problems) {
 			p.addf("hosts", "names no host %s, the MANADE_HOST of this host", quote(cfg.Self.Name))
 		}
 	}
+	cfg.check(p)
 }
 
 // hosts parses the hosts map, or the one default host the top-level capacity
@@ -82,7 +83,7 @@ func (f *fileConfig) apply(cfg *Config, p *problems) {
 func (f *fileConfig) hosts(refresh time.Duration, p *problems) []Host {
 	if f.Hosts == nil {
 		h := fileHost{Capacity: f.Capacity}
-		return []Host{h.parse(DefaultHost, "hosts."+DefaultHost, "capacity", refresh, p)}
+		return []Host{h.parse(DefaultHost, hostPath(DefaultHost), "capacity", refresh, p)}
 	}
 	if f.Capacity != nil {
 		p.addf("capacity", "set each host's budget under hosts.<name>.capacity when hosts is set")
@@ -92,9 +93,8 @@ func (f *fileConfig) hosts(refresh time.Duration, p *problems) []Host {
 	}
 	out := make([]Host, 0, len(f.Hosts))
 	for _, name := range slices.Sorted(maps.Keys(f.Hosts)) {
-		path := "hosts." + name
+		path := hostPath(name)
 		if !hostNameRe.MatchString(name) {
-			path = "hosts." + quote(name)
 			p.add(path, invalid(hostNameRule, name))
 		}
 		fh := f.Hosts[name]

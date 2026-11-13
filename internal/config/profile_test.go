@@ -66,7 +66,7 @@ func TestProfileValidForms(t *testing.T) {
 
 func TestProfileEmptyScopesServeNothing(t *testing.T) {
 	t.Parallel()
-	p := profile(t, mustBuild(t, tokenEnv(), withProfile("privileged: true, scopes: []")), "p")
+	p := profile(t, mustBuild(t, tokenEnv(), withOpenProfile("privileged: true, scopes: []")), "p")
 	if p.Scopes == nil || p.Allowed("acme/app") || p.Allowed("acme") {
 		t.Errorf("scopes = %#v: want an empty list that allows no scope", p.Scopes)
 	}
@@ -162,19 +162,22 @@ func TestProfileInvalidForms(t *testing.T) {
 
 func TestProfileElevatedNeedsScopes(t *testing.T) {
 	t.Parallel()
-	for _, tc := range []struct{ grant, body string }{
-		{"allow_privilege_escalation", "allow_privilege_escalation: true, privileged: true"},
-		{"capabilities", "capabilities: [NET_ADMIN]"},
-		{"allow_root", "allow_root: true"},
-		{"docker", "docker: host-socket"},
-		{"privileged", "privileged: true"},
-		{"mounts", "mounts: [{volume: cache, target: /cache}]"},
+	for _, tc := range []struct {
+		grant, body string
+		doc         func(string) string
+	}{
+		{"allow_privilege_escalation", "allow_privilege_escalation: true, privileged: true", withOpenProfile},
+		{"capabilities", "capabilities: [NET_ADMIN]", withProfile},
+		{"allow_root", "allow_root: true", withProfile},
+		{"docker", "docker: host-socket", withOpenProfile},
+		{"privileged", "privileged: true", withOpenProfile},
+		{"mounts", "mounts: [{volume: cache, target: /cache}]", withProfile},
 	} {
 		t.Run(tc.grant, func(t *testing.T) {
 			t.Parallel()
-			err := build(tokenEnv(), []byte(withProfile(tc.body)))
+			err := build(tokenEnv(), []byte(tc.doc(tc.body)))
 			wantErr(t, err, "profiles.p.scopes: an elevated profile must list its scopes", tc.grant)
-			p := profile(t, mustBuild(t, tokenEnv(), withProfile(tc.body+", scopes: [acme/app]")), "p")
+			p := profile(t, mustBuild(t, tokenEnv(), tc.doc(tc.body+", scopes: [acme/app]")), "p")
 			if !slices.Contains(p.Grants(), tc.grant) {
 				t.Errorf("grants = %q, want %s", p.Grants(), tc.grant)
 			}
@@ -193,7 +196,7 @@ func TestProfilePrivilegeEscalation(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			err := build(tokenEnv(), []byte(withProfile(tc.body+", scopes: [acme/app]")))
+			err := build(tokenEnv(), []byte(withOpenProfile(tc.body+", scopes: [acme/app]")))
 			if tc.want == "" {
 				if err != nil {
 					t.Fatalf("err = %v", err)
@@ -212,7 +215,7 @@ func TestProfilePrivilegeEscalation(t *testing.T) {
 func TestProfileShippedDockerImage(t *testing.T) {
 	t.Parallel()
 	const privileged = "runner_image: docker, allow_privilege_escalation: true, privileged: true, scopes: [acme/app]"
-	p := profile(t, mustBuild(t, tokenEnv(), withProfile(privileged)), "p")
+	p := profile(t, mustBuild(t, tokenEnv(), withOpenProfile(privileged)), "p")
 	if !slices.Equal(p.Command, []string{"/usr/local/bin/manade-dockerd-run"}) {
 		t.Errorf("command = %q, want the wrapper", p.Command)
 	}
@@ -223,7 +226,7 @@ func TestProfileShippedDockerImage(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			err := build(tokenEnv(), []byte(withProfile(tc.body+", scopes: [acme/app]")))
+			err := build(tokenEnv(), []byte(withOpenProfile(tc.body+", scopes: [acme/app]")))
 			wantErr(t, err, tc.want)
 		})
 	}
