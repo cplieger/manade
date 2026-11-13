@@ -115,14 +115,15 @@ type Result struct {
 var errCreateWarnings = errors.New("docker create: the daemon warned")
 
 // Create creates a container named name, labelled managed over any labels in
-// req. A create that times out is followed by an inspect of name: a
-// container there means the create succeeded, and a 404 is inspected again
-// for one more CallTimeout before the create is judged failed. A name
-// already in use by a managed container carrying every label of req is that
-// create's own container, made by an earlier call; any other holder fails
-// the create with ErrConflict. A container found either way that lacks a
-// limit req sets fails with its ID and errLimitDiscarded. A create the
-// daemon refuses for its image fails with an error matching ErrImageMissing.
+// req. A create that times out is followed by an inspect of name, and a 404
+// is inspected again for one more CallTimeout before the create is judged
+// failed; a name already in use is inspected too. A container found either
+// way is this create's own, made by this or an earlier call, only when it is
+// managed and carries every label of req: any other holder fails the create
+// with no ID (ErrConflict when the name was in use). Its own container that
+// lacks a limit req sets fails with its ID and errLimitDiscarded. A create
+// the daemon refuses for its image fails with an error matching
+// ErrImageMissing.
 func (c *Client) Create(ctx context.Context, name string, req *CreateRequest) Result {
 	body := *req
 	body.Labels = c.managedLabels(req.Labels)
@@ -143,18 +144,27 @@ func (c *Client) Create(ctx context.Context, name string, req *CreateRequest) Re
 	case !timedOut:
 		return Result{Outcome: Failed, Err: err}
 	}
-	return c.afterCreateTimeout(ctx, name, &req.HostConfig, err)
+	return c.afterCreateTimeout(ctx, name, req, err)
 }
 
-// adopt judges a create of req refused because name is in use: Done when
-// the holder is managed, carries req's labels and has its limits (withLimits),
-// Failed otherwise.
+// adopt judges a create of req refused because name is in use (ownIfMine).
 func (c *Client) adopt(ctx context.Context, name string, req *CreateRequest, callErr error) Result {
 	ctr, found, err := c.InspectContainer(ctx, name)
 	switch {
 	case err != nil:
 		return Result{Outcome: Pending, Err: errors.Join(callErr, err)}
-	case !found || ctr.Config.Labels[LabelManaged] != managedValue:
+	case !found:
+		return Result{Outcome: Failed, Err: callErr}
+	}
+	return ownIfMine(&ctr, req, callErr)
+}
+
+// ownIfMine judges ctr, found under the name a create of req used: with
+// its limits (withLimits) when it is managed and carries every label of
+// req, Failed with no ID and callErr otherwise, so the caller never removes
+// a container it does not own.
+func ownIfMine(ctr *Container, req *CreateRequest, callErr error) Result {
+	if ctr.Config.Labels[LabelManaged] != managedValue {
 		return Result{Outcome: Failed, Err: callErr}
 	}
 	for k, v := range req.Labels {
@@ -162,7 +172,7 @@ func (c *Client) adopt(ctx context.Context, name string, req *CreateRequest, cal
 			return Result{Outcome: Failed, Err: callErr}
 		}
 	}
-	return withLimits(&ctr, &req.HostConfig)
+	return withLimits(ctr, &req.HostConfig)
 }
 
 // errLimitDiscarded is a container found after a create whose answer the
@@ -170,10 +180,10 @@ func (c *Client) adopt(ctx context.Context, name string, req *CreateRequest, cal
 // it with a warning the client did not see.
 var errLimitDiscarded = errors.New("docker create: the container lacks a requested limit")
 
-// withLimits is Done for ctr when it has every limit want sets that the daemon
-// may discard or zero with only a warning (verifyPlatformContainerResources,
-// https://github.com/moby/moby/blob/docker-v29.0.0/daemon/daemon_unix.go),
-// and Failed with its ID otherwise.
+// withLimits is Done for ctr when it has every limit want sets, and Failed
+// with its ID otherwise: the daemon discards some limits with only a warning
+// (verifyPlatformContainerResources,
+// https://github.com/moby/moby/blob/docker-v29.0.0/daemon/daemon_unix.go).
 func withLimits(ctr *Container, want *HostConfig) Result {
 	got := &ctr.HostConfig
 	var field string
@@ -218,12 +228,12 @@ func (c *Client) created(ctx context.Context, id string, warnings []string) Resu
 	return Result{Outcome: Failed, Err: werr}
 }
 
-// afterCreateTimeout judges a create with limits want whose call timed out
-// by inspecting name until a container appears (withLimits) or one more
+// afterCreateTimeout judges a create of req whose call timed out by
+// inspecting name until a container appears (ownIfMine) or one more
 // CallTimeout passes. The window's end fails the create only when the last
 // inspect answered 404; an inspect that errs, the window's end cutting it
 // included, leaves it pending.
-func (c *Client) afterCreateTimeout(ctx context.Context, name string, want *HostConfig, callErr error) Result {
+func (c *Client) afterCreateTimeout(ctx context.Context, name string, req *CreateRequest, callErr error) Result {
 	end := time.Now().Add(CallTimeout)
 	wctx, cancel := context.WithDeadline(ctx, end)
 	defer cancel()
@@ -236,7 +246,7 @@ func (c *Client) afterCreateTimeout(ctx context.Context, name string, want *Host
 		case err != nil:
 			return Result{Outcome: Pending, Err: errors.Join(callErr, err)}
 		case found:
-			return withLimits(&ctr, want)
+			return ownIfMine(&ctr, req, callErr)
 		}
 		select {
 		case <-ctx.Done():

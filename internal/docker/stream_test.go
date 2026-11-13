@@ -39,6 +39,10 @@ func TestLogs(t *testing.T) {
 			_, _ = w.Write(full)
 		case "overOnAFrameEdge":
 			_, _ = w.Write(append(full, frame(1, "line past the limit\n")...))
+		case "lineOverTheKeep":
+			_, _ = w.Write(append(frame(1, strings.Repeat("c", LogKeep+99)+"\n"), frame(1, "end\n")...))
+		case "keepOnALineStart":
+			_, _ = w.Write(append(frame(1, strings.Repeat("d", 99)+"\n"), frame(2, strings.Repeat("e", LogKeep-5)+"\nend\n")...))
 		case "overInsideAFrame":
 			_, _ = w.Write(frame(1, strings.Repeat("b", 5<<20)))
 		default:
@@ -61,6 +65,17 @@ func TestLogs(t *testing.T) {
 		q := d.seen(http.MethodGet, "/containers/c1/logs")[0].query
 		if q["tail"][0] != "3" || q["stdout"][0] != "1" || q["stderr"][0] != "1" {
 			t.Errorf("query = %v", q)
+		}
+	})
+	t.Run("answersOnlyWholeLines", func(t *testing.T) {
+		if lines, err := c.Logs(t.Context(), "lineOverTheKeep", 50); err != nil || !slices.Equal(lines, []string{"end"}) {
+			t.Errorf("Logs = %d lines, %v; want only [end]", len(lines), err)
+		}
+	})
+	t.Run("keepsALineTheKeepStartsOn", func(t *testing.T) {
+		lines, err := c.Logs(t.Context(), "keepOnALineStart", 50)
+		if err != nil || len(lines) != 2 || lines[0] != strings.Repeat("e", LogKeep-5) || lines[1] != "end" {
+			t.Errorf("Logs = %d lines, %v; want the e line and end", len(lines), err)
 		}
 	})
 	t.Run("refusesAnUnframedStream", func(t *testing.T) {
@@ -102,20 +117,20 @@ func TestDemux(t *testing.T) {
 			in = append(in, frame(1, strings.Repeat("a", LogKeep/2))...)
 		}
 		in = append(in, frame(2, "end")...)
-		out, err := demux(bytes.NewReader(in))
-		if err != nil || len(out) != LogKeep || !bytes.HasSuffix(out, []byte("aend")) {
+		out, partial, err := demux(bytes.NewReader(in))
+		if err != nil || len(out) != LogKeep || !bytes.HasSuffix(out, []byte("aend")) || !partial {
 			t.Errorf("demux = %d bytes, %v; want the last %d ending in the last frame", len(out), err, LogKeep)
 		}
 	})
 	t.Run("aCutFrameFails", func(t *testing.T) {
 		in := frame(1, "complete\n")
 		in = append(in, frame(1, "partial line")[:12]...)
-		if out, err := demux(bytes.NewReader(in)); !errors.Is(err, io.ErrUnexpectedEOF) {
+		if out, _, err := demux(bytes.NewReader(in)); !errors.Is(err, io.ErrUnexpectedEOF) {
 			t.Errorf("demux = %q, %v; want io.ErrUnexpectedEOF", out, err)
 		}
 	})
 	t.Run("aCutHeaderFails", func(t *testing.T) {
-		if _, err := demux(bytes.NewReader([]byte{1, 0, 0})); err == nil {
+		if _, _, err := demux(bytes.NewReader([]byte{1, 0, 0})); err == nil {
 			t.Error("demux of a cut header succeeded")
 		}
 	})

@@ -134,8 +134,9 @@ func checkStranded(root string) error {
 	if len(stranded) == 0 {
 		return nil
 	}
-	return fmt.Errorf("pki: %s trust a CA %s no longer holds, so a new CA would split the pool; restore %s, or remove %s to issue the whole pool again",
-		strings.Join(stranded, ", "), filepath.Join(root, CADir), CADir, strings.Join(stranded, " and "))
+	ca := filepath.Join(root, CADir)
+	return fmt.Errorf("pki: %s no longer holds the CA these directories trust: %s; a new CA would split the pool. Restore %s, or remove those directories to issue the whole pool again",
+		ca, strings.Join(stranded, ", "), ca)
 }
 
 func checkHosts(root string, hosts []string) error {

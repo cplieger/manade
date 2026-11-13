@@ -19,7 +19,7 @@ import (
 func unixClient(t *testing.T, b *fakeBackend) *Client {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "api.sock")
-	ln, err := ListenUnix(t.Context(), path, -1)
+	ln, err := ListenUnix(path, -1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -166,7 +166,9 @@ func TestClientTypedErrors(t *testing.T) {
 			t.Errorf("err = %v", err)
 		}
 	})
-	t.Run("a host that never answers its probe", func(t *testing.T) {
+	// silentHost is a client of a host that accepts and never answers.
+	silentHost := func(t *testing.T) *Client {
+		t.Helper()
 		path := filepath.Join(t.TempDir(), "api.sock")
 		var lc net.ListenConfig
 		ln, err := lc.Listen(t.Context(), "unix", path)
@@ -183,15 +185,25 @@ func TestClientTypedErrors(t *testing.T) {
 				t.Cleanup(func() { _ = conn.Close() })
 			}
 		}()
-		saved := clientSlack
-		clientSlack = 20 * time.Millisecond
-		t.Cleanup(func() { clientSlack = saved })
 		c, err := NewClient("nas", config.Address{Socket: path}, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := c.Probe(t.Context(), 30*time.Millisecond); !errors.Is(err, ErrProbeTimeout) || !strings.Contains(err.Error(), "30ms") {
+		return c
+	}
+	t.Run("a host that never answers its probe", func(t *testing.T) {
+		saved := clientSlack
+		clientSlack = 20 * time.Millisecond
+		t.Cleanup(func() { clientSlack = saved })
+		if _, err := silentHost(t).Probe(t.Context(), 30*time.Millisecond); !errors.Is(err, ErrProbeTimeout) || !strings.Contains(err.Error(), "30ms") {
 			t.Errorf("err = %v, want the probe timeout named", err)
+		}
+	})
+	t.Run("a caller deadline before the probe's is the caller's", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+		defer cancel()
+		if _, err := silentHost(t).Probe(ctx, time.Minute); errors.Is(err, ErrProbeTimeout) || !errors.Is(err, context.DeadlineExceeded) {
+			t.Errorf("err = %v, want the caller's deadline, not the probe timeout", err)
 		}
 	})
 	t.Run("probe with no deadline", func(t *testing.T) {

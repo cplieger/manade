@@ -25,6 +25,12 @@ func inspectAs(status string) http.HandlerFunc {
 
 func TestCreate(t *testing.T) {
 	req := &CreateRequest{Image: "sha256:abc", Labels: map[string]string{"manade.runner": "r1", LabelManaged: "false"}}
+	// mine answers c1, created and carrying req's labels.
+	mine := func(w http.ResponseWriter, _ *http.Request) {
+		a := inspectAnswer("c1", StateCreated)
+		a["Config"] = map[string]any{"Labels": map[string]string{LabelManaged: "true", "manade.runner": "r1"}}
+		writeJSON(w, http.StatusOK, a)
+	}
 	t.Run("stamps the managed labels and names the container", func(t *testing.T) {
 		d := newDaemon(t, "1.51")
 		d.handle("POST /containers/create", created)
@@ -138,7 +144,7 @@ func TestCreate(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			d := newDaemon(t, "1.51")
 			d.handle("POST /containers/create", after(CallTimeout+time.Minute, created))
-			d.handle("GET /containers/r1/json", inspectAs(StateCreated))
+			d.handle("GET /containers/r1/json", mine)
 			res := d.dial(t).Create(t.Context(), "r1", req)
 			if res.Outcome != Done || res.ID != "c1" {
 				t.Errorf("Create = %+v", res)
@@ -155,7 +161,7 @@ func TestCreate(t *testing.T) {
 					writeError(w, http.StatusNotFound, "No such container: r1")
 					return
 				}
-				inspectAs(StateCreated)(w, r)
+				mine(w, r)
 			})
 			res := d.dial(t).Create(t.Context(), "r1", req)
 			if res.Outcome != Done || res.ID != "c1" || len(d.seen(http.MethodGet, "/containers/r1/json")) < 2 {
@@ -326,6 +332,30 @@ func TestCreateFoundKeepsItsLimits(t *testing.T) {
 			}
 		})
 	})
+	for name, labels := range map[string]map[string]string{
+		"no manade labels":          {"other": "x"},
+		"a differing manade.runner": {LabelManaged: "true", "manade.runner": "r2"},
+	} {
+		t.Run("a timed-out create finding a container with "+name+" fails with no ID", func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				d := newDaemon(t, "1.51")
+				d.handle("POST /containers/create", hold)
+				d.handle("GET /containers/r1/json", func(w http.ResponseWriter, _ *http.Request) {
+					a := inspectAnswer("c9", StateCreated)
+					a["Config"] = map[string]any{"Labels": labels}
+					a["HostConfig"] = all()
+					writeJSON(w, http.StatusOK, a)
+				})
+				res := d.dial(t).Create(t.Context(), "r1", limited)
+				if res.Outcome != Failed || res.ID != "" || !errors.Is(res.Err, context.DeadlineExceeded) {
+					t.Errorf("Create = %+v, want failed with the timeout and no ID", res)
+				}
+				if obs := d.observed(); slices.Contains(obs, "remove") {
+					t.Errorf("observed %v, want no remove", obs)
+				}
+			})
+		})
+	}
 	t.Run("a timed-out create whose container has its limits is done", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			d := newDaemon(t, "1.51")

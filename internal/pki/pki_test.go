@@ -176,7 +176,7 @@ func TestIssueRefusals(t *testing.T) {
 				t.Fatal(err)
 			}
 		}},
-		"a host left without its CA and orchestrator": {hosts: []string{"edge"}, want: "/nas trust a CA", setup: func(t *testing.T, root string) {
+		"a host left without its CA and orchestrator": {hosts: []string{"edge"}, want: "/nas; a new CA would split the pool. Restore ", setup: func(t *testing.T, root string) {
 			if _, err := Issue(root, []string{"nas"}, now); err != nil {
 				t.Fatal(err)
 			}

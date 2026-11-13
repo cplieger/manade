@@ -1,7 +1,6 @@
 package hostapi
 
 import (
-	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"net"
@@ -140,7 +139,7 @@ func TestServerTLSLoadChecksItsOwnFiles(t *testing.T) {
 
 func TestListenUnix(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "hosts", "nas", "api.sock")
-	ln, err := ListenUnix(t.Context(), path, os.Getuid())
+	ln, err := ListenUnix(path, os.Getuid())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -170,14 +169,14 @@ func TestListenUnixBindsPrivately(t *testing.T) {
 	var bindDir os.FileMode
 	orig := listen
 	t.Cleanup(func() { listen = orig })
-	listen = func(lc *net.ListenConfig, ctx context.Context, network, addr string) (net.Listener, error) {
+	listen = func(addr string) (*net.UnixListener, error) {
 		if fi, err := os.Stat(filepath.Dir(addr)); err == nil {
 			bindDir = fi.Mode().Perm()
 		}
-		return orig(lc, ctx, network, addr)
+		return orig(addr)
 	}
 	path := filepath.Join(t.TempDir(), "api.sock")
-	ln, err := ListenUnix(t.Context(), path, os.Getuid())
+	ln, err := ListenUnix(path, os.Getuid())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,7 +196,7 @@ func TestListenUnixLeavesNothingOnFailure(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(path, "x"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ListenUnix(t.Context(), path, os.Getuid()); err == nil {
+	if _, err := ListenUnix(path, os.Getuid()); err == nil {
 		t.Fatal("ListenUnix renamed a socket onto a directory")
 	}
 	entries, err := os.ReadDir(dir)
@@ -208,11 +207,11 @@ func TestListenUnixLeavesNothingOnFailure(t *testing.T) {
 
 func TestListenUnixCloseKeepsASuccessor(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "api.sock")
-	first, err := ListenUnix(t.Context(), path, os.Getuid())
+	first, err := ListenUnix(path, os.Getuid())
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := ListenUnix(t.Context(), path, os.Getuid())
+	second, err := ListenUnix(path, os.Getuid())
 	if err != nil {
 		t.Fatal(err)
 	}

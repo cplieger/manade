@@ -122,7 +122,7 @@ func usageName(u x509.ExtKeyUsage) string {
 // directory beside path, which no other uid can traverse to connect, and
 // renamed onto path once its owner and mode are set; on a failure neither is
 // left. Closing the listener removes path while it is still this socket.
-func ListenUnix(ctx context.Context, path string, uid int) (net.Listener, error) {
+func ListenUnix(path string, uid int) (net.Listener, error) {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("host API socket: %w", err)
@@ -135,15 +135,9 @@ func ListenUnix(ctx context.Context, path string, uid int) (net.Listener, error)
 	}
 	defer func() { _ = os.RemoveAll(private) }()
 	tmp := filepath.Join(private, "s")
-	var lc net.ListenConfig
-	ln, err := listen(&lc, ctx, "unix", tmp)
+	ul, err := listen(tmp)
 	if err != nil {
 		return nil, fmt.Errorf("host API socket: %w", err)
-	}
-	ul, ok := ln.(*net.UnixListener)
-	if !ok {
-		_ = ln.Close()
-		return nil, errors.New("host API socket: not a Unix listener")
 	}
 	ul.SetUnlinkOnClose(false)
 	err = errors.Join(os.Chmod(tmp, 0o600), os.Lchown(tmp, uid, -1))
@@ -161,8 +155,10 @@ func ListenUnix(ctx context.Context, path string, uid int) (net.Listener, error)
 	return &unixListener{UnixListener: ul, path: path, fi: fi}, nil
 }
 
-// listen is net.ListenConfig.Listen, a seam for observing the bind.
-var listen = (*net.ListenConfig).Listen
+// listen binds a Unix socket at path, a seam for observing the bind.
+var listen = func(path string) (*net.UnixListener, error) {
+	return net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
+}
 
 type unixListener struct {
 	*net.UnixListener

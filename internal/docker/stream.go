@@ -27,9 +27,9 @@ const LogKeep = 256 << 10
 var ErrTooLarge = errors.New("docker: content over its size limit")
 
 // Logs returns the container's last n log lines, stdout and stderr
-// interleaved, raw. Only its last 64 KiB are kept, so an overlong line can
-// arrive cut at its start. A tail over 4 MiB fails with ErrTooLarge, and a
-// negative n fails before any request.
+// interleaved, raw. Only whole lines of the tail's last LogKeep bytes are
+// returned, so a line longer than LogKeep is not. A tail over 4 MiB fails
+// with ErrTooLarge, and a negative n fails before any request.
 func (c *Client) Logs(ctx context.Context, id string, n int) ([]string, error) {
 	if n < 0 {
 		return nil, fmt.Errorf("docker logs: a negative line count (%d)", n)
@@ -43,7 +43,7 @@ func (c *Client) Logs(ctx context.Context, id string, n int) ([]string, error) {
 	}
 	defer httpclient.DrainClose(body)
 	lr := &io.LimitedReader{R: body, N: logReadLimit}
-	text, err := demux(lr)
+	text, partial, err := demux(lr)
 	if lr.N == 0 {
 		switch _, rerr := io.ReadFull(body, make([]byte, 1)); {
 		case rerr == nil:
@@ -54,6 +54,9 @@ func (c *Client) Logs(ctx context.Context, id string, n int) ([]string, error) {
 	}
 	if err != nil {
 		return nil, fmt.Errorf("docker logs: %w", err)
+	}
+	if partial {
+		_, text, _ = bytes.Cut(text, []byte("\n"))
 	}
 	lines := bytes.Split(bytes.TrimRight(text, "\n"), []byte("\n"))
 	if len(lines) > n {
@@ -69,31 +72,31 @@ func (c *Client) Logs(ctx context.Context, id string, n int) ([]string, error) {
 }
 
 // demux joins the payloads of a multiplexed log stream, keeping the last
-// LogKeep bytes. A container without a TTY, as every runner is, frames its
+// LogKeep bytes; partial is whether those start inside a line. A container without a TTY, as every runner is, frames its
 // output with an 8-byte header: the stream (0, 1 or 2), three zero bytes and
 // the payload's big-endian length
 // (https://docs.docker.com/reference/api/engine/version/v1.51/#tag/Container/operation/ContainerAttach).
 // A stream that ends inside a frame fails with io.ErrUnexpectedEOF.
-func demux(r io.Reader) ([]byte, error) {
-	var out []byte
+func demux(r io.Reader) (out []byte, partial bool, err error) {
 	var hdr [8]byte
 	for {
 		if _, err := io.ReadFull(r, hdr[:]); err != nil {
 			if errors.Is(err, io.EOF) {
-				return out, nil
+				return out, partial, nil
 			}
-			return out, err
+			return out, partial, err
 		}
 		if hdr[0] > 2 || hdr[1] != 0 || hdr[2] != 0 || hdr[3] != 0 {
-			return out, errors.New("malformed log frame")
+			return out, partial, errors.New("malformed log frame")
 		}
 		chunk, err := payload(r, int64(binary.BigEndian.Uint32(hdr[4:])))
 		out = append(out, chunk...)
-		if len(out) > LogKeep {
-			out = append(out[:0], out[len(out)-LogKeep:]...)
+		if cut := len(out) - LogKeep; cut > 0 {
+			partial = out[cut-1] != '\n'
+			out = append(out[:0], out[cut:]...)
 		}
 		if err != nil {
-			return out, err
+			return out, partial, err
 		}
 	}
 }

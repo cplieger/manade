@@ -135,11 +135,11 @@ func (c *Client) Probe(ctx context.Context, deadline time.Duration) (ProbeReport
 	if deadline <= 0 {
 		return ProbeReport{}, errors.New("host API probe: the host reported no probe deadline")
 	}
-	ctx, cancel := context.WithTimeout(ctx, deadline+clientSlack)
+	pctx, cancel := context.WithTimeout(ctx, deadline+clientSlack)
 	defer cancel()
-	body, _, err := c.send(ctx, c.stream, "probe", http.MethodPost, "/v1/probe", nil)
+	body, _, err := c.send(pctx, c.stream, "probe", http.MethodPost, "/v1/probe", nil)
 	if err != nil {
-		if ctx.Err() != nil && errors.Is(err, context.DeadlineExceeded) {
+		if pctx.Err() != nil && ctx.Err() == nil && errors.Is(err, context.DeadlineExceeded) {
 			return ProbeReport{}, fmt.Errorf("%w of %s", ErrProbeTimeout, deadline)
 		}
 		return ProbeReport{}, err

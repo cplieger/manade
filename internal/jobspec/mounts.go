@@ -178,7 +178,7 @@ func resolve(src string) (walk, error) {
 		if links > maxLinks {
 			return w, errTooManyLinks
 		}
-		w.addForm(filepath.Join(dest, rest))
+		w.addJoined(dest, rest)
 		if filepath.IsAbs(link) {
 			dest = "/"
 		} else {
@@ -188,7 +188,7 @@ func resolve(src string) (walk, error) {
 			link += "/" + rest
 		}
 		rest = link
-		w.addForm(filepath.Join(dest, rest))
+		w.addJoined(dest, rest)
 	}
 	w.final = dest
 	w.addForm(dest)
@@ -210,6 +210,15 @@ func (w *walk) step(dest string, more bool) (link string, isLink bool, err error
 	}
 	link, err = os.Readlink(dest)
 	return link, err == nil, err
+}
+
+// addJoined adds rest joined onto dir as a form unless rest holds a ".."
+// component: Join cleans it lexically, while the walk resolves it against
+// the resolved parent, so the joined path may lie off the walk's way.
+func (w *walk) addJoined(dir, rest string) {
+	if !slices.Contains(strings.Split(rest, "/"), "..") {
+		w.addForm(filepath.Join(dir, rest))
+	}
 }
 
 func (w *walk) addForm(p string) {

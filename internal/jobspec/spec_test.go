@@ -374,6 +374,34 @@ func TestRunnerMountNesting(t *testing.T) {
 			t.Errorf("Runner = %v, want refused for the link it holds", err)
 		}
 	})
+	// dotLink makes work/x and other, and a link lk whose raw target goes
+	// down through work/x and back up by "..", so only its lookups hold x.
+	dotLink := func(t *testing.T, root string) (work, lk string) {
+		t.Helper()
+		work = filepath.Join(root, "data", "work")
+		mkdirs(t, filepath.Join(work, "x"), filepath.Join(root, "data", "other"))
+		lk = filepath.Join(root, "data", "lk")
+		if err := os.Symlink(work+"/x/../../other", lk); err != nil {
+			t.Fatal(err)
+		}
+		return work, lk
+	}
+	t.Run("a link going through another profile's writable source by .. is refused", func(t *testing.T) {
+		_, root := testHost(t, false, Platform{})
+		work, lk := dotLink(t, root)
+		h, small := serve(root, lk, false, work, true)
+		if _, err := h.Runner(small, runner()); !errors.Is(err, ErrMountRefused) || !strings.Contains(err.Error(), "profile big's jobs may write") {
+			t.Errorf("Runner = %v, want refused for the entry it reads under work", err)
+		}
+	})
+	t.Run("a writable source another's link goes through by .. is refused", func(t *testing.T) {
+		_, root := testHost(t, false, Platform{})
+		work, lk := dotLink(t, root)
+		h, small := serve(root, work, true, lk, false)
+		if _, err := h.Runner(small, runner()); !errors.Is(err, ErrMountRefused) || !strings.Contains(err.Error(), "writable to jobs and an ancestor of") {
+			t.Errorf("Runner = %v, want refused for the entry the link reads under it", err)
+		}
+	})
 	t.Run("a writable link to an ancestor of another source is refused", func(t *testing.T) {
 		_, root := testHost(t, false, Platform{})
 		parent := filepath.Join(root, "data", "parent")
@@ -473,6 +501,36 @@ func TestResolve(t *testing.T) {
 		}
 		if slices.Contains(w.forms, filepath.Join(root, "abs")) {
 			t.Errorf("forms = %v hold the link abs, an ancestor", w.forms)
+		}
+	})
+	t.Run("a link through .. after a link records no lexically cleaned form", func(t *testing.T) {
+		dir := t.TempDir()
+		far := filepath.Join(dir, "far", "away")
+		if err := os.MkdirAll(far, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(filepath.Join(dir, "far", "z"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		data := filepath.Join(dir, "data")
+		if err := os.Mkdir(data, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(far, filepath.Join(data, "l2")); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink("l2/../z", filepath.Join(data, "src")); err != nil {
+			t.Fatal(err)
+		}
+		w, err := resolve(filepath.Join(data, "src"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := filepath.Join(dir, "far", "z"); w.final != want {
+			t.Errorf("final = %s, want %s", w.final, want)
+		}
+		if slices.Contains(w.forms, filepath.Join(data, "z")) {
+			t.Errorf("forms = %v hold %s, a path the walk never went through", w.forms, filepath.Join(data, "z"))
 		}
 	})
 	// A file followed by .. fails as EvalSymlinks does, though the kernel
