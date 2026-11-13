@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/cplieger/manade/internal/docker"
 	"github.com/cplieger/manade/internal/jobspec"
 	"github.com/cplieger/manade/internal/obs"
 )
@@ -120,6 +121,9 @@ func (p *Pool) start(parent context.Context, r *runner) {
 	if err != nil {
 		p.dockerFailed(parent, obs.DockerCreate)
 		p.unregister(ctx, s.ss.Scope, jit.RunnerID, r.name)
+		if docker.ImageMissing(err) {
+			p.imageGone(s.profile, r.image)
+		}
 		p.startFailed(parent, r, "Creating a runner's container failed", err)
 		return
 	}
