@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"path"
 	"slices"
 	"strconv"
@@ -25,6 +26,7 @@ type runnerDaemon interface {
 	Create(ctx context.Context, name string, req *docker.CreateRequest) docker.Result
 	Start(ctx context.Context, id string) docker.Result
 	InspectContainer(ctx context.Context, ref string) (docker.Container, bool, error)
+	InspectSettled(ctx context.Context, name string) (docker.Container, bool, error)
 	ListContainers(ctx context.Context) ([]docker.Summary, error)
 	StopContainer(ctx context.Context, id string, grace time.Duration) error
 	RemoveOwned(ctx context.Context, ref string) error
@@ -41,7 +43,7 @@ var _ runnerDaemon = (*docker.Client)(nil)
 type runnerImages interface {
 	ForStart(profile string) (string, bool)
 	Missing(profile, id string)
-	Tidy()
+	Tidy(done func())
 	Status() []hostapi.ProfileStatus
 }
 
@@ -83,9 +85,11 @@ var errSpace = errors.New("the host's data volume is full")
 // runnerSet is the host's record of the runners it accepted and their
 // containers. Its methods are safe for concurrent use.
 type runnerSet struct {
-	daemon runnerDaemon
-	images runnerImages
-	// base is run's context, which each runner's work runs under.
+	// spaceHeldAt is when spaceHeld began.
+	spaceHeldAt time.Time
+	daemon      runnerDaemon
+	images      runnerImages
+	// base is the host's run, which each runner's work runs under.
 	base    context.Context
 	ctrs    map[string]*hostapi.Container
 	pins    *pins
@@ -93,12 +97,18 @@ type runnerSet struct {
 	served  *served
 	last    map[string]hostapi.Runner
 	subs    map[chan hostapi.Runner]struct{}
-	log     *slog.Logger
-	// spaceHeld says why starts are held after a refusal for space, until
-	// a runner exits; "" when they are not.
+	// wrote is the gen at which put or drop last wrote each name, so a
+	// refresh keeps what changed after its list began.
+	wrote map[string]uint64
+	log   *slog.Logger
+	// spaceHeld says why starts are held after a refusal for space; ""
+	// when they are not.
 	spaceHeld string
 	work      sync.WaitGroup
+	gen       uint64
 	mu        sync.Mutex
+	// refreshMu serialises refreshes, so a swap's view of wrote is its own.
+	refreshMu sync.Mutex
 }
 
 // record is one accepted runner: its request, how far the host has taken
@@ -109,6 +119,9 @@ type record struct {
 	done    chan struct{}
 	volume  string
 	rec     hostapi.Record
+	// mayCommit is a create whose fate is unknown: the daemon may still
+	// commit its container after the call ended.
+	mayCommit bool
 }
 
 // runnersConfig is what a runnerSet is built from.
@@ -122,14 +135,15 @@ type runnersConfig struct {
 	CPUs []int
 }
 
-// newRunners answers an empty record; load reads the daemon's containers
-// into it and run serves it.
-func newRunners(cfg *runnersConfig) *runnerSet {
+// newRunners answers an empty record whose runners' work runs under ctx,
+// the host's run; load reads the daemon's containers into it and run
+// serves it.
+func newRunners(ctx context.Context, cfg *runnersConfig) *runnerSet {
 	r := &runnerSet{
 		daemon: cfg.Daemon, images: cfg.Images, served: cfg.Served, log: cfg.Log,
 		records: map[string]*record{}, ctrs: map[string]*hostapi.Container{},
 		last: map[string]hostapi.Runner{}, subs: map[chan hostapi.Runner]struct{}{},
-		base: context.Background(),
+		wrote: map[string]uint64{}, base: ctx,
 	}
 	if cfg.CPUs != nil {
 		r.pins = newPins(cfg.CPUs)
@@ -167,11 +181,8 @@ func (r *runnerSet) load(ctx context.Context) error {
 }
 
 // run follows the daemon's exits until ctx ends, then waits for every
-// runner's work it started; accept's work runs under ctx.
+// runner's work, which ends with the context newRunners was given.
 func (r *runnerSet) run(ctx context.Context) {
-	r.mu.Lock()
-	r.base = ctx
-	r.mu.Unlock()
 	var wg sync.WaitGroup
 	wg.Go(func() { r.follow(ctx) })
 	wg.Go(func() { r.poll(ctx) })
@@ -220,12 +231,22 @@ func (r *runnerSet) exited(ctx context.Context, id string) {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.spaceHeld != "" && !holdsCPUs(c.State) {
-		r.log.Info("A runner exited, so the starts held for space go on")
-		r.spaceHeld = ""
-	}
-	r.ctrs[c.Name] = c
+	r.put(c)
+	r.liftOnExit()
 	r.changed(c.Name)
+}
+
+// put and drop write runner name's container view, newer than any refresh
+// begun before; r.mu is held.
+func (r *runnerSet) put(c *hostapi.Container) {
+	r.gen++
+	r.wrote[c.Name], r.ctrs[c.Name] = r.gen, c
+}
+
+func (r *runnerSet) drop(name string) {
+	r.gen++
+	r.wrote[name] = r.gen
+	delete(r.ctrs, name)
 }
 
 // sync lists the containers again and publishes each change.
@@ -236,6 +257,7 @@ func (r *runnerSet) sync(ctx context.Context) {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.liftOnExit()
 	names := map[string]bool{}
 	for n := range r.ctrs {
 		names[n] = true
@@ -252,15 +274,18 @@ func (r *runnerSet) sync(ctx context.Context) {
 }
 
 // refresh replaces the container view with the daemon's list, inspecting
-// only containers that are new or changed state since the last list.
+// only containers that are new or changed state since the last list. A name
+// put or dropped after the list began keeps that newer view.
 func (r *runnerSet) refresh(ctx context.Context) error {
+	r.refreshMu.Lock()
+	defer r.refreshMu.Unlock()
+	r.mu.Lock()
+	old, begun := maps.Clone(r.ctrs), r.gen
+	r.mu.Unlock()
 	list, err := r.daemon.ListContainers(ctx)
 	if err != nil {
 		return err
 	}
-	r.mu.Lock()
-	old := r.ctrs
-	r.mu.Unlock()
 	now := map[string]*hostapi.Container{}
 	for i := range list {
 		s := &list[i]
@@ -281,9 +306,26 @@ func (r *runnerSet) refresh(ctx context.Context) error {
 		}
 	}
 	r.mu.Lock()
-	r.ctrs = now
-	r.mu.Unlock()
+	defer r.mu.Unlock()
+	r.swap(now, begun)
 	return nil
+}
+
+// swap makes now the container view, keeping the current view of each name
+// written after gen begun; r.mu is held.
+func (r *runnerSet) swap(now map[string]*hostapi.Container, begun uint64) {
+	for name, at := range r.wrote {
+		if at <= begun {
+			continue
+		}
+		if c := r.ctrs[name]; c != nil {
+			now[name] = c
+		} else {
+			delete(now, name)
+		}
+	}
+	clear(r.wrote)
+	r.ctrs = now
 }
 
 // fromDocker is a labelled runner container as a list reads it; false for
@@ -305,6 +347,76 @@ func fromDocker(ctr *docker.Container) (*hostapi.Container, bool) {
 			Memory: ctr.HostConfig.Memory, Disk: disk,
 		},
 	}, true
+}
+
+// liftOnExit lifts the space hold once a runner's container has exited
+// since the hold began; r.mu is held.
+func (r *runnerSet) liftOnExit() {
+	if r.spaceHeld == "" {
+		return
+	}
+	for _, c := range r.ctrs {
+		if !holdsCPUs(c.State) && c.FinishedAt.After(r.spaceHeldAt) {
+			r.lift("a runner exited")
+			return
+		}
+	}
+}
+
+// lift ends the space hold; r.mu is held.
+func (r *runnerSet) lift(why string) {
+	r.log.Info("The starts held for space go on", "why", why)
+	r.spaceHeld, r.spaceHeldAt = "", time.Time{}
+}
+
+// holdForSpace holds starts after a refusal for space and asks for a tidy
+// pass at once, whose end may lift the hold (tidied).
+func (r *runnerSet) holdForSpace() {
+	at := time.Now()
+	r.mu.Lock()
+	r.spaceHeld = fmt.Sprintf("the data volume %s was full at %s; starts go on once a runner exits, or once the tidy pass ends with no runner running",
+		dataRoot, at.UTC().Format(time.RFC3339))
+	r.spaceHeldAt = at
+	r.mu.Unlock()
+	r.images.Tidy(func() { r.tidied(at) })
+}
+
+// tidied lifts the hold begun at at once its tidy pass has ended with no
+// runner container running, since no exit is then left to lift it.
+func (r *runnerSet) tidied(at time.Time) {
+	if err := r.refresh(r.base); err != nil {
+		r.log.Warn("Listing the host's runner containers after the tidy pass failed; the last list decides", "error", err)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.spaceHeld == "" || !r.spaceHeldAt.Equal(at) {
+		return
+	}
+	for _, c := range r.ctrs {
+		switch c.State {
+		case docker.StateRunning, docker.StateRestarting, docker.StatePaused:
+			return
+		}
+	}
+	r.lift("the tidy pass ended with no runner running")
+}
+
+// profileStatus is each profile's readiness: the image manager's, with
+// every ready profile not ready while starts are held for space.
+func (r *runnerSet) profileStatus() []hostapi.ProfileStatus {
+	st := r.images.Status()
+	r.mu.Lock()
+	held := r.spaceHeld
+	r.mu.Unlock()
+	if held == "" {
+		return st
+	}
+	for i := range st {
+		if st[i].Ready {
+			st[i].Ready, st[i].Reason, st[i].Detail = false, hostapi.ReasonDataFull, held
+		}
+	}
+	return st
 }
 
 // holdsCPUs reports a container state that still holds its pinned CPUs.
@@ -399,6 +511,7 @@ func (r *runnerSet) list(ctx context.Context) ([]hostapi.Runner, error) {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.liftOnExit()
 	names := make([]string, 0, len(r.ctrs)+len(r.records))
 	for n := range r.ctrs {
 		names = append(names, n)
@@ -441,6 +554,9 @@ func (r *runnerSet) accept(_ context.Context, req *hostapi.RunnerRequest) (hosta
 	if err != nil {
 		return hostapi.Runner{}, err
 	}
+	if r.spaceHeld != "" {
+		return hostapi.Runner{}, &hostapi.NotReadyError{Profile: p.Name, Reason: hostapi.ReasonDataFull, Detail: r.spaceHeld}
+	}
 	imageID, ready := r.images.ForStart(p.Name)
 	if !ready {
 		return hostapi.Runner{}, r.notReady(p.Name)
@@ -449,10 +565,7 @@ func (r *runnerSet) accept(_ context.Context, req *hostapi.RunnerRequest) (hosta
 	rr.rec.Request.JITConfig = ""
 	r.records[req.RunnerName] = rr
 	var cpus []int
-	switch {
-	case r.spaceHeld != "":
-		r.failRecord(rr, "starts are held: "+r.spaceHeld+"; they go on once a runner exits")
-	case r.pins != nil:
+	if r.pins != nil {
 		var ok bool
 		if cpus, ok = r.pins.take(req.RunnerName, int(p.MilliCPUs/1000)); !ok {
 			r.failRecord(rr, fmt.Sprintf("the host has %d free CPUs of its cpuset, and profile %s needs %d", r.pins.free(), p.Name, p.MilliCPUs/1000))
@@ -576,6 +689,9 @@ func (r *runnerSet) build(ctx context.Context, rr *record, spec *jobspec.Host, r
 func (r *runnerSet) create(ctx context.Context, rr *record, req *docker.CreateRequest, run *jobspec.Runner) (string, bool) {
 	for {
 		res := r.daemon.Create(ctx, run.Name, req)
+		r.mu.Lock()
+		rr.mayCommit = res.Outcome == docker.Pending
+		r.mu.Unlock()
 		switch res.Outcome {
 		case docker.Done:
 			return res.ID, true
@@ -600,7 +716,7 @@ func (r *runnerSet) started(ctx context.Context, rr *record, id string) {
 	r.mu.Lock()
 	if err == nil && found {
 		if c, ok := fromDocker(&ctr); ok {
-			r.ctrs[c.Name] = c
+			r.put(c)
 		}
 	}
 	r.mu.Unlock()
@@ -614,10 +730,7 @@ func (r *runnerSet) failed(ctx context.Context, rr *record, res docker.Result, c
 	err := res.Err
 	if isNoSpace(err) {
 		err = fmt.Errorf("%w (%s): %w", errSpace, dataRoot, err)
-		r.mu.Lock()
-		r.spaceHeld = fmt.Sprintf("the data volume %s was full at %s", dataRoot, time.Now().UTC().Format(time.RFC3339))
-		r.mu.Unlock()
-		r.images.Tidy()
+		r.holdForSpace()
 	}
 	if res.ID != "" {
 		r.mu.Lock()
@@ -642,7 +755,9 @@ func isNoSpace(err error) bool {
 
 // remove stops and removes runner name's container, first copying its
 // _diag folder as a tar when diag is set, and drops its record. Work in
-// flight for it is cut first. A runner with no container is no error.
+// flight for it is cut first, and a create it cut that may still commit is
+// waited out (docker.Client.InspectSettled). A runner with no container is
+// no error.
 func (r *runnerSet) remove(ctx context.Context, name string, diag bool) ([]byte, error) {
 	r.mu.Lock()
 	rr := r.records[name]
@@ -651,20 +766,24 @@ func (r *runnerSet) remove(ctx context.Context, name string, diag bool) ([]byte,
 		rr.rec.RemovedBy, vol = removedByDelete, rr.volume
 	}
 	r.mu.Unlock()
+	settle := false
 	if rr != nil && rr.cancel != nil {
 		rr.cancel()
 		<-rr.done
 		r.mu.Lock()
-		vol = rr.volume
+		vol, settle = rr.volume, rr.mayCommit
 		r.mu.Unlock()
 	}
-	tar, err := r.removeContainer(ctx, name, rr, diag)
+	tar, removed, err := r.removeContainer(ctx, name, rr, diag, settle)
 	if err != nil {
 		return nil, err
 	}
 	r.mu.Lock()
 	delete(r.records, name)
-	delete(r.ctrs, name)
+	r.drop(name)
+	if removed && r.spaceHeld != "" {
+		r.lift("a runner's container was removed")
+	}
 	r.changed(name)
 	r.mu.Unlock()
 	if vol != "" {
@@ -676,23 +795,27 @@ func (r *runnerSet) remove(ctx context.Context, name string, diag bool) ([]byte,
 }
 
 // removeContainer stops and removes runner name's labelled container, if
-// any, answering its _diag tar first when diag is set.
-func (r *runnerSet) removeContainer(ctx context.Context, name string, rr *record, diag bool) ([]byte, error) {
-	ctr, found, err := r.daemon.InspectContainer(ctx, name)
-	if err != nil || !found || ctr.Config.Labels[jobspec.LabelRunner] != name {
-		return nil, err
+// any, answering its _diag tar first when diag is set and whether it
+// removed one; settle inspects as after a create that may still commit.
+func (r *runnerSet) removeContainer(ctx context.Context, name string, rr *record, diag, settle bool) (tar []byte, removed bool, err error) {
+	inspect := r.daemon.InspectContainer
+	if settle {
+		inspect = r.daemon.InspectSettled
 	}
-	var tar []byte
+	ctr, found, err := inspect(ctx, name)
+	if err != nil || !found || ctr.Config.Labels[jobspec.LabelRunner] != name {
+		return nil, false, err
+	}
 	if diag {
 		tar = r.copyDiag(ctx, &ctr, rr)
 	}
 	if err := r.daemon.StopContainer(ctx, ctr.ID, hostapi.DeleteStopGrace); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if err := r.daemon.RemoveOwned(ctx, ctr.ID); err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	return tar, nil
+	return tar, true, nil
 }
 
 // copyDiag answers the runner's _diag tar, nil when it has none or it

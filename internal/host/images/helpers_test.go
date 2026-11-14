@@ -385,24 +385,19 @@ func internetHost() *config.Host {
 
 // keep is a Keep with its records held by the test.
 type keep struct {
-	runners map[string]bool
-	runs    map[string]time.Time
-	mu      sync.Mutex
-	running map[string]bool
+	runners  map[string]bool
+	leftover map[string]bool
+	mu       sync.Mutex
 }
 
 func newKeep() *keep {
-	return &keep{runners: map[string]bool{}, runs: map[string]time.Time{}, running: map[string]bool{}}
+	return &keep{runners: map[string]bool{}, leftover: map[string]bool{}}
 }
 
 func (k *keep) Keep() Keep {
 	return Keep{
-		Runner: func(name string) bool { k.mu.Lock(); defer k.mu.Unlock(); return k.runners[name] },
-		ProbeRun: func(run string) (time.Time, bool) {
-			k.mu.Lock()
-			defer k.mu.Unlock()
-			return k.runs[run], k.running[run]
-		},
+		Runner:        func(name string) bool { k.mu.Lock(); defer k.mu.Unlock(); return k.runners[name] },
+		ProbeLeftover: func(run string) bool { k.mu.Lock(); defer k.mu.Unlock(); return k.leftover[run] },
 	}
 }
 

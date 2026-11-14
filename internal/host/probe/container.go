@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
-	"time"
 
 	"github.com/cplieger/manade/internal/docker"
 	"github.com/cplieger/manade/internal/jobspec"
@@ -79,7 +78,7 @@ func (r *Runner) container(ctx context.Context, run, role string, stdin bool) (*
 	}
 	s := &started{}
 	if stdin {
-		stream, err := r.attach(ctx, res.ID)
+		stream, err := r.cfg.Attach(ctx, res.ID)
 		if err != nil {
 			return nil, fmt.Errorf("%s's attach %w: %w", what, errInFlight, err)
 		}
@@ -104,14 +103,6 @@ func (r *Runner) container(ctx context.Context, run, role string, stdin bool) (*
 		return nil, fmt.Errorf("%s has no address on network %s", what, r.cfg.Network)
 	}
 	return s, nil
-}
-
-// attach attaches within one call timeout, the 101's bound: the stream it
-// answers has no deadline of its own.
-func (r *Runner) attach(ctx context.Context, id string) (Stream, error) {
-	actx, cancel := context.WithTimeout(ctx, callTimeout)
-	defer cancel()
-	return r.cfg.Attach(actx, id)
 }
 
 func closeStream(s Stream) {
@@ -140,9 +131,9 @@ func (r *Runner) remove(ctx context.Context, run string) {
 	}
 }
 
-// tidy removes each labelled probe container but current's whose run ended
-// at least one call timeout ago; one answered 409 is tried at the next pass.
-func (r *Runner) tidy(ctx context.Context, current string) {
+// tidy removes each labelled probe container that is Leftover; one answered
+// 409 is tried at the next pass.
+func (r *Runner) tidy(ctx context.Context) {
 	list, err := r.cfg.Daemon.ListContainers(ctx)
 	if err != nil {
 		r.cfg.Log.Warn("Listing leftover probe containers failed", "error", err)
@@ -150,11 +141,7 @@ func (r *Runner) tidy(ctx context.Context, current string) {
 	}
 	for i := range list {
 		c := &list[i]
-		run, ok := c.Labels[jobspec.LabelProbe]
-		if !ok || run == current {
-			continue
-		}
-		if ended, running := r.Ended(run); running || time.Since(ended) < callTimeout {
+		if run, ok := c.Labels[jobspec.LabelProbe]; !ok || !r.Leftover(run) {
 			continue
 		}
 		if err := r.cfg.Daemon.RemoveOwned(ctx, c.ID); err != nil && !errors.Is(err, docker.ErrConflict) {

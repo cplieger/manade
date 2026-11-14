@@ -107,7 +107,7 @@ func (l *ruleLoader) restore(ctx context.Context, rs *egress.Ruleset, v6 bool, p
 	if payload == "" {
 		return nil
 	}
-	_, err := l.Run(ctx, []byte(payload), l.Kernel.Binary(saveTool(v6)+"-restore"), "-w", "--noflush")
+	_, err := l.Run(ctx, []byte(payload), l.Kernel.Binary(saveTool(v6)+"-restore"), "-w", platform.XtablesWait, "--noflush")
 	if err != nil && rs.IPSet != "" && !l.hasSetMatch() {
 		return fmt.Errorf("%w; the kernel lists no set match, so xt_set may be missing on the machine", err)
 	}
@@ -122,7 +122,7 @@ func (l *ruleLoader) hasSetMatch() bool {
 // ensureFirst makes j its chain's first rule, removing any copy elsewhere.
 func (l *ruleLoader) ensureFirst(ctx context.Context, j egress.Jump) error {
 	bin := l.Kernel.Binary(saveTool(j.IPv6))
-	out, err := l.Run(ctx, nil, bin, "-w", "-t", j.Table, "-S", j.Chain)
+	out, err := l.Run(ctx, nil, bin, "-w", platform.XtablesWait, "-t", j.Table, "-S", j.Chain)
 	if err != nil {
 		return err
 	}
@@ -130,7 +130,7 @@ func (l *ruleLoader) ensureFirst(ctx context.Context, j egress.Jump) error {
 		return nil
 	}
 	l.deleteJump(ctx, j)
-	_, err = l.Run(ctx, nil, bin, "-w", "-t", j.Table, "-I", j.Chain, "1", "-j", j.Target)
+	_, err = l.Run(ctx, nil, bin, "-w", platform.XtablesWait, "-t", j.Table, "-I", j.Chain, "1", "-j", j.Target)
 	return err
 }
 
@@ -139,7 +139,7 @@ func (l *ruleLoader) ensureFirst(ctx context.Context, j egress.Jump) error {
 func (l *ruleLoader) deleteJump(ctx context.Context, j egress.Jump) {
 	bin := l.Kernel.Binary(saveTool(j.IPv6))
 	for range maxJumpDeletes {
-		if _, err := l.Run(ctx, nil, bin, "-w", "-t", j.Table, "-D", j.Chain, "-j", j.Target); err != nil {
+		if _, err := l.Run(ctx, nil, bin, "-w", platform.XtablesWait, "-t", j.Table, "-D", j.Chain, "-j", j.Target); err != nil {
 			return
 		}
 	}
@@ -254,8 +254,19 @@ func (g *guard) run(ctx context.Context) error {
 }
 
 // check restores whatever has left its wanted state, logging each restore
-// at ERROR, and fails only when a restore fails.
+// at ERROR, and fails only when a restore fails. The Checked hook runs after
+// the lock is released, so its slow call holds up no swap or probe read.
 func (g *guard) check(ctx context.Context) error {
+	if err := g.restore(ctx); err != nil {
+		return err
+	}
+	if g.hooks.Checked != nil {
+		g.hooks.Checked()
+	}
+	return nil
+}
+
+func (g *guard) restore(ctx context.Context) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	rs, err := g.want.Generate()
@@ -268,6 +279,15 @@ func (g *guard) check(ctx context.Context) error {
 		}
 		g.restored(restoredRules, cerr)
 	}
+	if err := g.hold(func(s *setting) { g.restored(s.what, errors.New(s.why)) }); err != nil {
+		return fmt.Errorf("restoring %w", err)
+	}
+	return nil
+}
+
+// hold sets each wanted setting that does not hold, calling set after each;
+// g.mu is held.
+func (g *guard) hold(set func(s *setting)) error {
 	for _, s := range g.settings() {
 		if !s.wanted {
 			continue
@@ -276,12 +296,9 @@ func (g *guard) check(ctx context.Context) error {
 			continue
 		}
 		if err := s.set(); err != nil {
-			return fmt.Errorf("restoring %s: %w", s.what, err)
+			return fmt.Errorf("%s: %w", s.what, err)
 		}
-		g.restored(s.what, errors.New(s.why))
-	}
-	if g.hooks.Checked != nil {
-		g.hooks.Checked()
+		set(&s)
 	}
 	return nil
 }
@@ -321,10 +338,11 @@ func (g *guard) restored(what string, why error) {
 	}
 }
 
-// swap loads want's rules and resolv.conf and holds them from now on. When
-// the rules fail to load it loads the ones it held again and keeps holding
-// them, answering the failure as kept. fatal is a failure a restore would
-// answer: the old rules failing to load again, or resolv.conf unwritable.
+// swap loads want's rules, resolv.conf and namespace settings and holds
+// them from now on. When the rules fail to load it loads the ones it held
+// again and keeps holding them, answering the failure as kept. fatal is a
+// failure a restore would answer: the old rules failing to load again, or a
+// setting that cannot be written.
 func (g *guard) swap(ctx context.Context, want wanted) (kept, fatal error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -335,7 +353,10 @@ func (g *guard) swap(ctx context.Context, want wanted) (kept, fatal error) {
 		return err, nil
 	}
 	g.want = want
-	return nil, netsetup.WriteResolvConf(g.rules.Root, want.Resolv)
+	if err := g.hold(func(*setting) {}); err != nil {
+		return nil, fmt.Errorf("setting %w", err)
+	}
+	return nil, nil
 }
 
 // refresh loads the rule set generated from what the host holds now, for a

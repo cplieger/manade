@@ -232,6 +232,48 @@ func TestCreate(t *testing.T) {
 	})
 }
 
+func TestInspectSettled(t *testing.T) {
+	t.Run("a container that appears within the window is found", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			d := newDaemon(t, "1.51")
+			start := time.Now()
+			d.handle("GET /containers/r1/json", func(w http.ResponseWriter, r *http.Request) {
+				if time.Since(start) < CallTimeout-time.Minute {
+					writeError(w, http.StatusNotFound, "No such container: r1")
+					return
+				}
+				inspectAs(StateCreated)(w, r)
+			})
+			ctr, found, err := d.dial(t).InspectSettled(t.Context(), "r1")
+			if err != nil || !found || ctr.ID != "c1" {
+				t.Errorf("InspectSettled = %+v, %v, %v, want c1 found", ctr.ID, found, err)
+			}
+		})
+	})
+	t.Run("a 404 for the whole window is not found after one call timeout", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			d := newDaemon(t, "1.51")
+			d.handle("GET /containers/r1/json", func(w http.ResponseWriter, _ *http.Request) {
+				writeError(w, http.StatusNotFound, "No such container: r1")
+			})
+			start := time.Now()
+			_, found, err := d.dial(t).InspectSettled(t.Context(), "r1")
+			if err != nil || found || time.Since(start) != CallTimeout {
+				t.Errorf("InspectSettled = %v, %v after %s, want not found at %s", found, err, time.Since(start), CallTimeout)
+			}
+		})
+	})
+	t.Run("an inspect that errs answers the error", func(t *testing.T) {
+		d := newDaemon(t, "1.51")
+		d.handle("GET /containers/r1/json", func(w http.ResponseWriter, _ *http.Request) {
+			writeError(w, http.StatusInternalServerError, "driver busy")
+		})
+		if _, found, err := d.dial(t).InspectSettled(t.Context(), "r1"); err == nil || found {
+			t.Errorf("InspectSettled = %v, %v, want the error", found, err)
+		}
+	})
+}
+
 func TestCreateFoundKeepsItsLimits(t *testing.T) {
 	pids := int64(4096)
 	limited := &CreateRequest{Image: "sha256:abc", Labels: map[string]string{"manade.runner": "r1"}, HostConfig: HostConfig{

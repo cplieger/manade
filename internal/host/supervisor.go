@@ -10,7 +10,6 @@ import (
 	"net"
 	"net/netip"
 	"os"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -144,28 +143,44 @@ func (s *supervisor) serve(ctx context.Context, cfg *config.Config, h *config.Ho
 		Pinning: !cg.Quota, PIDs: cg.PIDsController, Swap: cg.Swap,
 		Disk: s.net.Storage.Driver == platform.Overlay2 && platform.ProjectQuota(ms, dataRoot),
 	}
-	s.outward = s.outwardAddrs()
-	if s.apiPort, err = apiPort(cfg.Self.Listen); err != nil {
-		return err
-	}
+	s.outward, s.apiPort = s.outwardAddrs(), cfg.Self.Listen.Port
 	sv := s.newServed(cfg, h)
 	s.served.Store(sv)
-	if berr := s.build(ctx, h, sv, cg); berr != nil {
+	s.warnNoMemoryLimit(h, sv, cg)
+	rctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+	if berr := s.build(rctx, h, sv, cg); berr != nil {
 		return berr
 	}
 	ln, err := listen(ctx, cfg.Self)
 	if err != nil {
 		return err
 	}
-	return s.run(ctx, ln)
+	s.run(rctx, cancel, ln)
+	if ctx.Err() != nil {
+		return nil
+	}
+	return context.Cause(rctx)
+}
+
+// warnNoMemoryLimit warns once of a host cgroup with no memory limit, which
+// admits no job memory, naming the limit that would admit h's capacity.
+func (s *supervisor) warnNoMemoryLimit(h *config.Host, sv *served, cg *platform.Cgroup) {
+	if cg.Memory != 0 {
+		return
+	}
+	m := memoryStatus(h, sv.Profiles, 0, 0)
+	s.log.Warn("The host has no memory limit, so it admits no job memory: give its container a memory limit of its capacity.memory plus its reserve",
+		"capacity_memory", h.Capacity.Memory, "reserve", m.Reserve, "limit_bytes", h.Capacity.Memory+m.Reserve)
 }
 
 // build makes the image manager, the runner record and the prober, and
-// loads the probe image and the daemon's runner containers.
+// loads the probe image and the daemon's runner containers. ctx is the
+// host's run, which each runner's work runs under.
 func (s *supervisor) build(ctx context.Context, h *config.Host, sv *served, cg *platform.Cgroup) error {
 	s.images = images.New(&images.Config{
 		Daemon: s.dk, Host: h, Lookup: s.lookup, ByName: s.net.gitHubName, Log: s.log,
-		Keep:    images.Keep{Runner: func(n string) bool { return s.runners.holds(n) }, ProbeRun: func(r string) (time.Time, bool) { return s.prober.Ended(r) }},
+		Keep:    images.Keep{Runner: func(n string) bool { return s.runners.holds(n) }, ProbeLeftover: func(r string) bool { return s.prober.Leftover(r) }},
 		Version: s.opts.Version, StateDir: stateDir, Binary: binaryPath, Profiles: sv.Profiles,
 	})
 	var cpus []int
@@ -175,7 +190,7 @@ func (s *supervisor) build(ctx context.Context, h *config.Host, sv *served, cg *
 			return fmt.Errorf("the host's cpuset %q: %w", cg.CPUSet, err)
 		}
 	}
-	s.runners = newRunners(&runnersConfig{Daemon: s.dk, Images: s.images, Served: sv, Log: s.log, CPUs: cpus})
+	s.runners = newRunners(ctx, &runnersConfig{Daemon: s.dk, Images: s.images, Served: sv, Log: s.log, CPUs: cpus})
 	if err := s.runners.load(ctx); err != nil {
 		return err
 	}
@@ -191,11 +206,9 @@ func (s *supervisor) build(ctx context.Context, h *config.Host, sv *served, cg *
 	return nil
 }
 
-// run serves ln and holds the host until ctx ends or a part fails, then
-// stops each part and waits for it.
-func (s *supervisor) run(ctx context.Context, ln net.Listener) error {
-	rctx, cancel := context.WithCancelCause(ctx)
-	defer cancel(nil)
+// run serves ln and holds the host until rctx ends or a part fails, which
+// cancels it with why, then stops each part and waits for it.
+func (s *supervisor) run(rctx context.Context, cancel context.CancelCauseFunc, ln net.Listener) {
 	var wg sync.WaitGroup
 	wg.Go(func() {
 		if err := s.net.hold(rctx); err != nil {
@@ -219,10 +232,6 @@ func (s *supervisor) run(ctx context.Context, ln net.Listener) error {
 	}
 	cancel(err)
 	wg.Wait()
-	if ctx.Err() != nil {
-		return nil
-	}
-	return context.Cause(rctx)
 }
 
 func (s *supervisor) warnOpen() {
@@ -430,22 +439,6 @@ func socketGID() (uint32, error) {
 		return 0, errors.New("the host daemon's socket: no owner on this platform")
 	}
 	return sys.Gid, nil
-}
-
-// apiPort is the API's TCP port, 0 for a Unix socket.
-func apiPort(a config.Address) (uint16, error) {
-	if a.HostPort == "" {
-		return 0, nil
-	}
-	_, port, err := net.SplitHostPort(a.HostPort)
-	if err != nil {
-		return 0, fmt.Errorf("MANADE_LISTEN %q: %w", a.HostPort, err)
-	}
-	n, err := strconv.ParseUint(port, 10, 16)
-	if err != nil {
-		return 0, fmt.Errorf("MANADE_LISTEN %q: %w", a.HostPort, err)
-	}
-	return uint16(n), nil
 }
 
 // listen opens the API's listener: the Unix socket owned by APIUID, or TCP

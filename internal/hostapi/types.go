@@ -128,6 +128,9 @@ type HostLimits struct {
 
 // MemoryStatus is what jobs may use of the host's memory limit.
 type MemoryStatus struct {
+	// Limit is the host cgroup's memory limit, 0 for none, which admits
+	// nothing.
+	Limit int64 `json:"limit"`
 	// Admissible is the cgroup limit less Reserve: the most a capacity's
 	// memory may be.
 	Admissible int64 `json:"admissible"`
@@ -210,6 +213,9 @@ const (
 	// ReasonRefused is a profile whose registry resolved outside an
 	// internet: false host's allow entries.
 	ReasonRefused Reason = "refused"
+	// ReasonDataFull is every profile while a start the daemon refused for
+	// want of space holds the host's starts; Detail says when it lifts.
+	ReasonDataFull Reason = "data_full"
 )
 
 // ProfileStatus is one profile's readiness and image on a host.

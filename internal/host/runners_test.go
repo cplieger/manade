@@ -25,15 +25,24 @@ type fakeRunnerDaemon struct {
 	volumes  map[string]bool
 	archives map[string][]byte
 	// create and start, when set, answer a call instead of the default.
-	create   func(name string, n int) (docker.Result, bool)
-	start    func(id string, n int) (docker.Result, bool)
-	gate     chan struct{}
-	events   chan string
-	calls    []string
-	creates  int
-	starts   int
-	mu       sync.Mutex
-	inspects int
+	create func(name string, n int) (docker.Result, bool)
+	start  func(id string, n int) (docker.Result, bool)
+	// listed, when set, runs after a list read the containers and before
+	// it answers.
+	listed func()
+	// gate holds each create until it closes; with commitLate a create its
+	// caller cut still commits once the gate opens, as a daemon under load
+	// does, and InspectSettled waits for that.
+	gate       chan struct{}
+	events     chan string
+	calls      []string
+	creates    int
+	starts     int
+	committing int
+	settling   int
+	mu         sync.Mutex
+	inspects   int
+	commitLate bool
 }
 
 func newFakeRunnerDaemon() *fakeRunnerDaemon {
@@ -48,13 +57,32 @@ func (d *fakeRunnerDaemon) record(call string) {
 }
 
 func (d *fakeRunnerDaemon) Create(ctx context.Context, name string, req *docker.CreateRequest) docker.Result {
-	if d.gate != nil {
+	d.mu.Lock()
+	gate, late := d.gate, d.commitLate
+	d.mu.Unlock()
+	if gate != nil {
 		select {
-		case <-d.gate:
+		case <-gate:
 		case <-ctx.Done():
+			if late {
+				d.mu.Lock()
+				d.committing++
+				d.mu.Unlock()
+				go func() {
+					<-gate
+					d.commit(name, req)
+					d.mu.Lock()
+					d.committing--
+					d.mu.Unlock()
+				}()
+			}
 			return docker.Result{Outcome: docker.Pending, Err: ctx.Err()}
 		}
 	}
+	return d.commit(name, req)
+}
+
+func (d *fakeRunnerDaemon) commit(name string, req *docker.CreateRequest) docker.Result {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.creates++
@@ -117,12 +145,35 @@ func (d *fakeRunnerDaemon) InspectContainer(_ context.Context, ref string) (dock
 	return *c, true, nil
 }
 
+// InspectSettled inspects ref once no create cut by its caller is still
+// to commit.
+func (d *fakeRunnerDaemon) InspectSettled(ctx context.Context, ref string) (docker.Container, bool, error) {
+	d.mu.Lock()
+	d.settling++
+	d.mu.Unlock()
+	for {
+		d.mu.Lock()
+		n := d.committing
+		d.mu.Unlock()
+		if n == 0 {
+			return d.InspectContainer(ctx, ref)
+		}
+		if !sleep(ctx, time.Millisecond) {
+			return docker.Container{}, false, ctx.Err()
+		}
+	}
+}
+
 func (d *fakeRunnerDaemon) ListContainers(context.Context) ([]docker.Summary, error) {
 	d.mu.Lock()
-	defer d.mu.Unlock()
 	var out []docker.Summary
 	for _, c := range d.ctrs {
 		out = append(out, docker.Summary{ID: c.ID, State: c.State.Status, Labels: maps.Clone(c.Config.Labels)})
+	}
+	listed := d.listed
+	d.mu.Unlock()
+	if listed != nil {
+		listed()
 	}
 	return out, nil
 }
@@ -207,7 +258,8 @@ func (d *fakeRunnerDaemon) callList() []string {
 	return slices.Clone(d.calls)
 }
 
-// fakeImages serves every profile with one image, unless not ready.
+// fakeImages serves every profile with one image, unless not ready; each
+// tidy pass ends before Tidy returns.
 type fakeImages struct {
 	notReady map[string]hostapi.ProfileStatus
 	missing  []string
@@ -228,16 +280,27 @@ func (f *fakeImages) Missing(p, id string) {
 	f.missing = append(f.missing, p+" "+id)
 }
 
-func (f *fakeImages) Tidy() {
+func (f *fakeImages) Tidy(done func()) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.tidies++
+	f.mu.Unlock()
+	if done != nil {
+		done()
+	}
 }
 
 func (f *fakeImages) Status() []hostapi.ProfileStatus {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return slices.Collect(maps.Values(f.notReady))
+	st := []hostapi.ProfileStatus{}
+	for _, name := range []string{"small", "large", "dind"} {
+		p, nr := f.notReady[name]
+		if !nr {
+			p = hostapi.ProfileStatus{Name: name, Ready: true}
+		}
+		st = append(st, p)
+	}
+	return st
 }
 
 func testProfile(name string, cpus int64) config.Profile {
@@ -282,15 +345,15 @@ func newRunnersTest(t *testing.T, cpus []int, setup func(d *fakeRunnerDaemon)) *
 		setup(d)
 	}
 	img := &fakeImages{notReady: map[string]hostapi.ProfileStatus{}}
-	r := newRunners(&runnersConfig{Daemon: d, Images: img, Served: testServed(cpus != nil), Log: slog.New(slog.DiscardHandler), CPUs: cpus})
+	ctx, cancel := context.WithCancel(context.Background())
+	r := newRunners(ctx, &runnersConfig{Daemon: d, Images: img, Served: testServed(cpus != nil), Log: slog.New(slog.DiscardHandler), CPUs: cpus})
 	if err := r.load(t.Context()); err != nil {
+		cancel()
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { r.run(ctx); close(done) }()
 	t.Cleanup(func() { cancel(); <-done })
-	waitFor(t, "Run started", func() bool { r.mu.Lock(); defer r.mu.Unlock(); return r.base == ctx })
 	return &runnersTest{r: r, d: d, img: img}
 }
 
@@ -463,12 +526,24 @@ func TestFailedStarts(t *testing.T) {
 			t.Errorf("Missing calls = %q", rt.img.missing)
 		}
 	})
-	t.Run("a full volume fails the start, holds starts until an exit and tidies", func(t *testing.T) {
-		rt := newRunnersTest(t, nil, func(d *fakeRunnerDaemon) {
-			d.start = func(id string, n int) (docker.Result, bool) {
-				return docker.Result{Outcome: docker.Failed, ID: id, Err: errors.New("write /var/lib/docker/x: no space left on device")}, n == 2
-			}
-		})
+}
+
+// noSpaceOnce refuses the start numbered n for want of space.
+func noSpaceOnce(n int) func(id string, i int) (docker.Result, bool) {
+	return func(id string, i int) (docker.Result, bool) {
+		return docker.Result{Outcome: docker.Failed, ID: id, Err: errors.New("write /var/lib/docker/x: no space left on device")}, i == n
+	}
+}
+
+func (rt *runnersTest) held() bool {
+	rt.r.mu.Lock()
+	defer rt.r.mu.Unlock()
+	return rt.r.spaceHeld != ""
+}
+
+func TestAFullVolume(t *testing.T) {
+	t.Run("fails the start naming the volume, holds starts as not ready and tidies", func(t *testing.T) {
+		rt := newRunnersTest(t, nil, func(d *fakeRunnerDaemon) { d.start = noSpaceOnce(2) })
 		if _, err := rt.r.accept(t.Context(), request("r1", "small")); err != nil {
 			t.Fatal(err)
 		}
@@ -480,9 +555,17 @@ func TestFailedStarts(t *testing.T) {
 		if !strings.Contains(got.Reason, "data volume is full ("+dataRoot+")") {
 			t.Errorf("reason %q does not name the volume", got.Reason)
 		}
-		held, err := rt.r.accept(t.Context(), request("r3", "small"))
-		if err != nil || held.State != hostapi.StateFailed || !strings.Contains(held.Reason, "starts are held") {
-			t.Errorf("held = %+v, %v", held, err)
+		_, err := rt.r.accept(t.Context(), request("r3", "small"))
+		if nr, ok := errors.AsType[*hostapi.NotReadyError](err); !ok || nr.Reason != hostapi.ReasonDataFull || !strings.Contains(nr.Detail, dataRoot) {
+			t.Errorf("held POST = %v, want not ready naming the volume", err)
+		}
+		if _, ok := rt.listed(t, "r3"); ok {
+			t.Error("a POST refused while held left a record")
+		}
+		for _, p := range rt.r.profileStatus() {
+			if p.Ready || p.Reason != hostapi.ReasonDataFull {
+				t.Errorf("status %+v, want every profile not ready for the full volume", p)
+			}
 		}
 		rt.img.mu.Lock()
 		tidies := rt.img.tidies
@@ -490,12 +573,82 @@ func TestFailedStarts(t *testing.T) {
 		if tidies != 1 {
 			t.Errorf("%d tidy passes, want 1 at once", tidies)
 		}
+		if !rt.held() {
+			t.Error("the tidy pass lifted the hold while a runner runs")
+		}
 		rt.d.exit("r1", 0, false)
-		waitFor(t, "the hold lifted", func() bool { rt.r.mu.Lock(); defer rt.r.mu.Unlock(); return rt.r.spaceHeld == "" })
+		waitFor(t, "the hold lifted", func() bool { return !rt.held() })
 		if _, err := rt.r.accept(t.Context(), request("r4", "small")); err != nil {
 			t.Fatal(err)
 		}
 		rt.waitState(t, "r4", hostapi.StateRunning)
+	})
+	t.Run("an exit seen only by the list lifts the hold", func(t *testing.T) {
+		rt := newRunnersTest(t, nil, func(d *fakeRunnerDaemon) { d.start = noSpaceOnce(2) })
+		if _, err := rt.r.accept(t.Context(), request("r1", "small")); err != nil {
+			t.Fatal(err)
+		}
+		rt.waitState(t, "r1", hostapi.StateRunning)
+		if _, err := rt.r.accept(t.Context(), request("r2", "small")); err != nil {
+			t.Fatal(err)
+		}
+		rt.waitState(t, "r2", hostapi.StateFailed)
+		rt.d.mu.Lock()
+		c := rt.d.ctrs["r1"]
+		c.State.Status, c.State.FinishedAt = docker.StateExited, time.Now()
+		rt.d.mu.Unlock()
+		rt.r.sync(t.Context())
+		if rt.held() {
+			t.Error("the list read r1's exit and kept the hold")
+		}
+	})
+	t.Run("with no runner running, the tidy pass's end lifts the hold", func(t *testing.T) {
+		rt := newRunnersTest(t, nil, func(d *fakeRunnerDaemon) { d.start = noSpaceOnce(1) })
+		if _, err := rt.r.accept(t.Context(), request("r1", "small")); err != nil {
+			t.Fatal(err)
+		}
+		rt.waitState(t, "r1", hostapi.StateFailed)
+		waitFor(t, "the hold lifted", func() bool { return !rt.held() })
+		if _, err := rt.r.accept(t.Context(), request("r2", "small")); err != nil {
+			t.Fatal(err)
+		}
+		rt.waitState(t, "r2", hostapi.StateRunning)
+	})
+	t.Run("an exit from before the hold does not lift it", func(t *testing.T) {
+		rt := newRunnersTest(t, nil, func(d *fakeRunnerDaemon) { d.start = noSpaceOnce(3) })
+		for _, name := range []string{"r1", "r2"} {
+			if _, err := rt.r.accept(t.Context(), request(name, "small")); err != nil {
+				t.Fatal(err)
+			}
+			rt.waitState(t, name, hostapi.StateRunning)
+		}
+		rt.d.exit("r1", 0, false)
+		rt.waitState(t, "r1", hostapi.StateExited)
+		if _, err := rt.r.accept(t.Context(), request("r3", "small")); err != nil {
+			t.Fatal(err)
+		}
+		rt.waitState(t, "r3", hostapi.StateFailed)
+		rt.r.sync(t.Context())
+		if !rt.held() {
+			t.Error("r1's exit, older than the hold, lifted it")
+		}
+	})
+	t.Run("a deleted runner's removal lifts the hold", func(t *testing.T) {
+		rt := newRunnersTest(t, nil, func(d *fakeRunnerDaemon) { d.start = noSpaceOnce(2) })
+		if _, err := rt.r.accept(t.Context(), request("r1", "small")); err != nil {
+			t.Fatal(err)
+		}
+		rt.waitState(t, "r1", hostapi.StateRunning)
+		if _, err := rt.r.accept(t.Context(), request("r2", "small")); err != nil {
+			t.Fatal(err)
+		}
+		rt.waitState(t, "r2", hostapi.StateFailed)
+		if _, err := rt.r.remove(t.Context(), "r1", false); err != nil {
+			t.Fatal(err)
+		}
+		if rt.held() {
+			t.Error("removing a runner's container kept the hold")
+		}
 	})
 }
 
@@ -645,4 +798,101 @@ func TestEventsAndLogs(t *testing.T) {
 			t.Errorf("Logs = %q, %v", b, err)
 		}
 	})
+}
+
+// A list read before a runner's start lands, and swapped in after it, must
+// not take the running container back out of the view.
+func TestARefreshKeepsWritesMadeDuringIt(t *testing.T) {
+	read, release := make(chan struct{}), make(chan struct{})
+	rt := newRunnersTest(t, nil, nil)
+	rt.d.mu.Lock()
+	rt.d.listed = func() {
+		close(read)
+		<-release
+	}
+	rt.d.mu.Unlock()
+	refreshed := make(chan error, 1)
+	go func() { refreshed <- rt.r.refresh(t.Context()) }()
+	<-read
+	rt.d.mu.Lock()
+	rt.d.listed = nil
+	rt.d.mu.Unlock()
+	if _, err := rt.r.accept(t.Context(), request("r1", "small")); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "r1 started", func() bool {
+		rt.r.mu.Lock()
+		defer rt.r.mu.Unlock()
+		return rt.r.records["r1"].rec.State == hostapi.RecordStarted
+	})
+	close(release)
+	if err := <-refreshed; err != nil {
+		t.Fatal(err)
+	}
+	rt.r.mu.Lock()
+	got, _ := rt.r.listed("r1")
+	rt.r.mu.Unlock()
+	if got.State != hostapi.StateRunning {
+		t.Errorf("r1 = %+v after the stale list, want running", got)
+	}
+}
+
+// A DELETE that cut a create the daemon then commits removes that
+// container before it answers, so no failed runner outlives the DELETE.
+func TestADeleteWaitsOutACutCreate(t *testing.T) {
+	gate := make(chan struct{})
+	rt := newRunnersTest(t, nil, func(d *fakeRunnerDaemon) { d.gate, d.commitLate = gate, true })
+	if _, err := rt.r.accept(t.Context(), request("r1", "small")); err != nil {
+		t.Fatal(err)
+	}
+	deleted := make(chan error, 1)
+	go func() { _, err := rt.r.remove(t.Context(), "r1", false); deleted <- err }()
+	var err error
+	answered := false
+	waitFor(t, "the DELETE waiting on the cut create, or answered", func() bool {
+		select {
+		case err = <-deleted:
+			answered = true
+			return true
+		default:
+		}
+		rt.d.mu.Lock()
+		defer rt.d.mu.Unlock()
+		return rt.d.settling > 0
+	})
+	close(gate)
+	if !answered {
+		err = <-deleted
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the cut create committed", func() bool {
+		rt.d.mu.Lock()
+		defer rt.d.mu.Unlock()
+		return rt.d.committing == 0
+	})
+	if got, ok := rt.listed(t, "r1"); ok {
+		t.Errorf("listed %+v after its DELETE answered", got)
+	}
+}
+
+// A POST served before run starts still builds under the host's run, so
+// the host's stop ends it.
+func TestWorkRunsUnderTheHostsRunFromTheStart(t *testing.T) {
+	d := newFakeRunnerDaemon()
+	d.gate = make(chan struct{})
+	ctx, cancel := context.WithCancel(t.Context())
+	r := newRunners(ctx, &runnersConfig{Daemon: d, Images: &fakeImages{}, Served: testServed(false), Log: slog.New(slog.DiscardHandler)})
+	if _, err := r.accept(t.Context(), request("r1", "small")); err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	done := make(chan struct{})
+	go func() { r.run(ctx); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the build ignored the host's stop")
+	}
 }

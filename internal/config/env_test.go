@@ -95,7 +95,7 @@ func TestLoadHost(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := Self{Name: "nas", Listen: Address{HostPort: ":7464"}, TLSDir: "/run/tls", APIUID: 1000}
+		want := Self{Name: "nas", Listen: Address{HostPort: ":7464", Port: 7464}, TLSDir: "/run/tls", APIUID: 1000}
 		if *cfg.Self != want {
 			t.Errorf("self = %+v, want %+v", *cfg.Self, want)
 		}
@@ -121,6 +121,7 @@ func TestLoadHost(t *testing.T) {
 		{"nameUpper", map[string]string{"MANADE_HOST": "NAS"}, []string{"MANADE_HOST: want a lowercase DNS label"}},
 		{"nameReserved", map[string]string{"MANADE_HOST": "orchestrator"}, []string{"MANADE_HOST: want a name other than ca and orchestrator"}},
 		{"listenBad", map[string]string{"MANADE_HOST": "nas", "MANADE_API_LISTEN": "7464"}, []string{"MANADE_API_LISTEN: want host:port"}},
+		{"listenSignedPort", map[string]string{"MANADE_HOST": "nas", "MANADE_API_LISTEN": ":+7464"}, []string{"MANADE_API_LISTEN: want host:port"}},
 		{"listenSocketRelative", map[string]string{"MANADE_HOST": "nas", "MANADE_API_LISTEN": "unix://api.sock"}, []string{"MANADE_API_LISTEN: want an absolute, clean path"}},
 		{"uidBad", map[string]string{"MANADE_HOST": "nas", "MANADE_API_UID": "-1"}, []string{"MANADE_API_UID: want a numeric uid"}},
 		{"tlsDirRelative", map[string]string{"MANADE_HOST": "nas", "TLS_DIR": "tls"}, []string{"TLS_DIR: want an absolute, clean path"}},

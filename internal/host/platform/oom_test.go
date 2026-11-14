@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 )
 
@@ -31,8 +32,8 @@ func TestOOMTotalSurvivesARestart(t *testing.T) {
 	if got, err := first.Observe(t.Context(), 2); err != nil || got != 2 {
 		t.Fatalf("Observe(2) = %d, %v, want 2", got, err)
 	}
-	if f := readSaved(t, path); f.Total != 2 || f.Count != 2 {
-		t.Errorf("saved %+v, want total 2 at count 2", f)
+	if f := readSaved(t, path); f.Total != 2 {
+		t.Errorf("saved %+v, want total 2", f)
 	}
 	// A restarted host's recreated cgroup counts from 0.
 	second, err := LoadOOMTotal(t.Context(), path)
@@ -45,8 +46,8 @@ func TestOOMTotalSurvivesARestart(t *testing.T) {
 	if got, err := second.Observe(t.Context(), 1); err != nil || got != 3 {
 		t.Errorf("Observe(1) after the restart = %d, %v, want 3", got, err)
 	}
-	if f := readSaved(t, path); f.Total != 3 || f.Count != 1 {
-		t.Errorf("saved %+v, want total 3 at count 1", f)
+	if f := readSaved(t, path); f.Total != 3 {
+		t.Errorf("saved %+v, want total 3", f)
 	}
 }
 
@@ -74,6 +75,35 @@ func TestOOMTotalSavesOnlyOnAChange(t *testing.T) {
 	if _, err := os.Stat(path); !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("an unchanged count wrote the file again (%v)", err)
 	}
+}
+
+func TestOOMTotalNeverFalls(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "oom-kills.json")
+	tot, err := LoadOOMTotal(t.Context(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tot.Observe(t.Context(), 5); err != nil {
+		t.Fatal(err)
+	}
+	t.Run("an older read answers and saves nothing lower", func(t *testing.T) {
+		if got, err := tot.Observe(t.Context(), 3); err != nil || got != 5 {
+			t.Errorf("Observe(3) after 5 = %d, %v, want 5", got, err)
+		}
+		if f := readSaved(t, path); f.Total != 5 {
+			t.Errorf("saved %+v, want 5 kept", f)
+		}
+	})
+	t.Run("concurrent observes leave the highest saved", func(t *testing.T) {
+		var wg sync.WaitGroup
+		for c := range uint64(32) {
+			wg.Go(func() { _, _ = tot.Observe(t.Context(), 6+c) })
+		}
+		wg.Wait()
+		if f := readSaved(t, path); f.Total != 37 {
+			t.Errorf("saved %+v, want the highest count's 37", f)
+		}
+	})
 }
 
 func TestOOMTotalRetriesAFailedSave(t *testing.T) {

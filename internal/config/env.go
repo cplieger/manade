@@ -47,10 +47,10 @@ type GitHub struct {
 type Self struct {
 	// Name is MANADE_HOST, the hosts key whose section the host serves.
 	Name string
-	// Listen is where the host API is served.
-	Listen Address
 	// TLSDir holds ca.pem, <name>.pem and <name>-key.pem.
 	TLSDir string
+	// Listen is where the host API is served.
+	Listen Address
 	// APIUID owns the API socket.
 	APIUID int
 }
@@ -180,11 +180,7 @@ func parseListen(raw, name string) (Address, error) {
 		}
 		return Address{Socket: path}, nil
 	}
-	hp, err := parseHostPort(raw, true)
-	if err != nil {
-		return Address{}, err
-	}
-	return Address{HostPort: hp}, nil
+	return parseHostPort(raw, true)
 }
 
 // readCredential sets exactly one credential form. No error quotes a secret

@@ -3,13 +3,9 @@ package main
 import (
 	"fmt"
 	"io"
-	"os"
 
 	"github.com/cplieger/manade/internal/host/platform"
 )
-
-// stdout is where storage-driver answers its pick; a test seam.
-var stdout io.Writer = os.Stdout
 
 // pickStorage is the pick storage-driver makes; a test seam, since the real
 // one mounts a test overlay.

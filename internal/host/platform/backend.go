@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/cplieger/manade/internal/egress"
 )
@@ -32,10 +33,34 @@ func Exec(ctx context.Context, stdin []byte, name string, args ...string) ([]byt
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Stdin = bytes.NewReader(stdin)
 	cmd.Stdout, cmd.Stderr = &out, &errOut
+	// A killed program's own children may hold its output pipes open.
+	cmd.WaitDelay = time.Second
 	if err := cmd.Run(); err != nil {
 		return out.Bytes(), fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, tail(errOut.String()))
 	}
 	return out.Bytes(), nil
+}
+
+// commandTimeout bounds one rule command, so a program that hangs fails
+// the load, restore or probe step it serves instead of holding it for ever.
+var commandTimeout = time.Minute
+
+// XtablesWait is the -w seconds an iptables-family call waits for the
+// xtables lock: below commandTimeout, so a held lock fails the call by
+// name before the bound cuts it.
+const XtablesWait = "30"
+
+// Bounded answers run with each call held to commandTimeout.
+func Bounded(run Command) Command {
+	return func(ctx context.Context, stdin []byte, name string, args ...string) ([]byte, error) {
+		cctx, cancel := context.WithTimeout(ctx, commandTimeout)
+		defer cancel()
+		out, err := run(cctx, stdin, name, args...)
+		if err != nil && ctx.Err() == nil && errors.Is(cctx.Err(), context.DeadlineExceeded) {
+			err = fmt.Errorf("%s did not finish within %s: %w", name, commandTimeout, err)
+		}
+		return out, err
+	}
 }
 
 // tail answers the last 512 bytes of s, trimmed.
@@ -79,13 +104,13 @@ func ProbeKernel(ctx context.Context, run Command) (*Kernel, error) {
 		k.Backend = egress.NFTables
 	} else {
 		legacy := &Kernel{Backend: egress.IPTables}
-		if err := ok(legacy.Binary("iptables"), "-w", "-t", "filter", "-n", "-L"); err != nil {
+		if err := ok(legacy.Binary("iptables"), "-w", XtablesWait, "-t", "filter", "-n", "-L"); err != nil {
 			return nil, fmt.Errorf("%w: nftables: %w; legacy iptables: %w", errNoBackend, nftErr, err)
 		}
 		k.Backend = egress.IPTables
 	}
-	k.RawOff = ok(k.Binary("iptables"), "-w", "-t", "raw", "-n", "-L") != nil
-	k.IPv6NAT = ok(k.Binary("ip6tables"), "-w", "-t", "nat", "-n", "-L") == nil
+	k.RawOff = ok(k.Binary("iptables"), "-w", XtablesWait, "-t", "raw", "-n", "-L") != nil
+	k.IPv6NAT = ok(k.Binary("ip6tables"), "-w", XtablesWait, "-t", "nat", "-n", "-L") == nil
 	return k, nil
 }
 

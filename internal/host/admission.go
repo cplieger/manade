@@ -11,14 +11,18 @@ import (
 )
 
 // The host reserve: what the host's own processes may hold of its memory
-// limit. The base is about twice the 124 MiB the host's own processes
-// peaked at during a pull on the floor machine; each probe container is
-// held to jobspec.ProbeMemory with 16 MiB for its shim; each runner's shim
-// held 9 MiB.
+// limit.
 const (
-	reserveBase      = 256 << 20
-	reserveProbe     = 2 * (jobspec.ProbeMemory + reservePerRunner)
-	reservePerRunner = 16 << 20
+	// reserveBase is about twice the 124 MiB the host's own processes
+	// peaked at during a pull on the floor machine.
+	reserveBase = 256 << 20
+	// reserveShim is one container's containerd shim: each runner's held
+	// 9 MiB there.
+	reserveShim = 16 << 20
+	// reserveProbe is the probe's two containers, each held to
+	// jobspec.ProbeMemory, with their shims.
+	reserveProbe     = 2 * (jobspec.ProbeMemory + reserveShim)
+	reservePerRunner = reserveShim
 )
 
 // servedProfiles answers the profiles of cfg that list host, in config order.
@@ -63,7 +67,7 @@ func reserveRunners(h *config.Host, profiles []*config.Profile) int {
 func memoryStatus(h *config.Host, profiles []*config.Profile, limit, own int64) hostapi.MemoryStatus {
 	n := reserveRunners(h, profiles)
 	reserve := int64(reserveBase + reserveProbe + n*reservePerRunner)
-	return hostapi.MemoryStatus{Admissible: max(0, limit-reserve), Reserve: reserve, ReserveRunners: n, Own: own}
+	return hostapi.MemoryStatus{Limit: limit, Admissible: max(0, limit-reserve), Reserve: reserve, ReserveRunners: n, Own: own}
 }
 
 // checkDisk refuses a capacity.disk above the data volume's size.

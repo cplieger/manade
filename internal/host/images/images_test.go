@@ -92,7 +92,7 @@ func TestFailedPullBacksOff(t *testing.T) {
 }
 
 // A create refused because the daemon lost the image takes it out of
-// service, and the tag is pulled and checked again at once (D7).
+// service, and the tag is pulled and checked again at once.
 func TestMissingImagePulledAgain(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		hs := newHarness(t, internetHost(), profileOf("small", "base"), profileOf("medium", "base"))

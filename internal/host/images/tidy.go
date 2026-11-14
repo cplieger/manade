@@ -3,7 +3,6 @@ package images
 import (
 	"context"
 	"errors"
-	"time"
 
 	"github.com/cplieger/manade/internal/docker"
 	"github.com/cplieger/manade/internal/jobspec"
@@ -34,7 +33,7 @@ func (m *Manager) tidyState() tidyState {
 }
 
 // tidy removes what nothing uses any more: an image check's container whose
-// check ended, a probe container one call timeout after its run ended, a
+// check ended, a leftover probe container (Keep.ProbeLeftover), a
 // docker-image runner's volume whose runner is gone, and each image the
 // host pulled that no profile names and no container uses, or that a newer
 // one superseded. The current probe image always stays. A removal the
@@ -66,11 +65,7 @@ func (m *Manager) spent(c *docker.Summary, s *tidyState) bool {
 		return !s.checking[id]
 	}
 	run := c.Labels[jobspec.LabelProbe]
-	if run == "" {
-		return false
-	}
-	ended, running := m.keep.ProbeRun(run)
-	return !running && time.Since(ended) >= docker.CallTimeout
+	return run != "" && m.keep.ProbeLeftover(run)
 }
 
 func (m *Manager) tidyVolumes(ctx context.Context, runners map[string]bool) {

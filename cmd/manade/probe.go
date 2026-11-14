@@ -13,8 +13,12 @@ import (
 
 const probeUsage = "usage: manade probe [listen]"
 
-// stdin is what `manade probe` reads its checks from; a test seam.
-var stdin io.Reader = os.Stdin
+// stdin and stdout are the process's standard streams, which probe and
+// storage-driver read and answer on; test seams.
+var (
+	stdin  io.Reader = os.Stdin
+	stdout io.Writer = os.Stdout
+)
 
 // runProbe is the probe container's side of a probe run: one outcome line
 // for each check line on its standard input, or with listen the listener

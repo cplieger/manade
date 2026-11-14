@@ -12,6 +12,7 @@ import (
 
 	"github.com/cplieger/go/health/v2"
 	"github.com/cplieger/manade/internal/config"
+	"github.com/cplieger/manade/internal/egress"
 	"github.com/cplieger/manade/internal/host/images"
 	"github.com/cplieger/manade/internal/hostapi"
 )
@@ -93,38 +94,27 @@ func TestLatencies(t *testing.T) {
 	}
 }
 
-func TestAPIPort(t *testing.T) {
-	for _, tc := range []struct {
-		addr config.Address
-		want uint16
-		ok   bool
-	}{
-		{config.Address{Socket: "/run/manade/hosts/nas/api.sock"}, 0, true},
-		{config.Address{HostPort: "0.0.0.0:7464"}, 7464, true},
-		{config.Address{HostPort: "[::]:7464"}, 7464, true},
-		{config.Address{HostPort: "nas:http"}, 0, false},
-	} {
-		got, err := apiPort(tc.addr)
-		if got != tc.want || (err == nil) != tc.ok {
-			t.Errorf("apiPort(%+v) = %d, %v", tc.addr, got, err)
-		}
-	}
-}
-
 // reloadSupervisor is a supervisor of host lan, brought up on the fake
 // kernel, whose SIGHUP reads cfg.
 func reloadSupervisor(t *testing.T, cfg func() (*config.Config, error)) *supervisor {
 	t.Helper()
+	return reloadSupervisorOf(t, section(), cfg)
+}
+
+// reloadSupervisorOf is reloadSupervisor brought up with section h.
+func reloadSupervisorOf(t *testing.T, h *config.Host, cfg func() (*config.Config, error)) *supervisor {
+	t.Helper()
 	f := newUpFixture(t)
-	n, err := bringUp(t.Context(), section(), f.platform(), guardHooks{})
+	n, err := bringUp(t.Context(), h, f.platform(), guardHooks{})
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = n.stop() })
 	log := slog.New(slog.DiscardHandler)
 	s := &supervisor{log: log, net: n, opts: &Options{Log: log, Reload: func(context.Context) (*config.Config, error) { return cfg() }}}
-	sv := s.newServed(lanConfig(section(), testProfile("small", 1)), section())
+	sv := s.newServed(lanConfig(h, testProfile("small", 1)), h)
 	s.served.Store(sv)
-	s.runners = newRunners(&runnersConfig{Served: sv, Log: log})
+	s.runners = newRunners(t.Context(), &runnersConfig{Served: sv, Log: log})
 	s.images = images.New(&images.Config{Host: section(), Log: log, Profiles: sv.Profiles})
 	return s
 }
@@ -191,4 +181,33 @@ func TestSupervisorReload(t *testing.T) {
 			t.Errorf("images serve %d profiles, want both", len(st))
 		}
 	})
+}
+
+func TestSupervisorReloadSwapsThePolicy(t *testing.T) {
+	open := section()
+	open.Egress.Open = true
+	for name, tc := range map[string]struct{ from, to *config.Host }{
+		"open to closed":        {open, section()},
+		"internet on to off":    {section(), closedSection()},
+		"internet off to on":    {closedSection(), section()},
+		"closed to open":        {section(), open},
+		"internet off and open": {closedSection(), open},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := reloadSupervisorOf(t, tc.from, func() (*config.Config, error) { return lanConfig(tc.to, testProfile("small", 1)), nil })
+			before := egress.PolicyHash(s.host())
+			if err := s.reload(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			if msg := s.configErr.Load(); msg != nil {
+				t.Fatalf("kept: %s", *msg)
+			}
+			if after := egress.PolicyHash(s.host()); after == before || after != egress.PolicyHash(tc.to) {
+				t.Errorf("policy hash %s after the reload, want the new section's %s", after, egress.PolicyHash(tc.to))
+			}
+			if (s.net.gitHubStatus() == nil) != tc.to.Egress.Internet {
+				t.Errorf("resolver running %v, want %v", s.net.gitHubStatus() != nil, !tc.to.Egress.Internet)
+			}
+		})
+	}
 }

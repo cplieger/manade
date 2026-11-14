@@ -54,19 +54,16 @@ func TestTidy(t *testing.T) {
 		}
 		hs.d.mu.Unlock()
 		hs.k.runners["runner-c"] = true
-		now := time.Now()
-		hs.k.runs["old"], hs.k.runs["recent"] = now.Add(-docker.CallTimeout), now.Add(-docker.CallTimeout+time.Second)
-		hs.k.running["live"] = true
+		hs.k.leftover["old"] = true
 		for _, c := range []docker.Summary{
 			{ID: "probe-old", Labels: map[string]string{jobspec.LabelProbe: "old"}},
 			{ID: "probe-recent", Labels: map[string]string{jobspec.LabelProbe: "recent"}},
-			{ID: "probe-live", Labels: map[string]string{jobspec.LabelProbe: "live"}},
 			{ID: "check-left", Labels: map[string]string{jobspec.LabelImageCheck: "sha256:a3"}},
 		} {
 			hs.d.addContainer(c, probe)
 		}
 
-		hs.m.Tidy()
+		hs.m.Tidy(nil)
 		synctest.Wait()
 		removed := hs.d.removedRefs()
 		for _, want := range []string{"sha256:a2", browserRef, probeRepo + ":v0.9.0", "container:probe-old", "container:check-left", "volume:vb"} {
@@ -79,7 +76,7 @@ func TestTidy(t *testing.T) {
 				t.Errorf("image %s removed, want it kept", kept)
 			}
 		}
-		for _, kept := range []string{"container:probe-recent", "container:probe-live", "container:running", "volume:va", "volume:vc", "volume:other"} {
+		for _, kept := range []string{"container:probe-recent", "container:running", "volume:va", "volume:vc", "volume:other"} {
 			if slices.Contains(removed, kept) {
 				t.Errorf("%s removed, want it kept", kept)
 			}
@@ -110,7 +107,7 @@ func TestProbeImageSurvivesTidyWithTheRegistryDown(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		hs.m.Tidy()
+		hs.m.Tidy(nil)
 		synctest.Wait()
 		if !hs.d.has(id) || hs.m.ProbeImage() != id {
 			t.Errorf("probe image %s gone after the tidy pass", id)
@@ -138,7 +135,7 @@ func TestTidyKeepsANamedTag(t *testing.T) {
 		if s := hs.status(t, "small"); s.ImageID != "sha256:a1" {
 			t.Fatalf("status = %+v, want the old image kept in service", s)
 		}
-		hs.m.Tidy()
+		hs.m.Tidy(nil)
 		synctest.Wait()
 		if !hs.d.has("sha256:r1") || !hs.d.has("sha256:a1") {
 			t.Errorf("removed %v, want the named tag's image and the image in service kept", hs.d.removedRefs())
@@ -157,10 +154,31 @@ func TestRecordSurvivesARestart(t *testing.T) {
 		hs.d.serve(baseRef, shipped("sha256:a1", "base", digest(1)))
 		hs.start()
 		defer hs.stop()
-		hs.m.Tidy()
+		hs.m.Tidy(nil)
 		synctest.Wait()
 		if hs.d.has("sha256:w1") {
 			t.Error("an image the host pulled before its restart, no longer named, was kept")
+		}
+	})
+}
+
+// A start refused for space waits for the pass it asked for to end before
+// it lifts its hold, so the pass's removals are done by then.
+func TestTidyCallsDoneAfterThePass(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		hs := newHarness(t, internetHost(), profileOf("small", "base"))
+		hs.d.serve(baseRef, shipped("sha256:a1", "base", digest(1)))
+		hs.start()
+		defer hs.stop()
+		hs.k.leftover["old"] = true
+		hs.d.addContainer(docker.Summary{ID: "probe-old", Labels: map[string]string{jobspec.LabelProbe: "old"}}, "sha256:a1")
+		var removedFirst []bool
+		hs.m.Tidy(func() {
+			removedFirst = append(removedFirst, slices.Contains(hs.d.removedRefs(), "container:probe-old"))
+		})
+		synctest.Wait()
+		if !slices.Equal(removedFirst, []bool{true}) {
+			t.Errorf("done calls %v, want one, after the pass removed the leftover", removedFirst)
 		}
 	})
 }

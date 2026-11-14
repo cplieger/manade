@@ -57,14 +57,17 @@ func (p *fakeProcess) exit(err error) {
 }
 
 type fakeNetworks struct {
-	err  error
-	spec *docker.NetworkSpec
+	err    error
+	spec   *docker.NetworkSpec
+	closed bool
 }
 
 func (n *fakeNetworks) EnsureNetwork(_ context.Context, spec *docker.NetworkSpec) error {
 	n.spec = spec
 	return n.err
 }
+
+func (n *fakeNetworks) Close() { n.closed = true }
 
 // upFixture is a floor-like host: legacy iptables without raw or IPv6 nat,
 // no bridge sysctls, cgroup v1, IPv6 on in its namespace, Docker's
@@ -163,6 +166,9 @@ func TestUp(t *testing.T) {
 		}
 		if n.Subnet != pfx("172.18.0.0/16") || f.nets.spec.Subnet != n.Subnet || f.nets.spec.Bridge != jobBridge || f.nets.spec.Subnet6.IsValid() {
 			t.Errorf("job network %+v, want 172.18.0.0/16 on manade0 with no IPv6", f.nets.spec)
+		}
+		if !f.nets.closed {
+			t.Error("the bring-up's daemon client was left open")
 		}
 		env := f.spec.env([]string{"PATH=/usr/bin"})
 		for _, want := range []string{"DOCKER_IGNORE_BR_NETFILTER_ERROR=1", "DOCKER_INSECURE_NO_IPTABLES_RAW=1", "PATH=" + platform.LegacyDir + ":/usr/bin"} {
@@ -381,5 +387,121 @@ func TestHold(t *testing.T) {
 		if err := n.hold(ctx); err != nil || f.proc.stopped != 0 {
 			t.Errorf("Hold = %v, stopped %d", err, f.proc.stopped)
 		}
+	})
+}
+
+func TestReloadAppliesTheEgressKeys(t *testing.T) {
+	t.Run("open to closed swaps the rules and turns IPv6 off", func(t *testing.T) {
+		f := newUpFixture(t)
+		open := section()
+		open.Egress.Open = true
+		n, err := bringUp(t.Context(), open, f.platform(), guardHooks{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		before := f.kernel.chain(false, "filter", "MANADE-FWD")
+		if readAt(t, f.root, disableAll) != "0\n" {
+			t.Fatal("setup: an open host turned IPv6 off")
+		}
+		if k, fatal := n.reload(t.Context(), section()); k != nil || fatal != nil {
+			t.Fatalf("Reload = %v, %v, want the swap", k, fatal)
+		}
+		if slices.Equal(f.kernel.chain(false, "filter", "MANADE-FWD"), before) {
+			t.Error("the closed section's rules were not loaded")
+		}
+		if readAt(t, f.root, disableAll) != "1\n" || readAt(t, f.root, disableDefault) != "1\n" {
+			t.Error("IPv6 left on after the host stopped being open")
+		}
+		if n.host.Egress.Open {
+			t.Error("the host still holds the open section")
+		}
+	})
+	t.Run("internet on to off starts the resolver and points resolv.conf at it", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			f := newUpFixture(t)
+			n := upClosed(t, f, section())
+			if k, fatal := n.reload(t.Context(), closedSection()); k != nil || fatal != nil {
+				t.Fatalf("Reload = %v, %v, want the swap", k, fatal)
+			}
+			if readAt(t, f.root, "/etc/resolv.conf") != "nameserver 127.0.0.1\n" || n.gitHubStatus() == nil || f.dnsUDP.isClosed() {
+				t.Errorf("resolv.conf %q, status %+v, resolver closed %v", readAt(t, f.root, "/etc/resolv.conf"), n.gitHubStatus(), f.dnsUDP.isClosed())
+			}
+			if i, j := slices.Index(f.events, "resolver"), slices.Index(f.events, "domains"); i < 0 || j < i {
+				t.Errorf("events %q, want the resolver serving, then the list read through it", f.events)
+			}
+			if _, ipset := f.kernel.payloads(); !slices.ContainsFunc(ipset, func(p string) bool { return strings.Contains(p, "create manade-gh4") }) {
+				t.Errorf("ipset payloads %q, want the learned sets created", ipset)
+			}
+		})
+	})
+	t.Run("internet off to on stops the resolver after the swap", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			f := newUpFixture(t)
+			n := upClosed(t, f, closedSection())
+			if k, fatal := n.reload(t.Context(), section()); k != nil || fatal != nil {
+				t.Fatalf("Reload = %v, %v, want the swap", k, fatal)
+			}
+			if readAt(t, f.root, "/etc/resolv.conf") != resolvRendered || n.gitHubStatus() != nil || !f.dnsUDP.isClosed() {
+				t.Errorf("resolv.conf %q, status %+v, resolver closed %v", readAt(t, f.root, "/etc/resolv.conf"), n.gitHubStatus(), f.dnsUDP.isClosed())
+			}
+		})
+	})
+	t.Run("a domain list that cannot be read keeps the internet rules", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			f := newUpFixture(t)
+			n := upClosed(t, f, section())
+			before := f.kernel.chain(false, "filter", "MANADE-OUT")
+			f.fetchErr = errors.New("403 rate limit exceeded")
+			k, fatal := n.reload(t.Context(), closedSection())
+			if fatal != nil || k == nil || !strings.Contains(k.Error(), "domain list") {
+				t.Fatalf("Reload = %v, %v, want kept naming the list", k, fatal)
+			}
+			if !slices.Equal(f.kernel.chain(false, "filter", "MANADE-OUT"), before) || readAt(t, f.root, "/etc/resolv.conf") != resolvRendered {
+				t.Error("the internet rules or resolv.conf were not restored")
+			}
+			if n.gitHubStatus() != nil || !f.dnsUDP.isClosed() || !n.host.Egress.Internet {
+				t.Errorf("status %+v, resolver closed %v, want no resolver left", n.gitHubStatus(), f.dnsUDP.isClosed())
+			}
+		})
+	})
+	t.Run("a resolver started by a reload ends the hold when it stops", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			f := newUpFixture(t)
+			n := upClosed(t, f, section())
+			done := make(chan error, 1)
+			go func() { done <- n.hold(t.Context()) }()
+			synctest.Wait()
+			if k, fatal := n.reload(t.Context(), closedSection()); k != nil || fatal != nil {
+				t.Fatalf("Reload = %v, %v", k, fatal)
+			}
+			synctest.Wait()
+			f.dnsUDP.end(errors.New("read udp 127.0.0.1:53: bad file descriptor"))
+			if err := <-done; err == nil || !strings.Contains(err.Error(), "DNS resolver stopped") {
+				t.Errorf("Hold = %v, want the resolver's failure", err)
+			}
+		})
+	})
+	t.Run("a resolver a reload stopped does not end the hold", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			f := newUpFixture(t)
+			n := upClosed(t, f, closedSection())
+			ctx, cancel := context.WithCancel(t.Context())
+			done := make(chan error, 1)
+			go func() { done <- n.hold(ctx) }()
+			synctest.Wait()
+			if k, fatal := n.reload(t.Context(), section()); k != nil || fatal != nil {
+				t.Fatalf("Reload = %v, %v", k, fatal)
+			}
+			synctest.Wait()
+			select {
+			case err := <-done:
+				t.Fatalf("Hold = %v after a reload stopped the resolver", err)
+			default:
+			}
+			cancel()
+			if err := <-done; err != nil {
+				t.Errorf("Hold = %v, want nil once its context ends", err)
+			}
+		})
 	})
 }

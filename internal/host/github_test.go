@@ -1,8 +1,11 @@
 package host
 
 import (
+	"context"
 	"errors"
+	"log/slog"
 	"net/netip"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -107,7 +110,7 @@ func TestLearnedAddressesInTheRules(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newUpFixture(t)
 		n := upClosed(t, f, closedSection())
-		err := n.learner.Learn(t.Context(), []resolver.Record{
+		err := n.gh.Load().learner.Learn(t.Context(), []resolver.Record{
 			{Addr: netip.MustParseAddr("140.82.121.10"), TTL: time.Minute},
 			{Addr: netip.MustParseAddr("192.168.1.10"), TTL: time.Minute},
 		})
@@ -220,10 +223,35 @@ func TestReloadFiltersLearnedAddressesByTheNewSection(t *testing.T) {
 		t.Fatalf("Reload = %v, %v", k, fatal)
 	}
 	_, before := f.kernel.payloads()
-	if err := n.learner.Learn(t.Context(), []resolver.Record{{Addr: netip.MustParseAddr("2606:50c0:8000::154"), TTL: time.Minute}}); err != nil {
+	if err := n.gh.Load().learner.Learn(t.Context(), []resolver.Record{{Addr: netip.MustParseAddr("2606:50c0:8000::154"), TTL: time.Minute}}); err != nil {
 		t.Fatal(err)
 	}
 	if _, after := f.kernel.payloads(); len(after) != len(before) {
 		t.Errorf("an address in the new block6 was written: %q", after[len(before):])
 	}
+}
+
+// A resolver that stops after a reload took it out of service is no
+// failure, whichever of the stop and the wake followGitHub sees first.
+func TestFollowGitHubIgnoresARetiredResolver(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		log := slog.New(slog.DiscardHandler)
+		g := &gitHub{
+			source: resolver.NewSource(func(context.Context) ([]byte, error) { return []byte(metaBody), nil }, filepath.Join(t.TempDir(), "domains.json"), log),
+			done:   make(chan struct{}),
+		}
+		n := &hostNet{ghMoved: make(chan struct{}, 1)}
+		n.gh.Store(g)
+		ctx, cancel := context.WithCancel(t.Context())
+		done := make(chan error, 1)
+		go func() { done <- n.followGitHub(ctx) }()
+		synctest.Wait()
+		n.gh.Store(nil)
+		close(g.done)
+		synctest.Wait()
+		cancel()
+		if err := <-done; err != nil {
+			t.Errorf("followGitHub = %v, want nil for a resolver no longer in service", err)
+		}
+	})
 }

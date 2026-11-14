@@ -1,10 +1,13 @@
 package host
 
 import (
+	"bytes"
+	"log/slog"
 	"strings"
 	"testing"
 
 	"github.com/cplieger/manade/internal/config"
+	"github.com/cplieger/manade/internal/host/platform"
 )
 
 const mib = 1 << 20
@@ -36,10 +39,26 @@ func TestMemoryStatus(t *testing.T) {
 			h := &config.Host{Name: "h", Capacity: tc.capacity}
 			st := memoryStatus(h, tc.profiles, tc.limit, 99*mib)
 			want := max(0, tc.limit-tc.reserve)
-			if st.ReserveRunners != tc.runners || st.Reserve != tc.reserve || st.Admissible != want || st.Own != 99*mib {
+			if st.ReserveRunners != tc.runners || st.Reserve != tc.reserve || st.Admissible != want || st.Own != 99*mib || st.Limit != tc.limit {
 				t.Errorf("status = %+v, want %d runners, reserve %d MiB, admissible %d MiB", st, tc.runners, tc.reserve/mib, want/mib)
 			}
 		})
+	}
+}
+
+func TestNoMemoryLimitWarnsWithTheFix(t *testing.T) {
+	var buf bytes.Buffer
+	s := &supervisor{log: slog.New(slog.NewTextHandler(&buf, nil))}
+	h := &config.Host{Name: "voyager", Capacity: config.Capacity{MilliCPUs: 2000, Memory: 3 << 30}}
+	sv := &served{Profiles: []*config.Profile{{Name: "small", MilliCPUs: 1000, Memory: 512 * mib}}}
+	s.warnNoMemoryLimit(h, sv, &platform.Cgroup{Memory: 2 << 30})
+	if buf.Len() != 0 {
+		t.Fatalf("a host with a limit warned: %s", buf.String())
+	}
+	s.warnNoMemoryLimit(h, sv, &platform.Cgroup{})
+	// 3 GiB plus the 384 MiB reserve of two runners: 256 + 96 + 2 × 16.
+	if out := buf.String(); !strings.Contains(out, "level=WARN") || !strings.Contains(out, "limit_bytes=3623878656") {
+		t.Errorf("log = %q, want one WARN naming the limit in bytes", out)
 	}
 }
 

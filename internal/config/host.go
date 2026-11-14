@@ -65,6 +65,8 @@ const schemeHTTPS = "https"
 type Address struct {
 	Socket   string
 	HostPort string
+	// Port is HostPort's port, 0 for a socket.
+	Port uint16
 }
 
 // Host is one validated hosts entry.
@@ -197,19 +199,16 @@ func parseAddress(raw string) (Address, error) {
 	if u.Port() == "" {
 		hp = net.JoinHostPort(u.Hostname(), apiPort)
 	}
-	if hp, err = parseHostPort(hp, false); err != nil {
-		return Address{}, err
-	}
-	return Address{HostPort: hp}, nil
+	return parseHostPort(hp, false)
 }
 
 // parseHostPort accepts host:port with a port from 1 to 65535; a listen
 // address may leave the host empty.
-func parseHostPort(raw string, listen bool) (string, error) {
+func parseHostPort(raw string, listen bool) (Address, error) {
 	host, port, err := net.SplitHostPort(raw)
-	n, perr := strconv.Atoi(port)
-	if err != nil || perr != nil || n < 1 || n > 65535 || (host == "" && !listen) || strings.ContainsAny(host, "/@") {
-		return "", invalid("want host:port", raw)
+	n, perr := strconv.ParseUint(port, 10, 16)
+	if err != nil || perr != nil || n < 1 || (host == "" && !listen) || strings.ContainsAny(host, "/@") {
+		return Address{}, invalid("want host:port", raw)
 	}
-	return raw, nil
+	return Address{HostPort: raw, Port: uint16(n)}, nil
 }

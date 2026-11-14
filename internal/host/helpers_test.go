@@ -130,7 +130,13 @@ func (f *fakeIPT) table(v6 bool, name string) (*xtable, error) {
 }
 
 func (f *fakeIPT) iptables(v6 bool, args []string) ([]byte, error) {
-	a := slices.DeleteFunc(slices.Clone(args), func(s string) bool { return s == "-w" })
+	a := slices.Clone(args)
+	if i := slices.Index(a, "-w"); i >= 0 {
+		if i+1 >= len(a) || a[i+1] != platform.XtablesWait {
+			return nil, fmt.Errorf("fake iptables: -w without its %s seconds: %q", platform.XtablesWait, args)
+		}
+		a = slices.Delete(a, i, i+2)
+	}
 	if len(a) < 3 || a[0] != "-t" {
 		return nil, fmt.Errorf("fake iptables: %q", args)
 	}

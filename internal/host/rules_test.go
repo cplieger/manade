@@ -160,6 +160,28 @@ func TestGuardCheck(t *testing.T) {
 			t.Errorf("Check = %v, restored %q, checked %d", err, *restored, checked)
 		}
 	})
+	t.Run("the checked hook runs with the guard free", func(t *testing.T) {
+		_, _, g, _ := guardFixture(t)
+		free := false
+		g.hooks.Checked = func() {
+			if free = g.mu.TryLock(); free {
+				g.mu.Unlock()
+			}
+		}
+		if err := g.check(t.Context()); err != nil || !free {
+			t.Errorf("Check = %v, guard free in the hook %v", err, free)
+		}
+	})
+	t.Run("a failed restore calls no checked hook", func(t *testing.T) {
+		k, _, g, _ := guardFixture(t)
+		checked := 0
+		g.hooks.Checked = func() { checked++ }
+		k.edit(func(tb map[bool]map[string]*xtable) { tb[false]["filter"].chains["MANADE-OUT"] = []string{} })
+		k.fail[platform.LegacyDir+"/iptables-restore"] = errors.New("refused")
+		if err := g.check(t.Context()); err == nil || checked != 0 {
+			t.Errorf("Check = %v, checked %d, want the failure and no hook", err, checked)
+		}
+	})
 	t.Run("flushed rules are loaded again and counted", func(t *testing.T) {
 		k, _, g, restored := guardFixture(t)
 		want := k.chain(false, "filter", "MANADE-FWD")

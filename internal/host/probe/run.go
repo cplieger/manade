@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/netip"
 	"sync"
 	"time"
@@ -71,10 +72,11 @@ type Config struct {
 	Daemon  Daemon
 	Sets    Sets
 	Image   Image
-	Attach  func(ctx context.Context, id string) (Stream, error)
-	Spec    func() *jobspec.Host
-	Host    func() Host
-	Log     *slog.Logger
+	// Attach answers within its own bound: docker.Client.Attach owns it.
+	Attach func(ctx context.Context, id string) (Stream, error)
+	Spec   func() *jobspec.Host
+	Host   func() Host
+	Log    *slog.Logger
 	// Network is the job network the containers join.
 	Network string
 }
@@ -91,7 +93,8 @@ var (
 	listenerCommand = []string{"/manade", roleProbe, roleListen}
 )
 
-// callTimeout is docker.CallTimeout, a test seam for the leftover age.
+// callTimeout is docker.CallTimeout, a test seam for the leftover age and
+// the bound of a run's cleanup.
 var callTimeout = docker.CallTimeout
 
 // Runner runs one probe at a time. Its methods are safe for concurrent use.
@@ -125,18 +128,20 @@ func placeholder(base *egress.ProbeInput) *egress.ProbeInput {
 	return &in
 }
 
-// Ended answers when probe run ended, or that it still runs; a run this
-// supervisor never saw ended at its start.
-func (r *Runner) Ended(run string) (ended time.Time, running bool) {
+// Leftover reports a container of probe run that a tidy pass removes: its
+// run ended at least one call timeout ago, so none of its calls is still in
+// flight. A run this supervisor never saw ended at its start.
+func (r *Runner) Leftover(run string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if run == r.cur {
-		return time.Time{}, true
+		return false
 	}
-	if t, ok := r.runs[run]; ok {
-		return t, false
+	ended, ok := r.runs[run]
+	if !ok {
+		ended = r.cfg.Started
 	}
-	return r.cfg.Started, false
+	return time.Since(ended) >= callTimeout
 }
 
 // Run runs the probe once any run in progress ends. A request whose ctx
@@ -149,6 +154,10 @@ func (r *Runner) Run(ctx context.Context) (hostapi.ProbeReport, error) {
 		return hostapi.ProbeReport{}, ctx.Err()
 	}
 	defer func() { <-r.slot }()
+	// A select with both cases ready picks one at random.
+	if err := ctx.Err(); err != nil {
+		return hostapi.ProbeReport{}, err
+	}
 	h := r.cfg.Host()
 	plan := egress.PlanProbe(placeholder(&h.Input))
 	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), plan.Bound(docker.CallTimeout))
@@ -161,19 +170,35 @@ func (r *Runner) Run(ctx context.Context) (hostapi.ProbeReport, error) {
 	leave := r.run(rctx, run, &h, &rep)
 	rep.EndedAt = time.Now()
 	rep.Proven = rep.Unproven == "" && allRequired(rep.Checks)
-	if err := r.cfg.Sets.Clear(context.WithoutCancel(ctx)); err != nil {
-		r.cfg.Log.Error("Emptying the probe sets failed", "error", err)
-	}
-	if !leave {
-		r.remove(context.WithoutCancel(ctx), run)
-	}
-	r.mu.Lock()
-	r.cur, r.runs[run] = "", time.Now()
-	r.mu.Unlock()
+	r.cleanUp(ctx, run, leave)
+	r.ended(run)
 	if rep.Unproven != "" {
 		r.cfg.Log.Warn("A probe run ended unproven", "run", run, "why", rep.Unproven)
 	}
 	return rep, nil
+}
+
+// cleanUp empties the probe sets and, unless leave, removes run's
+// containers, within one call timeout whatever ctx does.
+func (r *Runner) cleanUp(ctx context.Context, run string, leave bool) {
+	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), callTimeout)
+	defer cancel()
+	if err := r.cfg.Sets.Clear(cctx); err != nil {
+		r.cfg.Log.Error("Emptying the probe sets failed", "error", err, "bound", callTimeout)
+	}
+	if !leave {
+		r.remove(cctx, run)
+	}
+}
+
+// ended records run ended now and forgets each run that ended a call
+// timeout ago, which Leftover then judges by the supervisor's start alike.
+func (r *Runner) ended(run string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	now := time.Now()
+	maps.DeleteFunc(r.runs, func(_ string, at time.Time) bool { return now.Sub(at) >= callTimeout })
+	r.cur, r.runs[run] = "", now
 }
 
 func allRequired(cs []hostapi.ProbeCheck) bool {
@@ -194,7 +219,7 @@ func newRunID() string {
 // run makes run's checks into rep, answering whether its containers must
 // stay: a call that timed out may still be in flight.
 func (r *Runner) run(ctx context.Context, run string, h *Host, rep *hostapi.ProbeReport) (leave bool) {
-	r.tidy(ctx, run)
+	r.tidy(ctx)
 	if h.No64 != "" {
 		rep.Unproven = "the machine's /64 is not learned: " + h.No64
 		return false

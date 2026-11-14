@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/cplieger/manade/internal/egress"
 )
@@ -27,11 +28,11 @@ func (f *fakeKernel) run(_ context.Context, _ []byte, name string, args ...strin
 
 const (
 	nftList   = "nft list tables"
-	legacy    = LegacyDir + "/iptables -w -t filter -n -L"
-	legacyRaw = LegacyDir + "/iptables -w -t raw -n -L"
-	legacy6   = LegacyDir + "/ip6tables -w -t nat -n -L"
-	nftRaw    = "iptables -w -t raw -n -L"
-	nft6      = "ip6tables -w -t nat -n -L"
+	legacy    = LegacyDir + "/iptables -w 30 -t filter -n -L"
+	legacyRaw = LegacyDir + "/iptables -w 30 -t raw -n -L"
+	legacy6   = LegacyDir + "/ip6tables -w 30 -t nat -n -L"
+	nftRaw    = "iptables -w 30 -t raw -n -L"
+	nft6      = "ip6tables -w 30 -t nat -n -L"
 )
 
 func TestProbeKernel(t *testing.T) {
@@ -98,4 +99,39 @@ func TestBridgeNF(t *testing.T) {
 	if !v4 || v6 {
 		t.Errorf("BridgeNF = %t, %t, want true, false", v4, v6)
 	}
+}
+
+func TestBounded(t *testing.T) {
+	old := commandTimeout
+	commandTimeout = 20 * time.Millisecond
+	t.Cleanup(func() { commandTimeout = old })
+	hung := func(ctx context.Context, _ []byte, _ string, _ ...string) ([]byte, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	t.Run("a command past the bound fails naming it", func(t *testing.T) {
+		_, err := Bounded(hung)(t.Context(), nil, "ipset", "restore")
+		if err == nil || !strings.Contains(err.Error(), "ipset did not finish within 20ms") {
+			t.Errorf("Bounded = %v", err)
+		}
+	})
+	t.Run("a caller's own end is not the bound", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		if _, err := Bounded(hung)(ctx, nil, "ipset", "restore"); !errors.Is(err, context.Canceled) || strings.Contains(err.Error(), "did not finish") {
+			t.Errorf("Bounded = %v, want the caller's cancellation", err)
+		}
+	})
+	t.Run("a hung real program is killed at the bound", func(t *testing.T) {
+		start := time.Now()
+		if _, err := Bounded(Exec)(t.Context(), nil, "sleep", "30"); err == nil || time.Since(start) > 5*time.Second {
+			t.Errorf("Exec = %v after %s", err, time.Since(start))
+		}
+	})
+	t.Run("a killed program's children holding its output do not hold the call", func(t *testing.T) {
+		start := time.Now()
+		if _, err := Bounded(Exec)(t.Context(), nil, "sh", "-c", "sleep 6 & sleep 6"); err == nil || time.Since(start) > 4*time.Second {
+			t.Errorf("Exec = %v after %s", err, time.Since(start))
+		}
+	})
 }

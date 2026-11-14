@@ -108,7 +108,7 @@ func (s *supervisor) status(ctx context.Context) hostapi.Status {
 		Daemon:        hostapi.DaemonStatus{Version: s.info.ServerVersion, StorageDriver: s.info.Driver},
 		Rules:         hostapi.RulesStatus{State: hostapi.RulesLoaded, Backend: backendName(n.Kernel.Backend), Restored: s.restored.Load(), RawOff: n.Kernel.RawOff},
 		DNS:           hostapi.DNSStatus{Configured: h.DNS, Original: n.Original.Addrs, OriginalUnknown: n.Original.Unknown},
-		Profiles:      s.images.Status(),
+		Profiles:      s.runners.profileStatus(),
 		StartLatency:  s.lat.snapshot(),
 		Outward:       s.outward,
 		IPv6:          n.iPv6Status(),

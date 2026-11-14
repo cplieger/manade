@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"strconv"
+	"sync"
 
 	"github.com/cplieger/go/filesafe"
 )
@@ -15,21 +16,22 @@ import (
 // oomFileLimit caps the saved total's file, a few dozen bytes.
 const oomFileLimit = 4 << 10
 
-// oomFile is the saved OOM kill total and the cgroup count it was read at.
+// oomFile is the saved OOM kill total.
 type oomFile struct {
 	Total uint64 `json:"total"`
-	Count uint64 `json:"count"`
 }
 
 // OOMTotal is the host's OOM kill total across its own restarts: the total
 // saved by the previous run plus this run's cgroup count, which a recreated
 // cgroup starts at 0. Its zero value is not usable; LoadOOMTotal makes one.
+// Its methods are safe for concurrent use.
 type OOMTotal struct {
 	path string
 	// base is the saved total at this run's start; written the total last
 	// saved.
 	base    uint64
 	written uint64
+	mu      sync.Mutex
 }
 
 // LoadOOMTotal reads the total saved at path. It always answers a usable
@@ -53,14 +55,18 @@ func LoadOOMTotal(ctx context.Context, path string) (*OOMTotal, error) {
 }
 
 // Observe answers the total for this run's cgroup count, saving it
-// atomically when it changed since the last save. On a failed save the
-// total is still right and the next Observe saves again.
+// atomically when it grew past the last save. A count read before one
+// already observed answers and saves nothing lower, so the total never
+// falls. On a failed save the total is still right and the next Observe
+// saves again.
 func (t *OOMTotal) Observe(ctx context.Context, count uint64) (uint64, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	total := t.base + count
-	if total == t.written {
-		return total, nil
+	if total <= t.written {
+		return t.written, nil
 	}
-	b, err := json.Marshal(oomFile{Total: total, Count: count})
+	b, err := json.Marshal(oomFile{Total: total})
 	if err == nil {
 		_, err = filesafe.WriteFile(ctx, t.path, b, filesafe.WithMode(0o600), filesafe.WithMkdirAll(true))
 	}

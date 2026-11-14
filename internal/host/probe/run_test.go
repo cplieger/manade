@@ -439,10 +439,12 @@ func TestUnprovenRuns(t *testing.T) {
 	})
 	t.Run("a stalled attach names the call and leaves the containers", func(t *testing.T) {
 		pt := newProbeTest(t)
-		old := callTimeout
-		callTimeout = 20 * time.Millisecond
-		t.Cleanup(func() { callTimeout = old })
-		pt.attach = func(ctx context.Context) error { <-ctx.Done(); return ctx.Err() }
+		pt.attach = func(ctx context.Context) error {
+			actx, cancel := context.WithTimeout(ctx, 20*time.Millisecond)
+			defer cancel()
+			<-actx.Done()
+			return actx.Err()
+		}
 		rep, err := pt.r.Run(t.Context())
 		if err != nil || rep.Proven || !strings.Contains(rep.Unproven, "probe container's attach") {
 			t.Errorf("Run = %v, %+v", err, rep)
@@ -535,18 +537,45 @@ func TestLeftoverProbeContainers(t *testing.T) {
 	})
 }
 
-func TestEnded(t *testing.T) {
-	start := time.Now().Add(-time.Hour)
-	r := NewRunner(&Config{Started: start})
-	r.runs["done"] = start.Add(time.Minute)
+func TestLeftover(t *testing.T) {
+	old := callTimeout
+	callTimeout = time.Minute
+	t.Cleanup(func() { callTimeout = old })
+	now := time.Now()
+	r := NewRunner(&Config{Started: now.Add(-time.Hour)})
+	r.runs["old"], r.runs["recent"] = now.Add(-callTimeout-time.Second), now.Add(-time.Second)
 	r.cur = "now"
-	for run, want := range map[string]struct {
-		at      time.Time
-		running bool
-	}{"done": {start.Add(time.Minute), false}, "now": {time.Time{}, true}, "never": {start, false}} {
-		if at, running := r.Ended(run); !at.Equal(want.at) || running != want.running {
-			t.Errorf("Ended(%s) = %v, %v", run, at, running)
+	for run, want := range map[string]bool{"old": true, "recent": false, "now": false, "never": true} {
+		if got := r.Leftover(run); got != want {
+			t.Errorf("Leftover(%s) = %v, want %v", run, got, want)
 		}
+	}
+	t.Run("a run this supervisor never saw is young after a fresh start", func(t *testing.T) {
+		fresh := NewRunner(&Config{Started: time.Now()})
+		if fresh.Leftover("never") {
+			t.Error("a previous supervisor's run is leftover at once")
+		}
+	})
+}
+
+func TestRunsForgetEndsPastTheCallTimeout(t *testing.T) {
+	pt := newProbeTest(t)
+	old := callTimeout
+	callTimeout = 20 * time.Millisecond
+	t.Cleanup(func() { callTimeout = old })
+	for range 3 {
+		if _, err := pt.r.Run(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	time.Sleep(callTimeout)
+	if _, err := pt.r.Run(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	pt.r.mu.Lock()
+	defer pt.r.mu.Unlock()
+	if len(pt.r.runs) != 1 {
+		t.Errorf("%d runs recorded, want only the last: the others ended a call timeout ago", len(pt.r.runs))
 	}
 }
 
@@ -558,5 +587,47 @@ func waitFor(t *testing.T, what string, ok func() bool) {
 			t.Fatalf("waited 5s for %s", what)
 		}
 		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func TestACancelledRequestStartsNoRunWithTheSlotFree(t *testing.T) {
+	pt := newProbeTest(t)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	for range 32 {
+		if _, err := pt.r.Run(ctx); !errors.Is(err, context.Canceled) {
+			t.Fatalf("Run = %v, want the cancellation", err)
+		}
+	}
+	if calls := pt.d.callList(); len(calls) != 0 {
+		t.Errorf("calls = %q, want no run started", calls)
+	}
+}
+
+// hungClear is a rule set whose emptying never returns by itself.
+type hungClear struct{ *fakeSets }
+
+func (*hungClear) Clear(ctx context.Context) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func TestAHungCleanupFreesTheSlot(t *testing.T) {
+	pt := newProbeTest(t)
+	old := callTimeout
+	callTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { callTimeout = old })
+	pt.r.cfg.Sets = &hungClear{pt.sets}
+	for range 2 {
+		done := make(chan error, 1)
+		go func() { _, err := pt.r.Run(t.Context()); done <- err }()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatal(err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("a run whose cleanup hangs held the slot")
+		}
 	}
 }

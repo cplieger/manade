@@ -227,37 +227,47 @@ func (c *Client) created(ctx context.Context, id string, warnings []string) Resu
 	return Result{Outcome: Failed, Err: werr}
 }
 
-// afterCreateTimeout judges a create of req whose call timed out by
-// inspecting name until a container appears (ownIfMine) or one more
-// CallTimeout passes. The window's end fails the create only when the last
-// inspect answered 404; an inspect that errs, the window's end cutting it
-// included, leaves it pending.
+// afterCreateTimeout judges a create of req whose call timed out by the
+// container InspectSettled finds under name (ownIfMine). The window's end
+// fails the create only when the last inspect answered 404; an inspect that
+// errs, the window's end cutting it included, leaves it pending.
 func (c *Client) afterCreateTimeout(ctx context.Context, name string, req *CreateRequest, callErr error) Result {
+	ctr, found, err := c.InspectSettled(ctx, name)
+	switch {
+	case err != nil:
+		return Result{Outcome: Pending, Err: errors.Join(callErr, err)}
+	case found:
+		return ownIfMine(&ctr, req, callErr)
+	}
+	return Result{Outcome: Failed, Err: fmt.Errorf("%w; no container %s appeared within a further %s", callErr, name, CallTimeout)}
+}
+
+// InspectSettled inspects name the way a create that may still commit
+// needs: until a container appears, or one more CallTimeout passes with
+// every inspect answering 404, which alone answers not found. An inspect
+// that errs, or ctx ending, answers the error.
+func (c *Client) InspectSettled(ctx context.Context, name string) (Container, bool, error) {
 	end := time.Now().Add(CallTimeout)
 	wctx, cancel := context.WithDeadline(ctx, end)
 	defer cancel()
 	tick := time.NewTicker(createPoll)
 	defer tick.Stop()
-	missing := fmt.Errorf("%w; no container %s appeared within a further %s", callErr, name, CallTimeout)
 	for {
 		ctr, found, err := c.inspectIn(wctx, name)
-		switch {
-		case err != nil:
-			return Result{Outcome: Pending, Err: errors.Join(callErr, err)}
-		case found:
-			return ownIfMine(&ctr, req, callErr)
+		if err != nil || found {
+			return ctr, found, err
 		}
 		select {
 		case <-ctx.Done():
-			return Result{Outcome: Pending, Err: errors.Join(callErr, ctx.Err())}
+			return Container{}, false, ctx.Err()
 		case <-wctx.Done():
-			return Result{Outcome: Failed, Err: missing}
+			return Container{}, false, nil
 		case <-tick.C:
 		}
 		// A tick ready together with the window's end must not start an
 		// inspect the window would cut; wctx.Err may not be set yet then.
 		if !time.Now().Before(end) && ctx.Err() == nil {
-			return Result{Outcome: Failed, Err: missing}
+			return Container{}, false, nil
 		}
 	}
 }

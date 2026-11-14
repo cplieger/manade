@@ -53,9 +53,9 @@ type Keep struct {
 	// Runner reports a runner the host still records, whose docker volume
 	// stays even while it has no container.
 	Runner func(name string) bool
-	// ProbeRun answers when probe run ended, or that it still runs; a run
-	// this supervisor never saw ended at its start.
-	ProbeRun func(run string) (ended time.Time, running bool)
+	// ProbeLeftover reports a container of probe run that the pass removes:
+	// probe.Runner.Leftover.
+	ProbeLeftover func(run string) bool
 }
 
 // Config is what a Manager is built from.
@@ -97,8 +97,9 @@ type Manager struct {
 	probeID  string
 	checking map[string]int
 	profiles []*profile
-	mu       sync.Mutex
-	tidyDue  bool
+	// tidied are the callers waiting for the next tidy pass to end.
+	tidied []func()
+	mu     sync.Mutex
 }
 
 // ref is one image reference the profiles name, and its check state.
@@ -275,10 +276,11 @@ func (m *Manager) Status() []hostapi.ProfileStatus {
 }
 
 // Tidy asks for a tidy pass now, as after a start the daemon refused for
-// want of space.
-func (m *Manager) Tidy() {
+// want of space, and calls done, if set, once a pass begun after the ask
+// has ended.
+func (m *Manager) Tidy(done func()) {
 	m.mu.Lock()
-	m.tidyDue = true
+	m.tidied = append(m.tidied, done)
 	m.mu.Unlock()
 	m.kick()
 }
@@ -306,24 +308,41 @@ func (m *Manager) Run(ctx context.Context) {
 		for _, r := range due {
 			wg.Go(func() { m.check(ctx, r) })
 		}
-		if tidy {
+		if tidy.due {
 			lastTidy = time.Now()
-			wg.Go(func() { m.tidy(ctx) })
+			wg.Go(func() { m.tidyFor(ctx, tidy.waiters) })
 		}
 		t.Reset(time.Until(next))
 	}
 }
 
-// due marks each ref due now busy and answers them, whether a tidy pass is
-// due, and when the next work falls due.
-func (m *Manager) due(lastTidy time.Time) (due []*ref, tidy bool, next time.Time) {
+// tidyFor runs a tidy pass, then calls each waiter's done.
+func (m *Manager) tidyFor(ctx context.Context, waiters []func()) {
+	m.tidy(ctx)
+	for _, done := range waiters {
+		if done != nil {
+			done()
+		}
+	}
+}
+
+// tidyDue is a tidy pass due now and the Tidy callers it ends for.
+type tidyDue struct {
+	waiters []func()
+	due     bool
+}
+
+// due marks each ref due now busy and answers them, the tidy pass due now,
+// and when the next work falls due.
+func (m *Manager) due(lastTidy time.Time) (due []*ref, tidy tidyDue, next time.Time) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	now := time.Now()
 	refresh := m.host.ImageRefresh
 	next = lastTidy.Add(refresh)
-	if m.tidyDue || !now.Before(next) {
-		tidy, m.tidyDue, next = true, false, now.Add(refresh)
+	if m.tidied != nil || !now.Before(next) {
+		tidy = tidyDue{waiters: m.tidied, due: true}
+		m.tidied, next = nil, now.Add(refresh)
 	}
 	for _, r := range m.refs {
 		if r.busy {
