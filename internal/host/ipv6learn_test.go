@@ -214,3 +214,136 @@ func TestNoEchoWithoutIPv6AndInternet(t *testing.T) {
 		t.Errorf("Hold = %v", err)
 	}
 }
+
+func (e *echoes) asked() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return len(e.urls)
+}
+
+// closedV6Section is v6Section with internet off, so with no ipv6_echo.
+func closedV6Section() *config.Host {
+	h := v6Section()
+	h.Egress.Internet = false
+	h.Egress.IPv6Echo = ""
+	return h
+}
+
+// holding runs n's hold until the test ends and answers its result.
+func holding(t *testing.T, n *hostNet) (stop func() error) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- n.hold(ctx) }()
+	return func() error {
+		cancel()
+		return <-done
+	}
+}
+
+func TestReloadFollowsInternetIn64(t *testing.T) {
+	t.Run("turning internet on asks at once and lets job IPv6 out", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			e := &echoes{replies: []func() ([]byte, error){answer("2a01:e0a:1259:2710::7008")}}
+			f := v6Fixture(t, e)
+			n := upNet(t, f, closedV6Section())
+			stop := holding(t, n)
+			time.Sleep(2 * echoInterval)
+			synctest.Wait()
+			if got := e.asked(); got != 0 {
+				t.Errorf("an internet: false host asked its ipv6_echo %d times", got)
+			}
+			at := time.Now()
+			if k, fatal := n.reload(t.Context(), v6Section()); k != nil || fatal != nil {
+				t.Fatalf("Reload = %v, %v", k, fatal)
+			}
+			synctest.Wait()
+			if got := e.asked(); got != 1 || time.Since(at) != 0 {
+				t.Errorf("asked %d times %v after the reload, want once at once", got, time.Since(at))
+			}
+			if st := n.iPv6Status(); st == nil || st.Prefix != pfx("2a01:e0a:1259:2710::/64") {
+				t.Errorf("IPv6Status = %+v, want the learned /64", st)
+			}
+			if r := fwd6(f); !passes6(r) || !dropsPrefix(r, "2a01:e0a:1259:2710::/64") {
+				t.Errorf("MANADE-FWD6 = %q, want IPv6 passing with the learned /64 dropped", r)
+			}
+			if err := stop(); err != nil {
+				t.Errorf("Hold = %v", err)
+			}
+		})
+	})
+	t.Run("turning internet off stops asking and forgets the /64", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			e := &echoes{replies: []func() ([]byte, error){
+				answer("2a01:e0a:1259:2710::7008"),
+				func() ([]byte, error) { return nil, errors.New("dial tcp6: network is unreachable") },
+			}}
+			f := v6Fixture(t, e)
+			n := upNet(t, f, v6Section())
+			stop := holding(t, n)
+			synctest.Wait()
+			if st := n.iPv6Status(); st == nil || !st.Prefix.IsValid() {
+				t.Fatalf("setup: IPv6Status = %+v, want a learned /64", st)
+			}
+			if k, fatal := n.reload(t.Context(), closedV6Section()); k != nil || fatal != nil {
+				t.Fatalf("Reload = %v, %v", k, fatal)
+			}
+			if st := n.iPv6Status(); st != nil {
+				t.Errorf("IPv6Status = %+v on an internet: false host, want none", st)
+			}
+			loads := restores(f)
+			time.Sleep(2*echoInterval + time.Second)
+			synctest.Wait()
+			if got := e.asked(); got != 1 {
+				t.Errorf("asked %d times, want no ask after internet was turned off", got)
+			}
+			if got := restores(f); got != loads {
+				t.Errorf("the closed rules were restored %d times after the swap, want them held as loaded", got-loads)
+			}
+			if k, fatal := n.reload(t.Context(), v6Section()); k != nil || fatal != nil {
+				t.Fatalf("Reload = %v, %v", k, fatal)
+			}
+			synctest.Wait()
+			if st := n.iPv6Status(); st == nil || st.Prefix.IsValid() || !strings.Contains(st.Reason, "unreachable") {
+				t.Errorf("IPv6Status = %+v, want the failed ask, not the /64 learned before internet was off", st)
+			}
+			if passes6(fwd6(f)) {
+				t.Error("job IPv6 passes on a /64 learned before internet was turned off")
+			}
+			if err := stop(); err != nil {
+				t.Errorf("Hold = %v", err)
+			}
+		})
+	})
+	t.Run("an ask answered after internet was turned off is forgotten", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			release := make(chan struct{})
+			e := &echoes{replies: []func() ([]byte, error){
+				func() ([]byte, error) {
+					<-release
+					return trace("2a01:e0a:1259:2710::7008"), nil
+				},
+				func() ([]byte, error) { return nil, errors.New("dial tcp6: network is unreachable") },
+			}}
+			f := v6Fixture(t, e)
+			n := upNet(t, f, v6Section())
+			stop := holding(t, n)
+			synctest.Wait()
+			if k, fatal := n.reload(t.Context(), closedV6Section()); k != nil || fatal != nil {
+				t.Fatalf("Reload = %v, %v", k, fatal)
+			}
+			close(release)
+			synctest.Wait()
+			if k, fatal := n.reload(t.Context(), v6Section()); k != nil || fatal != nil {
+				t.Fatalf("Reload = %v, %v", k, fatal)
+			}
+			synctest.Wait()
+			if st := n.iPv6Status(); st == nil || st.Prefix.IsValid() || !strings.Contains(st.Reason, "unreachable") {
+				t.Errorf("IPv6Status = %+v, want the failed ask, not the answer that came after internet was off", st)
+			}
+			if err := stop(); err != nil {
+				t.Errorf("Hold = %v", err)
+			}
+		})
+	})
+}

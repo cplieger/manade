@@ -201,3 +201,30 @@ func TestTidiedFollowsEachPass(t *testing.T) {
 		}
 	})
 }
+
+func TestTidyKeepsAnImageAPinnedProfileNames(t *testing.T) {
+	for name, refs := range map[string]struct{ profile, repoDigest string }{
+		"as the daemon lists it":    {"registry.example/team/runner@" + digest(7), "registry.example/team/runner@" + digest(7)},
+		"in Docker Hub's full form": {"docker.io/library/alpine@" + digest(7), "alpine@" + digest(7)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				hs := newHarness(t, internetHost(), &config.Profile{Name: "pinned", Image: refs.profile})
+				r := shipped("sha256:p1", "", digest(7))
+				r.img.RepoDigests = []string{refs.repoDigest}
+				r.img.Config.User = "root"
+				hs.d.serve(refs.profile, r)
+				hs.start()
+				defer hs.stop()
+				if s := hs.status(t, "pinned"); s.Ready {
+					t.Fatalf("setup: status = %+v, want the root image refused", s)
+				}
+				hs.m.Tidy()
+				synctest.Wait()
+				if !hs.d.has("sha256:p1") {
+					t.Errorf("removed %v, want the image the pinned reference names kept", hs.d.removedRefs())
+				}
+			})
+		})
+	}
+}

@@ -86,13 +86,16 @@ type hostNet struct {
 	resolver *dnsServer
 	gh       atomic.Pointer[gitHub]
 	ghMoved  chan struct{}
-	self64   atomic.Pointer[learned64]
-	dns      atomic.Pointer[[]netip.AddrPort]
-	Kernel   *platform.Kernel
-	Storage  platform.StoragePick
-	Subnet   netip.Prefix
-	Job6     netip.Prefix
-	Own64    netip.Prefix
+	// self64 is the machine's /64 as last learned; wake64 wakes learn64
+	// when a reload turns internet on.
+	self64  atomic.Pointer[learned64]
+	wake64  chan struct{}
+	dns     atomic.Pointer[[]netip.AddrPort]
+	Kernel  *platform.Kernel
+	Storage platform.StoragePick
+	Subnet  netip.Prefix
+	Job6    netip.Prefix
+	Own64   netip.Prefix
 	// Gateway4 and Gateway6 are the host container's default gateways;
 	// Addr6 its own IPv6 address, with ipv6.
 	Gateway4   netip.Addr
@@ -114,8 +117,8 @@ func bringUp(ctx context.Context, h *config.Host, p *seams, hooks guardHooks) (*
 	if err := platform.CheckPrivateNamespace(p.Root); err != nil {
 		return nil, err
 	}
-	n := &hostNet{host: h, log: p.Log, echo: p.Echo, seams: p, ghMoved: make(chan struct{}, 1)}
-	n.self64.Store(&learned64{err: errors.New("the host has not asked its ipv6_echo yet")})
+	n := &hostNet{host: h, log: p.Log, echo: p.Echo, seams: p, ghMoved: make(chan struct{}, 1), wake64: make(chan struct{}, 1)}
+	n.self64.Store(unasked64())
 	n.setUpstreams(h)
 	var err error
 	if n.Storage, err = p.PickStorage(dataRoot); err != nil {
@@ -238,7 +241,12 @@ func (n *hostNet) want(h *config.Host, g *gitHub) wanted {
 	_, bridge6 := platform.BridgeNF(n.rules.Root)
 	w := wanted{
 		Generate: func() (*egress.Ruleset, error) {
-			st := egress.State{Own64: n.Own64, Self64: n.self64.Load().prefix}
+			st := egress.State{Own64: n.Own64}
+			// moved64 forgets the /64 only after the swap that turns
+			// internet off, so the closed rules must not read it.
+			if h.Egress.Internet {
+				st.Self64 = n.self64.Load().prefix
+			}
 			if g != nil {
 				st.GitHub = g.learner.Held()
 			}
@@ -310,7 +318,10 @@ func (n *hostNet) hold(ctx context.Context) error {
 		}
 	})
 	wg.Go(func() { n.followGitHub(hctx) })
-	if n.learns64() {
+	n.mu.Lock()
+	v6 := n.host.Egress.IPv6
+	n.mu.Unlock()
+	if v6 {
 		wg.Go(func() {
 			if err := n.learn64(hctx, n.echo); err != nil {
 				cancel(err)
@@ -339,12 +350,13 @@ func (n *hostNet) stop() error {
 }
 
 // reload swaps the host's rules for section h, read again on SIGHUP, and
-// turns the resolver's learning on or off with egress.internet. A section
-// that changes what only a restart applies, or whose resolvers or allow
-// entries overlap the job subnet in use, keeps the old rules and answers
-// why as kept, as does a swap that fails, or a domain list that cannot be
-// read once internet is turned off, which loads the old rules again.
-// fatal is a failure the guard would answer, and the caller stops the host.
+// turns the resolver's learning and an ipv6 host's /64 learner on or off
+// with egress.internet. A section that changes what only a restart applies,
+// or whose resolvers or allow entries overlap the job subnet in use, keeps
+// the old rules and answers why as kept, as does a failed swap, or a domain
+// list unread once internet is turned off, which loads the old rules again.
+// fatal is a failure the guard would answer, the old rules not loading
+// again among them, and the caller stops the host.
 func (n *hostNet) reload(ctx context.Context, h *config.Host) (kept, fatal error) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
@@ -373,10 +385,7 @@ func (n *hostNet) reload(ctx context.Context, h *config.Host) (kept, fatal error
 	}
 	kept, fatal = n.Guard.swap(ctx, n.want(h, next))
 	if kept == nil && fatal == nil && next != nil && g == nil {
-		if err := next.source.Start(ctx); err != nil {
-			kept = err
-			_, fatal = n.Guard.swap(ctx, n.want(old, nil))
-		}
+		kept, fatal = n.startList(ctx, next, old)
 	}
 	if kept != nil || fatal != nil {
 		if g != nil {
@@ -390,7 +399,23 @@ func (n *hostNet) reload(ctx context.Context, h *config.Host) (kept, fatal error
 		n.setGitHub(next)
 	}
 	n.host = h
+	n.moved64(old, h)
 	return nil, nil
+}
+
+// startList reads the domain list a reload that turned internet off learns
+// from; when it cannot be read it loads section old's rules again, and a
+// failure of that load is fatal, as a failed restore is.
+func (n *hostNet) startList(ctx context.Context, g *gitHub, old *config.Host) (kept, fatal error) {
+	err := g.source.Start(ctx)
+	if err == nil {
+		return nil, nil
+	}
+	back, fatal := n.Guard.swap(ctx, n.want(old, nil))
+	if back != nil && fatal == nil {
+		fatal = fmt.Errorf("restoring the internet rules after the domain list failed: %w", back)
+	}
+	return err, fatal
 }
 
 func (n *hostNet) setUpstreams(h *config.Host) {

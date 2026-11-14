@@ -446,6 +446,25 @@ func TestReloadAppliesTheEgressKeys(t *testing.T) {
 			}
 		})
 	})
+	t.Run("old rules that fail to load again after the list failed stop the host", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			f := newUpFixture(t)
+			n := upNet(t, f, section())
+			n.seams.FetchDomains = func(context.Context) ([]byte, error) {
+				f.kernel.mu.Lock()
+				f.kernel.failOnce[platform.LegacyDir+"/iptables-restore"] = errors.New("refused")
+				f.kernel.mu.Unlock()
+				return nil, errors.New("403 rate limit exceeded")
+			}
+			k, fatal := n.reload(t.Context(), closedSection())
+			if k == nil || !strings.Contains(k.Error(), "domain list") {
+				t.Errorf("kept = %v, want it naming the list", k)
+			}
+			if fatal == nil || !strings.Contains(fatal.Error(), "restoring the internet rules") || !strings.Contains(fatal.Error(), "refused") {
+				t.Errorf("fatal = %v, want the failed restore of the internet rules", fatal)
+			}
+		})
+	})
 	t.Run("a reload that turns internet on leaves the hold running", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			f := newUpFixture(t)

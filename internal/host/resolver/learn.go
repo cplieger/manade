@@ -104,21 +104,31 @@ func (l *Learner) SetAllowed(allowed func(netip.Addr) bool) { l.allowed.Store(&a
 // Loading is held across a rule set's generation from Held and its load.
 func (l *Learner) Loading() sync.Locker { return l.load }
 
-// Learn queues recs for the next kernel write, answering a channel closed
-// once that write is done or failed (logged), and the drain the caller
-// runs under its context when none is in flight, else nil. The drain
-// records each allowed address for its TTL plus learnPad under the load
-// lock and writes each batch once within learnTimeout; adds made meanwhile
-// join the next batch, so a rule load waits behind at most one write. A new
-// address past a family's bound is refused, counted and logged at most once
-// a minute; a held one is renewed whatever the count.
+// Learn queues recs' allowed addresses for the next kernel write. It answers
+// a channel closed once that write is done or failed (logged), or at once
+// when none is allowed, and the drain the caller runs under its context when
+// none is in flight, else nil. The drain records each address for its TTL
+// plus learnPad under the load lock and writes each batch once within
+// learnTimeout; adds made meanwhile join the next batch, so a rule load waits
+// behind at most one write. A new address past a family's bound is refused,
+// counted and logged at most once a minute; a held one is renewed.
 func (l *Learner) Learn(recs []Record) (written <-chan struct{}, drain func(context.Context)) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	allowed := *l.allowed.Load()
+	var keep []Record
+	for _, r := range recs {
+		if allowed(r.Addr.Unmap()) {
+			keep = append(keep, r)
+		}
+	}
+	if len(keep) == 0 {
+		return nothingToWrite, nil
+	}
 	if l.queued == nil {
 		l.queued = &batch{done: make(chan struct{})}
 	}
-	l.queued.recs = append(l.queued.recs, recs...)
+	l.queued.recs = append(l.queued.recs, keep...)
 	if !l.draining {
 		l.draining = true
 		drain = l.drain
@@ -126,8 +136,16 @@ func (l *Learner) Learn(recs []Record) (written <-chan struct{}, drain func(cont
 	return l.queued.done, drain
 }
 
+// nothingToWrite is the written channel of an add with no allowed address.
+var nothingToWrite = func() chan struct{} {
+	c := make(chan struct{})
+	close(c)
+	return c
+}()
+
 // drain writes the queued batches in turn until none is left; when ctx
-// ends while it waits on a rule load, the batch is failed unrecorded.
+// ends before the drain holds the load lock, the batch is failed
+// unrecorded.
 func (l *Learner) drain(ctx context.Context) {
 	for {
 		if err := l.load.lock(ctx); err != nil {
@@ -135,7 +153,7 @@ func (l *Learner) drain(ctx context.Context) {
 			b := l.take()
 			l.draining = false
 			l.mu.Unlock()
-			l.log.Warn("Learned GitHub addresses were not added: the resolver stopped during a rule load", "addresses", len(b.recs), "err", err)
+			l.log.Warn("Learned GitHub addresses were not added: the resolver stopped before they were written", "addresses", len(b.recs), "err", err)
 			close(b.done)
 			return
 		}

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/cplieger/go/httpclient"
+	"github.com/cplieger/manade/internal/config"
 	"github.com/cplieger/manade/internal/hostapi"
 )
 
@@ -83,6 +85,11 @@ type learned64 struct {
 	prefix netip.Prefix
 }
 
+// unasked64 is what the host holds before it asks its ipv6_echo.
+func unasked64() *learned64 {
+	return &learned64{err: errors.New("the host has not asked its ipv6_echo yet")}
+}
+
 // learns64 reports whether the host learns the machine's /64.
 func (n *hostNet) learns64() bool {
 	n.mu.Lock()
@@ -90,20 +97,39 @@ func (n *hostNet) learns64() bool {
 	return n.host.Egress.IPv6 && n.host.Egress.Internet
 }
 
-// learn64 asks the host's ipv6_echo at once and every echoInterval until
-// ctx ends, answering nil then. A changed /64 loads the rules again, and a
-// failed load ends it with the failure; a failed ask keeps the last /64.
+// moved64 follows a reload from section old to h: turning internet off
+// forgets the learned /64, so turning it on again starts unasked, and
+// turning it on wakes learn64 to ask at once. n.mu is held.
+func (n *hostNet) moved64(old, h *config.Host) {
+	switch {
+	case old.Egress.Internet && !h.Egress.Internet:
+		n.self64.Store(unasked64())
+	case !old.Egress.Internet && h.Egress.Internet:
+		select {
+		case n.wake64 <- struct{}{}:
+		default:
+		}
+	}
+}
+
+// learn64 asks the host's ipv6_echo while the host has internet: at once,
+// every echoInterval and when moved64 wakes it, until ctx ends, answering
+// nil then. A changed /64 loads the rules again, and a failed load ends it
+// with the failure; a failed ask keeps the last /64.
 func (n *hostNet) learn64(ctx context.Context, echo echoFunc) error {
 	t := time.NewTicker(echoInterval)
 	defer t.Stop()
 	for {
-		if err := n.ask64(ctx, echo); err != nil {
-			return err
+		if n.learns64() {
+			if err := n.ask64(ctx, echo); err != nil {
+				return err
+			}
 		}
 		select {
 		case <-ctx.Done():
 			return nil
 		case <-t.C:
+		case <-n.wake64:
 		}
 	}
 }
@@ -116,16 +142,25 @@ func (n *hostNet) ask64(ctx context.Context, echo echoFunc) error {
 	if ctx.Err() != nil {
 		return nil
 	}
+	n.mu.Lock()
+	// A reload that turned internet off during the ask forgot the /64.
+	internet := n.host.Egress.Internet
 	old := n.self64.Load()
-	if err != nil {
-		n.log.Warn("The machine's IPv6 /64 was not learned; job IPv6 stays dropped until it is", "err", err, "kept", old.prefix)
-		if !old.prefix.IsValid() {
-			n.self64.Store(&learned64{err: err})
-		}
-		return nil
+	switch {
+	case !internet:
+	case err == nil:
+		n.self64.Store(&learned64{prefix: p})
+	case !old.prefix.IsValid():
+		n.self64.Store(&learned64{err: err})
 	}
-	n.self64.Store(&learned64{prefix: p})
-	if p == old.prefix {
+	n.mu.Unlock()
+	switch {
+	case !internet:
+		return nil
+	case err != nil:
+		n.log.Warn("The machine's IPv6 /64 was not learned; job IPv6 stays dropped until it is", "err", err, "kept", old.prefix)
+		return nil
+	case p == old.prefix:
 		return nil
 	}
 	n.log.Info("Learned the machine's IPv6 /64", "prefix", p, "was", old.prefix)

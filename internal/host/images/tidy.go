@@ -3,6 +3,8 @@ package images
 import (
 	"context"
 	"errors"
+	"slices"
+	"strings"
 
 	"github.com/cplieger/manade/internal/docker"
 	"github.com/cplieger/manade/internal/jobspec"
@@ -11,13 +13,15 @@ import (
 // tidyState is what the tidy pass must keep, read under m.mu.
 type tidyState struct {
 	inService, checking, named map[string]bool
-	probeID                    string
+	// pins holds each pinned reference a profile names, in pinKey's form.
+	pins    map[string]bool
+	probeID string
 }
 
 func (m *Manager) tidyState() tidyState {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	s := tidyState{inService: map[string]bool{}, checking: map[string]bool{}, named: map[string]bool{}, probeID: m.probeID}
+	s := tidyState{inService: map[string]bool{}, checking: map[string]bool{}, named: map[string]bool{}, pins: map[string]bool{}, probeID: m.probeID}
 	for _, p := range m.profiles {
 		if p.id != "" {
 			s.inService[p.id] = true
@@ -28,6 +32,9 @@ func (m *Manager) tidyState() tidyState {
 	}
 	for name := range m.refs {
 		s.named[name] = true
+		if pinned(name) {
+			s.pins[pinKey(name)] = true
+		}
 	}
 	return s
 }
@@ -111,9 +118,10 @@ func (m *Manager) tidyImages(ctx context.Context, s *tidyState) {
 // removable answers what the pass removes of img: the ID of an untagged
 // image the host pulled (its repository is one the host pulled, or it is a
 // shipped image), or each tag the host pulled that no profile names. An
-// image in service or in a check stays, as does any
-// tag a profile names. The daemon refuses an image a container uses, which
-// keeps it for a later pass.
+// image in service, in a check or under a pinned reference a profile names
+// stays, as does any tag a profile names: a pinned pull has no tag, so only
+// its name keeps it between the pull and its check. The daemon refuses an
+// image a container uses, which keeps it for a later pass.
 func (m *Manager) removable(img *docker.ImageSummary, s *tidyState, repos map[string]bool) []string {
 	switch {
 	case img.Labels[docker.LabelProbeImage] != "":
@@ -122,6 +130,8 @@ func (m *Manager) removable(img *docker.ImageSummary, s *tidyState, repos map[st
 		}
 		return refsOrID(img.RepoTags, img.ID)
 	case s.inService[img.ID] || s.checking[img.ID]:
+		return nil
+	case slices.ContainsFunc(img.RepoDigests, func(d string) bool { return s.pins[pinKey(d)] }):
 		return nil
 	case len(img.RepoTags) == 0:
 		if img.Labels[docker.LabelRunnerImage] != "" || m.pulledRepo(img.RepoDigests, repos) {
@@ -151,6 +161,13 @@ func (m *Manager) pulledRepo(digests []string, repos map[string]bool) bool {
 		}
 	}
 	return false
+}
+
+// pinKey answers a digest reference with its repository in full form, so a
+// profile's reference and a RepoDigests entry compare.
+func pinKey(ref string) string {
+	_, digest, _ := strings.Cut(ref, "@")
+	return repository(ref) + "@" + digest
 }
 
 func refsOrID(tags []string, id string) []string {

@@ -271,6 +271,35 @@ func TestADrainWaitingOnALoadEndsWithItsContext(t *testing.T) {
 	}
 }
 
+func TestAnAddWithNothingToLearnWaitsForNoWrite(t *testing.T) {
+	l, k := newTestLearner(&bytes.Buffer{})
+	l.Loading().Lock()
+	defer l.Loading().Unlock()
+	for name, recs := range map[string][]Record{
+		"an empty answer":            nil,
+		"only a private address":     {{Addr: addr("10.0.0.1"), TTL: time.Minute}},
+		"only a blocked IPv6 prefix": {{Addr: addr("2a01:e0a::1"), TTL: time.Minute}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			written, drain := l.Learn(recs)
+			if drain != nil {
+				t.Error("an add with nothing to learn started a drain")
+			}
+			select {
+			case <-written:
+			default:
+				t.Error("an add with nothing to learn waits for a write")
+			}
+		})
+	}
+	if _, drain := l.Learn([]Record{{Addr: addr("140.82.121.10"), TTL: time.Minute}}); drain == nil {
+		t.Error("an add after the empty ones started no drain")
+	}
+	if len(k.all()) != 0 {
+		t.Errorf("writes = %v, want none while the load is held", k.all())
+	}
+}
+
 func TestAddsDuringAWriteJoinTheNextOne(t *testing.T) {
 	k := &kernelSets{}
 	inWrite, release := make(chan struct{}), make(chan struct{})
@@ -320,9 +349,10 @@ func TestAddsDuringAWriteJoinTheNextOne(t *testing.T) {
 	if !slices.EqualFunc(got, want, slices.Equal) {
 		t.Errorf("writes = %v, want %v", got, want)
 	}
-	if _, again := l.Learn(nil); again == nil {
+	if _, again := l.Learn([]Record{{Addr: addr("140.82.121.13"), TTL: time.Minute}}); again == nil {
 		t.Error("an add after the drain ended started no drain")
 	} else {
+		go func() { <-inWrite; release <- struct{}{} }()
 		again(t.Context())
 	}
 }
