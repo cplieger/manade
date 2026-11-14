@@ -1,6 +1,7 @@
 package probe
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -350,6 +351,44 @@ func TestBlockChecksNeedTheirCounter(t *testing.T) {
 			t.Errorf("report = %+v", rep.Checks[0])
 		}
 	})
+}
+
+func TestAnOpenHostProvesWithoutProbeSets(t *testing.T) {
+	pt := newProbeTest(t)
+	pt.host.Egress = config.Egress{Open: true, Internet: true}
+	var logs bytes.Buffer
+	pt.r.cfg.Log = slog.New(slog.NewTextHandler(&logs, nil))
+	pt.r.cfg.Sets = refusedSets{}
+	rep, err := pt.r.Run(t.Context())
+	if err != nil || !rep.Proven || rep.Unproven != "" {
+		t.Fatalf("Run = %v, %+v", err, rep)
+	}
+	var got []string
+	for _, c := range rep.Checks {
+		got = append(got, c.Leg+" "+c.Name)
+	}
+	want := []string{
+		"job GitHub's API", "job a lookup through the job's resolver",
+		"output a lookup through the configured resolvers",
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("checks = %q, want %q", got, want)
+	}
+	if strings.Contains(logs.String(), "level=ERROR") {
+		t.Errorf("logs = %s", logs.String())
+	}
+}
+
+// refusedSets is an open host's kernel, whose rules declare no probe set.
+type refusedSets struct{}
+
+var errNoSet = errors.New("set manade-probe4 does not exist")
+
+func (refusedSets) SetSources(context.Context, []netip.Addr) error { return errNoSet }
+func (refusedSets) SetTarget(context.Context, netip.Addr) error    { return errNoSet }
+func (refusedSets) Clear(context.Context) error                    { return errNoSet }
+func (refusedSets) Counts(context.Context) (egress.ProbeCounts, error) {
+	return egress.ProbeCounts{}, errNoSet
 }
 
 // noCount is a rule set without its counting rules.

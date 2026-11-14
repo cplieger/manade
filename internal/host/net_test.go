@@ -406,8 +406,10 @@ func openSection() *config.Host {
 }
 
 // A change of open or internet rebuilds the posture as a boot builds one:
-// the rules, the namespace settings, the resolver's learning and the status
-// equal a fresh boot's of the new section.
+// the rules, the ipsets, resolv.conf, the resolver's learning and the status
+// equal a fresh boot's of the new section, and so does disable_ipv6 unless
+// the new section is open: guard.bring only turns IPv6 off, so a host that
+// becomes open keeps the previous posture's IPv6 until a restart.
 func TestAChangeEqualsAFreshBoot(t *testing.T) {
 	postures := map[string]func() *config.Host{"open": openSection, "internet": func() *config.Host { return section() }, "internet off": closedSection}
 	for from, mkFrom := range postures {

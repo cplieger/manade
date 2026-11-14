@@ -124,7 +124,12 @@ func (n *hostNet) learnOnce(ctx context.Context, p *posture) error {
 		return nil
 	}
 	n.log.Info("Learned the machine's IPv6 /64", "prefix", got, "was", old.prefix)
-	return p.guard.refresh(ctx, func() { p.self64.Store(&learned64{prefix: got}) })
+	err = p.guard.refresh(ctx, func() { p.self64.Store(&learned64{prefix: got}) })
+	if ctx.Err() != nil {
+		// A change or a stop cancelled the load; the next posture loads its own.
+		return nil
+	}
+	return err
 }
 
 // iPv6Status answers the learned /64 or why it is unknown, on a posture with

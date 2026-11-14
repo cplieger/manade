@@ -119,7 +119,7 @@ func serve(t *testing.T, f *Forwarder) netip.AddrPort {
 func newForwarder(ups []netip.AddrPort, k *kernelSets) *Forwarder {
 	l := NewLearner(k.write, slog.New(slog.DiscardHandler))
 	m := newMatcher(meta)
-	return NewForwarder(func() []netip.AddrPort { return ups }, learns(m, l), slog.New(slog.DiscardHandler))
+	return NewForwarder(ups, learns(m, l), slog.New(slog.DiscardHandler))
 }
 
 func learns(m *Matcher, l *Learner) func() *Learning {
@@ -186,7 +186,7 @@ func TestForwardWritesBeforeItAnswers(t *testing.T) {
 	}, slog.New(slog.DiscardHandler))
 	m := newMatcher(meta)
 	up := upstream(t, answering(0, aRR("140.82.121.10", 60)))
-	at := serve(t, NewForwarder(func() []netip.AddrPort { return []netip.AddrPort{up} }, learns(m, l), slog.New(slog.DiscardHandler)))
+	at := serve(t, NewForwarder([]netip.AddrPort{up}, learns(m, l), slog.New(slog.DiscardHandler)))
 	got := make(chan []byte, 1)
 	go func() {
 		c, err := net.Dial("udp", at.String())
@@ -236,7 +236,7 @@ func TestForwardAnswersInsideTheEmbeddedWaitWhileItLearns(t *testing.T) {
 			time.Sleep(3 * time.Second)
 			return answering(0, aRR("140.82.121.10", 60))(q)
 		})
-		at := serve(t, NewForwarder(func() []netip.AddrPort { return []netip.AddrPort{up} }, learns(newMatcher(meta), l), slog.New(slog.DiscardHandler)))
+		at := serve(t, NewForwarder([]netip.AddrPort{up}, learns(newMatcher(meta), l), slog.New(slog.DiscardHandler)))
 		start := time.Now()
 		resp := ask(t, "udp", at, query(3, "codeload.github.com", typeA))
 		if d := time.Since(start); d >= 4*time.Second {
@@ -250,7 +250,7 @@ func TestForwardAnswersInsideTheEmbeddedWaitWhileItLearns(t *testing.T) {
 	t.Run("a rule load holding the lock", func(t *testing.T) {
 		k := &kernelSets{}
 		l := NewLearner(k.write, slog.New(slog.DiscardHandler))
-		f := NewForwarder(func() []netip.AddrPort { return []netip.AddrPort{upstream(t, answering(0, aRR("140.82.121.10", 60)))} },
+		f := NewForwarder([]netip.AddrPort{upstream(t, answering(0, aRR("140.82.121.10", 60)))},
 			learns(newMatcher(meta), l), slog.New(slog.DiscardHandler))
 		f.budget = 300 * time.Millisecond
 		at := serve(t, f)
@@ -271,7 +271,7 @@ func TestServeWaitsForALearnItsQueryLeft(t *testing.T) {
 		<-release
 		return nil
 	}, slog.New(slog.DiscardHandler))
-	f := NewForwarder(func() []netip.AddrPort { return []netip.AddrPort{upstream(t, answering(0, aRR("140.82.121.10", 60)))} },
+	f := NewForwarder([]netip.AddrPort{upstream(t, answering(0, aRR("140.82.121.10", 60)))},
 		learns(newMatcher(meta), l), slog.New(slog.DiscardHandler))
 	f.budget = 300 * time.Millisecond
 	at, udp, tcp := listenPair(t)
@@ -316,7 +316,7 @@ func TestQueriesDuringARuleLoadAreLearnedInOneWrite(t *testing.T) {
 		id := binary.BigEndian.Uint16(q)
 		return answering(0, aRR(fmt.Sprintf("140.82.121.%d", id), 60))(q)
 	})
-	f := NewForwarder(func() []netip.AddrPort { return []netip.AddrPort{up} }, learns(newMatcher(meta), l), slog.New(slog.DiscardHandler))
+	f := NewForwarder([]netip.AddrPort{up}, learns(newMatcher(meta), l), slog.New(slog.DiscardHandler))
 	f.budget = time.Second
 	at := serve(t, f)
 	const queries = 20
@@ -420,7 +420,7 @@ func TestForwardAnswersAListedNamesAAAAWithNoRecords(t *testing.T) {
 			if tc.learns {
 				learning = learns(newMatcher(meta), l)
 			}
-			at := serve(t, NewForwarder(func() []netip.AddrPort { return []netip.AddrPort{up} }, learning, slog.New(slog.DiscardHandler)))
+			at := serve(t, NewForwarder([]netip.AddrPort{up}, learning, slog.New(slog.DiscardHandler)))
 			q := query(9, tc.qname, typeAAAA)
 			resp := ask(t, "udp", at, q)
 			rq, err := parseQuestion(resp)
@@ -456,7 +456,7 @@ func TestForwardWithLearningOffRelaysAListedName(t *testing.T) {
 	l := NewLearner(k.write, slog.New(slog.DiscardHandler))
 	m := newMatcher(meta)
 	up := upstream(t, answering(0, aRR("140.82.121.10", 60)))
-	at := serve(t, NewForwarder(func() []netip.AddrPort { return []netip.AddrPort{up} }, func() *Learning {
+	at := serve(t, NewForwarder([]netip.AddrPort{up}, func() *Learning {
 		if !on.Load() {
 			return nil
 		}
@@ -540,22 +540,6 @@ func TestForwardIgnoresAStrayDatagram(t *testing.T) {
 	ask(t, "udp", at, query(5, "github.com", typeA))
 	if w := k.all(); len(w) != 1 || len(w[0]) != 1 || w[0][0].Addr != addr("140.82.121.10") {
 		t.Errorf("writes = %v, want only the answer to the query asked", w)
-	}
-}
-
-func TestForwardReadsItsUpstreamsAtEachQuery(t *testing.T) {
-	var ups atomic.Pointer[[]netip.AddrPort]
-	old, next := []netip.AddrPort{upstream(t, answering(5))}, []netip.AddrPort{upstream(t, answering(0, aRR("140.82.121.10", 60)))}
-	ups.Store(&old)
-	m := newMatcher(meta)
-	l := NewLearner((&kernelSets{}).write, slog.New(slog.DiscardHandler))
-	at := serve(t, NewForwarder(func() []netip.AddrPort { return *ups.Load() }, learns(m, l), slog.New(slog.DiscardHandler)))
-	if rc := rcodeOf(ask(t, "udp", at, query(5, "github.com", typeA))); rc != 5 {
-		t.Errorf("rcode = %d, want the first upstream's", rc)
-	}
-	ups.Store(&next)
-	if rc := rcodeOf(ask(t, "udp", at, query(6, "github.com", typeA))); rc != 0 {
-		t.Errorf("rcode = %d, want the new upstream's answer", rc)
 	}
 }
 

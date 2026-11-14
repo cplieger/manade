@@ -36,9 +36,6 @@ type gitHub struct {
 	source  *resolver.Source
 }
 
-// upstreams answers the configured resolvers.
-func (n *hostNet) upstreams() []netip.AddrPort { return n.dns }
-
 // learning answers what the resolver learns now: an internet: false
 // posture's list and learner, nil on any other.
 func (n *hostNet) learning() *resolver.Learning {
@@ -64,7 +61,7 @@ func (n *hostNet) serveDNS(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("starting the host's DNS resolver: %w", err)
 	}
-	fwd := resolver.NewForwarder(n.upstreams, n.learning, n.log)
+	fwd := resolver.NewForwarder(n.dns, n.learning, n.log)
 	sctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	d := &dnsServer{stop: cancel, done: make(chan struct{})}
 	go func() {

@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"maps"
 	"net/netip"
+	"slices"
 	"sync"
 	"time"
 
@@ -220,10 +221,11 @@ func (r *Runner) Run(ctx context.Context) (hostapi.ProbeReport, error) {
 	r.cur = run
 	r.mu.Unlock()
 	rep := hostapi.ProbeReport{StartedAt: time.Now()}
-	leave := r.run(rctx, run, &h, &rep)
+	counts := blocks(plan)
+	leave := r.run(rctx, run, &h, &rep, counts)
 	rep.EndedAt = time.Now()
 	rep.Proven = rep.Unproven == "" && allRequired(rep.Checks)
-	r.cleanUp(ctx, run, leave)
+	r.cleanUp(ctx, run, leave, counts)
 	r.ended(run)
 	if rep.Unproven != "" {
 		r.cfg.Log.Warn("A probe run ended unproven", "run", run, "why", rep.Unproven)
@@ -231,13 +233,15 @@ func (r *Runner) Run(ctx context.Context) (hostapi.ProbeReport, error) {
 	return rep, nil
 }
 
-// cleanUp empties the probe sets and, unless leave, removes run's
-// containers, within one call timeout whatever ctx does.
-func (r *Runner) cleanUp(ctx context.Context, run string, leave bool) {
+// cleanUp empties the probe sets when counts and, unless leave, removes
+// run's containers, within one call timeout whatever ctx does.
+func (r *Runner) cleanUp(ctx context.Context, run string, leave, counts bool) {
 	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), callTimeout)
 	defer cancel()
-	if err := r.cfg.Sets.Clear(cctx); err != nil {
-		r.cfg.Log.Error("Emptying the probe sets failed", "error", err, "bound", callTimeout)
+	if counts {
+		if err := r.cfg.Sets.Clear(cctx); err != nil {
+			r.cfg.Log.Error("Emptying the probe sets failed", "error", err, "bound", callTimeout)
+		}
 	}
 	if !leave {
 		r.remove(cctx, run)
@@ -252,6 +256,12 @@ func (r *Runner) ended(run string) {
 	now := time.Now()
 	maps.DeleteFunc(r.runs, func(_ string, at time.Time) bool { return now.Sub(at) >= callTimeout })
 	r.cur, r.runs[run] = "", now
+}
+
+// blocks answers whether p reads the probe counters: only a block check
+// does, and an open host's rules declare no probe set to fill.
+func blocks(p *egress.Plan) bool {
+	return slices.ContainsFunc(p.Checks, func(c egress.Check) bool { return c.Kind == egress.KindBlock })
 }
 
 func allRequired(cs []hostapi.ProbeCheck) bool {
@@ -269,9 +279,10 @@ func newRunID() string {
 	return hex.EncodeToString(b)
 }
 
-// run makes run's checks into rep, answering whether its containers must
-// stay: a call that timed out may still be in flight.
-func (r *Runner) run(ctx context.Context, run string, h *Host, rep *hostapi.ProbeReport) (leave bool) {
+// run makes run's checks into rep, filling the probe sets only when counts,
+// and answers whether its containers must stay: a call that timed out may
+// still be in flight.
+func (r *Runner) run(ctx context.Context, run string, h *Host, rep *hostapi.ProbeReport, counts bool) (leave bool) {
 	r.tidy(ctx)
 	if h.No64 != "" {
 		rep.Unproven = "the machine's /64 is not learned: " + h.No64
@@ -290,8 +301,8 @@ func (r *Runner) run(ctx context.Context, run string, h *Host, rep *hostapi.Prob
 	in.Listener, in.Listener6, in.ListenerPort = listener.ep.addr4(), listener.ep.addr6(in.Host.Egress.IPv6), listenerPort
 	in.JobGateway, in.JobGateway6 = probe.ep.gateway4(), probe.ep.gateway6(in.Host.Egress.IPv6)
 	plan := egress.PlanProbe(&in)
-	if err := r.cfg.Sets.SetSources(ctx, probe.ep.addrs()); err != nil {
-		return unproven(rep, fmt.Errorf("filling the probe sets: %w", err))
+	if err := r.setSources(ctx, counts, probe.ep.addrs()); err != nil {
+		return unproven(rep, err)
 	}
 	x := newExchanger(probe.stream)
 	output := false
@@ -300,8 +311,8 @@ func (r *Runner) run(ctx context.Context, run string, h *Host, rep *hostapi.Prob
 		if c.Leg == egress.LegOutput && !output {
 			output = true
 			_ = probe.stream.Close()
-			if err := r.cfg.Sets.SetSources(ctx, h.Sources); err != nil {
-				return unproven(rep, fmt.Errorf("filling the probe sets: %w", err))
+			if err := r.setSources(ctx, counts, h.Sources); err != nil {
+				return unproven(rep, err)
 			}
 		}
 		pc, err := r.check(ctx, c, x, in.Host.DNS)
@@ -311,6 +322,16 @@ func (r *Runner) run(ctx context.Context, run string, h *Host, rep *hostapi.Prob
 		rep.Checks = append(rep.Checks, pc)
 	}
 	return false
+}
+
+func (r *Runner) setSources(ctx context.Context, counts bool, addrs []netip.Addr) error {
+	if !counts {
+		return nil
+	}
+	if err := r.cfg.Sets.SetSources(ctx, addrs); err != nil {
+		return fmt.Errorf("filling the probe sets: %w", err)
+	}
+	return nil
 }
 
 // unproven ends rep's run with err, answering whether the containers stay.

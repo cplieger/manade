@@ -65,19 +65,19 @@ type Learning struct {
 // while it learns, has the Learner add the addresses of a listed name's
 // answer before it answers, finishing an add the budget cut after it.
 type Forwarder struct {
-	upstreams func() []netip.AddrPort
 	learning  func() *Learning
 	log       *slog.Logger
+	upstreams []netip.AddrPort
 	// adds are the Learner drains this forwarder started, which may
 	// outlive the query that started them.
 	adds   sync.WaitGroup
 	budget time.Duration
 }
 
-// NewForwarder answers a Forwarder asking the resolvers upstreams answers,
-// in order, and learning what learning answers, nil to learn nothing; both
-// are read at each query, so they follow the host's section and list.
-func NewForwarder(upstreams func() []netip.AddrPort, learning func() *Learning, log *slog.Logger) *Forwarder {
+// NewForwarder answers a Forwarder asking upstreams, in order, and learning
+// what learning answers, nil to learn nothing; learning is read at each
+// query, so it follows the host's posture.
+func NewForwarder(upstreams []netip.AddrPort, learning func() *Learning, log *slog.Logger) *Forwarder {
 	return &Forwarder{upstreams: upstreams, learning: learning, log: log, budget: egress.ForwarderBudget}
 }
 
@@ -300,7 +300,7 @@ func (a *asking) took(r exchanged) ([]byte, bool) {
 // asked in turn, the next one once the one before has failed or its share
 // of the budget has passed, while those before may still answer.
 func (f *Forwarder) ask(ctx context.Context, network string, query []byte, q question) []byte {
-	ups := f.upstreams()
+	ups := f.upstreams
 	if len(ups) == 0 {
 		return nil
 	}

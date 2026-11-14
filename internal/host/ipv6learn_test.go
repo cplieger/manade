@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -360,6 +361,65 @@ func TestAChangeOfInternetRebuildsThe64(t *testing.T) {
 				t.Errorf("Hold = %v", err)
 			}
 		})
+	})
+}
+
+// A change or a stop that cancels the learner's rule load ends the posture
+// as cleanly as one between two asks.
+func TestAnEndedPostureMidLoadIsNoFailure(t *testing.T) {
+	// blockedLoad is a platform whose first restore once armed waits for
+	// its context, as exec.CommandContext's load does when a change ends
+	// the posture.
+	blockedLoad := func(t *testing.T) (n *hostNet, f *upFixture, blocked <-chan struct{}) {
+		t.Helper()
+		f = v6Fixture(t, &echoes{replies: []func() ([]byte, error){answer("2a01:e0a:1259:2710::7008")}})
+		p := f.platform()
+		var armed atomic.Bool
+		ch := make(chan struct{})
+		run := p.Run
+		p.Run = func(ctx context.Context, stdin []byte, name string, args ...string) ([]byte, error) {
+			if strings.HasSuffix(name, "-restore") && armed.CompareAndSwap(true, false) {
+				close(ch)
+				<-ctx.Done()
+				return nil, ctx.Err()
+			}
+			return run(ctx, stdin, name, args...)
+		}
+		n, err := bringUp(t.Context(), v6Section(), p, guardHooks{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = n.stop() })
+		armed.Store(true)
+		return n, f, ch
+	}
+	t.Run("a change rebuilds to the new posture", func(t *testing.T) {
+		n, f, blocked := blockedLoad(t)
+		stop := holding(t, n)
+		<-blocked
+		if failed, fatal := n.change(t.Context(), closedV6Section()); failed != nil || fatal != nil {
+			t.Fatalf("Change = %v, %v, want the new posture with no failure", failed, fatal)
+		}
+		if st := n.iPv6Status(); st != nil {
+			t.Errorf("IPv6Status = %+v, want the internet: false posture's none", st)
+		}
+		f.proc.mu.Lock()
+		stopped := f.proc.stopped
+		f.proc.mu.Unlock()
+		if stopped != 0 {
+			t.Errorf("the daemon was stopped %d times, want it running", stopped)
+		}
+		if err := stop(); err != nil {
+			t.Errorf("Hold = %v", err)
+		}
+	})
+	t.Run("a stop ends the hold with no error", func(t *testing.T) {
+		n, _, blocked := blockedLoad(t)
+		stop := holding(t, n)
+		<-blocked
+		if err := stop(); err != nil {
+			t.Errorf("Hold = %v, want nil", err)
+		}
 	})
 }
 
