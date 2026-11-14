@@ -11,9 +11,9 @@ import (
 	"github.com/cplieger/manade/internal/egress"
 )
 
-// LearnPad is added to each record's TTL: a job that resolved a name keeps
+// learnPad is added to each record's TTL: a job that resolved a name keeps
 // its address that long past the answer's own life.
-const LearnPad = 10 * time.Minute
+const learnPad = 10 * time.Minute
 
 // refusedLogEvery bounds the WARN a full set logs.
 const refusedLogEvery = time.Minute
@@ -25,17 +25,17 @@ type SetWriter func(ctx context.Context, ls []egress.Learned) error
 // Family indexes a per-family count.
 type Family int
 
-// The families; FamilyCount is how many there are.
+// The families; familyCount is how many there are.
 const (
 	IPv4 Family = iota
 	IPv6
-	FamilyCount
+	familyCount
 )
 
 // Counts are a Learner's figures for status and metrics.
 type Counts struct {
-	Held    [FamilyCount]int
-	Refused [FamilyCount]uint64
+	Held    [familyCount]int
+	Refused [familyCount]uint64
 }
 
 // Learner holds the addresses learned for GitHub's names with their
@@ -47,9 +47,9 @@ type Learner struct {
 	allowed atomic.Pointer[func(netip.Addr) bool]
 	held    map[netip.Addr]time.Time
 	warned  time.Time
-	refused [FamilyCount]atomic.Uint64
+	refused [familyCount]atomic.Uint64
 	// n counts held's addresses per family, expired ones until pruned.
-	n [FamilyCount]int
+	n [familyCount]int
 	// load is held from a learned address's record to its kernel write,
 	// and by Loading's holder from a rule set's generation to its load, so
 	// an address is in the loaded set or written after it.
@@ -73,7 +73,7 @@ func (l *Learner) SetAllowed(allowed func(netip.Addr) bool) { l.allowed.Store(&a
 // Loading is held across a rule set's generation from Held and its load.
 func (l *Learner) Loading() sync.Locker { return &l.load }
 
-// Learn records each allowed address of recs for its TTL plus LearnPad and
+// Learn records each allowed address of recs for its TTL plus learnPad and
 // writes them to the kernel before it returns, answering the write's
 // error. A new address past a family's bound is refused, counted and
 // logged at most once a minute; a held one is renewed whatever the count.
@@ -96,7 +96,7 @@ func (l *Learner) Learn(ctx context.Context, recs []Record) error {
 		if _, ok := l.held[a]; !ok {
 			l.n[familyOf(a)]++
 		}
-		left := r.TTL + LearnPad
+		left := r.TTL + learnPad
 		l.held[a] = now.Add(left)
 		ls = append(ls, egress.Learned{Addr: a, Left: left})
 	}
@@ -156,7 +156,7 @@ func (l *Learner) Counts() Counts {
 	defer l.mu.Unlock()
 	l.prune(time.Now())
 	c := Counts{Held: l.n}
-	for f := range FamilyCount {
+	for f := range familyCount {
 		c.Refused[f] = l.refused[f].Load()
 	}
 	return c

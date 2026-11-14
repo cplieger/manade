@@ -3,6 +3,7 @@ package netsetup
 import (
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"math/bits"
 	"net/netip"
@@ -24,12 +25,13 @@ const ifaceLoopback = "lo"
 
 // Routes are what the namespace's routing tables show.
 type Routes struct {
+	// Gateway4 and Gateway6 are the default routes' gateways, the zero Addr
+	// for a family with none.
+	Gateway4, Gateway6 netip.Addr
 	// OnLink are the routes with a destination and no gateway, of both
 	// families; the default route and the namespace's own addresses are
 	// never among them.
 	OnLink []netip.Prefix
-	// Default6 is an IPv6 default route through a gateway.
-	Default6 bool
 }
 
 // ReadRoutes reads /proc/net/route and /proc/net/ipv6_route; a kernel
@@ -40,41 +42,59 @@ func ReadRoutes(r platform.Root) (Routes, error) {
 	if err != nil {
 		return out, err
 	}
-	if out.OnLink, err = parseRoute4(v4); err != nil {
+	if out.OnLink, out.Gateway4, err = parseRoute4(v4); err != nil {
 		return out, err
 	}
 	v6, _, err := read(r, "/proc/net/ipv6_route")
 	if err != nil {
 		return out, err
 	}
-	onLink6, def6, err := parseRoute6(v6)
+	onLink6, gw6, err := parseRoute6(v6)
 	out.OnLink = append(out.OnLink, onLink6...)
-	out.Default6 = def6
+	out.Gateway6 = gw6
 	return out, err
 }
 
 // parseRoute4 reads /proc/net/route, whose addresses are 32-bit words the
 // kernel prints in host byte order.
-func parseRoute4(s string) ([]netip.Prefix, error) {
-	var out []netip.Prefix
+func parseRoute4(s string) (onLink []netip.Prefix, gw netip.Addr, err error) {
+	var def defaultRoute
 	for i, line := range strings.Split(s, "\n") {
 		f := strings.Fields(line)
 		if i == 0 || len(f) < 8 || f[0] == ifaceLoopback {
 			continue
 		}
 		dst, err1 := word4(f[1])
-		flags, err2 := strconv.ParseUint(f[3], 16, 32)
-		mask, err3 := word4(f[7])
-		if err1 != nil || err2 != nil || err3 != nil {
-			return nil, fmt.Errorf("/proc/net/route line %d: %q", i+1, line)
+		next, err2 := word4(f[2])
+		flags, err3 := strconv.ParseUint(f[3], 16, 32)
+		metric, err5 := strconv.ParseUint(f[6], 10, 32)
+		mask, err4 := word4(f[7])
+		if err := errors.Join(err1, err2, err3, err4, err5); err != nil {
+			return nil, netip.Addr{}, fmt.Errorf("/proc/net/route line %d: %q", i+1, line)
 		}
 		ones := bits.OnesCount32(binary.BigEndian.Uint32(mask[:]))
-		if flags&rtfUp == 0 || flags&rtfGateway != 0 || ones == 0 {
-			continue
+		switch {
+		case flags&rtfUp == 0:
+		case ones == 0 && flags&rtfGateway != 0:
+			def.offer(netip.AddrFrom4(next), metric)
+		case flags&rtfGateway == 0 && ones != 0:
+			onLink = append(onLink, netip.PrefixFrom(netip.AddrFrom4(dst), ones).Masked())
 		}
-		out = append(out, netip.PrefixFrom(netip.AddrFrom4(dst), ones).Masked())
 	}
-	return out, nil
+	return onLink, def.gw, nil
+}
+
+// defaultRoute keeps the default route the kernel prefers: the lowest
+// metric, the first listed among equals.
+type defaultRoute struct {
+	gw     netip.Addr
+	metric uint64
+}
+
+func (d *defaultRoute) offer(gw netip.Addr, metric uint64) {
+	if !d.gw.IsValid() || metric < d.metric {
+		d.gw, d.metric = gw, metric
+	}
 }
 
 func word4(s string) ([4]byte, error) {
@@ -87,7 +107,8 @@ func word4(s string) ([4]byte, error) {
 // parseRoute6 reads /proc/net/ipv6_route: destination, its length, source,
 // its length, next hop, metric, references, use, flags and interface, the
 // addresses in network order.
-func parseRoute6(s string) (onLink []netip.Prefix, def bool, err error) {
+func parseRoute6(s string) (onLink []netip.Prefix, gw netip.Addr, err error) {
+	var def defaultRoute
 	for i, line := range strings.Split(s, "\n") {
 		f := strings.Fields(line)
 		if len(f) < 10 || f[9] == ifaceLoopback {
@@ -95,19 +116,23 @@ func parseRoute6(s string) (onLink []netip.Prefix, def bool, err error) {
 		}
 		dst, err1 := addr6(f[0])
 		n, err2 := strconv.ParseUint(f[1], 16, 8)
-		flags, err3 := strconv.ParseUint(f[8], 16, 32)
-		if err1 != nil || err2 != nil || err3 != nil || n > 128 {
-			return nil, false, fmt.Errorf("/proc/net/ipv6_route line %d: %q", i+1, line)
+		next, err3 := addr6(f[4])
+		metric, err5 := strconv.ParseUint(f[5], 16, 32)
+		flags, err4 := strconv.ParseUint(f[8], 16, 32)
+		if errors.Join(err1, err2, err3, err4, err5) != nil || n > 128 {
+			return nil, netip.Addr{}, fmt.Errorf("/proc/net/ipv6_route line %d: %q", i+1, line)
 		}
 		switch {
 		case flags&rtfUp == 0, flags&rtfLocal != 0:
 		case n == 0:
-			def = def || flags&rtfGateway != 0
+			if flags&rtfGateway != 0 {
+				def.offer(next, metric)
+			}
 		case flags&rtfGateway == 0:
 			onLink = append(onLink, netip.PrefixFrom(dst, int(n)).Masked())
 		}
 	}
-	return onLink, def, nil
+	return onLink, def.gw, nil
 }
 
 func addr6(s string) (netip.Addr, error) {

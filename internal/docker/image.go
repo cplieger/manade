@@ -22,7 +22,6 @@ type Image struct {
 		User   string
 	}
 	ID          string `json:"Id"`
-	RepoTags    []string
 	RepoDigests []string
 }
 

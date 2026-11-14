@@ -220,7 +220,7 @@ func (f *fakeIPT) ipset(stdin []byte, args []string) ([]byte, error) {
 	switch strings.Join(args, " ") {
 	case "list -n":
 		return nil, nil
-	case "restore -exist":
+	case "restore -exist", "restore":
 		f.ipsetFiles = append(f.ipsetFiles, string(stdin))
 		for line := range strings.Lines(string(stdin)) {
 			fs := strings.Fields(line)

@@ -11,8 +11,8 @@ import (
 )
 
 const (
-	// ConnectTimeout bounds each connection a check makes.
-	ConnectTimeout = 3 * time.Second
+	// connectTimeout bounds each connection a check makes.
+	connectTimeout = 3 * time.Second
 	// LookupTimeout bounds each configured resolver the output leg's lookup
 	// asks, once, so it never waits out resolv.conf's 5 s and two attempts.
 	LookupTimeout = 3 * time.Second
@@ -29,9 +29,9 @@ const (
 	// lookupMargin is the job-leg lookup's time past the embedded
 	// resolver's last upstream wait, to relay an answer that came at its end.
 	lookupMargin = time.Second
-	// ExchangeSlack is added to a job-leg check's timeout for its exchange
+	// exchangeSlack is added to a job-leg check's timeout for its exchange
 	// over the probe container's attached stream.
-	ExchangeSlack = 2 * time.Second
+	exchangeSlack = 2 * time.Second
 	// probeCalls are a run's Docker calls, each under the host's call
 	// timeout: for the probe and the listener a create, one more call of
 	// inspection after a timed-out create, a start, and after a timed-out
@@ -108,7 +108,7 @@ func (c *Check) Exchange() time.Duration {
 	if c.Leg != LegJob {
 		return 0
 	}
-	return c.Timeout + ExchangeSlack
+	return c.Timeout + exchangeSlack
 }
 
 // ProbeInput is what a probe plan is made from: the host's section, what
@@ -181,7 +181,7 @@ type planner struct {
 func (p *planner) add(c *Check) {
 	c.Leg = p.leg
 	if c.Timeout == 0 {
-		c.Timeout = ConnectTimeout
+		c.Timeout = connectTimeout
 	}
 	dup := func(o Check) bool { return o.Leg == c.Leg && o.Kind == c.Kind && o.Addr == c.Addr }
 	if !slices.ContainsFunc(p.checks, dup) {

@@ -15,7 +15,7 @@ var meta = Domains{
 }
 
 func TestMatcher(t *testing.T) {
-	m := NewMatcher(meta)
+	m := newMatcher(meta)
 	for _, tc := range []struct {
 		name string
 		want bool
@@ -44,7 +44,7 @@ func TestMatcher(t *testing.T) {
 }
 
 func TestBootstrapListsOnlyTheAPI(t *testing.T) {
-	m := NewMatcher(Bootstrap)
+	m := newMatcher(bootstrap)
 	if !m.Match("api.github.com") {
 		t.Error("the bootstrap list does not list api.github.com")
 	}
@@ -56,7 +56,7 @@ func TestBootstrapListsOnlyTheAPI(t *testing.T) {
 }
 
 func TestEveryListListsTheAPI(t *testing.T) {
-	if !NewMatcher(Domains{Full: []string{"github.com"}}).Match("api.github.com") {
+	if !newMatcher(Domains{Full: []string{"github.com"}}).Match("api.github.com") {
 		t.Error("a list without api.github.com lost the name its next read needs")
 	}
 }

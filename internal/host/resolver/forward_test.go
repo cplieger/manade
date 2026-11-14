@@ -115,7 +115,7 @@ func serve(t *testing.T, f *Forwarder) netip.AddrPort {
 
 func newForwarder(ups []netip.AddrPort, k *kernelSets) *Forwarder {
 	l := NewLearner(k.write, learnable(), slog.New(slog.DiscardHandler))
-	m := NewMatcher(meta)
+	m := newMatcher(meta)
 	return NewForwarder(func() []netip.AddrPort { return ups }, func() *Matcher { return m }, l, slog.New(slog.DiscardHandler))
 }
 
@@ -160,8 +160,8 @@ func TestForwardLearnsAListedName(t *testing.T) {
 				t.Errorf("answer = %x, want the upstream's answer relayed", resp)
 			}
 			want := []egress.Learned{
-				{Addr: addr("140.82.121.10"), Left: time.Minute + LearnPad},
-				{Addr: addr("140.82.121.11"), Left: time.Minute + LearnPad},
+				{Addr: addr("140.82.121.10"), Left: time.Minute + learnPad},
+				{Addr: addr("140.82.121.11"), Left: time.Minute + learnPad},
 			}
 			if w := k.all(); len(w) != 1 || !slices.Equal(w[0], want) {
 				t.Errorf("writes = %v, want %v written before the answer", w, want)
@@ -177,7 +177,7 @@ func TestForwardWritesBeforeItAnswers(t *testing.T) {
 		<-release
 		return nil
 	}, learnable(), slog.New(slog.DiscardHandler))
-	m := NewMatcher(meta)
+	m := newMatcher(meta)
 	up := upstream(t, answering(0, aRR("140.82.121.10", 60)))
 	at := serve(t, NewForwarder(func() []netip.AddrPort { return []netip.AddrPort{up} }, func() *Matcher { return m }, l, slog.New(slog.DiscardHandler)))
 	got := make(chan []byte, 1)
@@ -305,7 +305,7 @@ func TestForwardReadsItsUpstreamsAtEachQuery(t *testing.T) {
 	var ups atomic.Pointer[[]netip.AddrPort]
 	old, next := []netip.AddrPort{upstream(t, answering(5))}, []netip.AddrPort{upstream(t, answering(0, aRR("140.82.121.10", 60)))}
 	ups.Store(&old)
-	m := NewMatcher(meta)
+	m := newMatcher(meta)
 	l := NewLearner((&kernelSets{}).write, learnable(), slog.New(slog.DiscardHandler))
 	at := serve(t, NewForwarder(func() []netip.AddrPort { return *ups.Load() }, func() *Matcher { return m }, l, slog.New(slog.DiscardHandler)))
 	if rc := rcodeOf(ask(t, "udp", at, query(5, "github.com", typeA))); rc != 5 {

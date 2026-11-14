@@ -8,11 +8,9 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-)
 
-// GitHubAPI is the name the host reads GitHub's domain list from. Every
-// Matcher lists it, the bootstrap one alone: without it no list is ever read.
-const GitHubAPI = "api.github.com"
+	"github.com/cplieger/manade/internal/egress"
+)
 
 // Domains is GitHub's list of the names self-hosted runners reach, as
 // `domains.actions_inbound` in `GET /meta` gives it. A wildcard entry
@@ -23,8 +21,8 @@ type Domains struct {
 	Wildcard []string `json:"wildcard_domains"`
 }
 
-// Bootstrap is the list a host holds before its first good read.
-var Bootstrap = Domains{Full: []string{GitHubAPI}}
+// bootstrap is the list a host holds before its first good read.
+var bootstrap = Domains{Full: []string{egress.GitHubAPI}}
 
 // check refuses an empty list and any entry that is not a DNS name.
 func (d Domains) check() error {
@@ -51,9 +49,10 @@ type Matcher struct {
 	suffixes []string
 }
 
-// NewMatcher answers the Matcher for d, which also lists GitHubAPI.
-func NewMatcher(d Domains) *Matcher {
-	m := &Matcher{full: map[string]struct{}{GitHubAPI: {}}}
+// newMatcher answers the Matcher for d, which also lists egress.GitHubAPI,
+// the name the domain list is read from: without it no list is ever read.
+func newMatcher(d Domains) *Matcher {
+	m := &Matcher{full: map[string]struct{}{egress.GitHubAPI: {}}}
 	for _, n := range d.Full {
 		m.full[canonical(n)] = struct{}{}
 	}

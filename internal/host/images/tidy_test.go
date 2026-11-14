@@ -40,12 +40,12 @@ func TestTidy(t *testing.T) {
 		synctest.Wait()
 
 		hs.d.mu.Lock()
-		hs.d.images["sha256:old-probe"] = &docker.Image{ID: "sha256:old-probe", RepoTags: []string{ProbeRepo + ":v0.9.0"}}
+		hs.d.images["sha256:old-probe"] = &storedImage{ID: "sha256:old-probe", RepoTags: []string{probeRepo + ":v0.9.0"}}
 		hs.d.images["sha256:old-probe"].Config.Labels = map[string]string{docker.LabelProbeImage: "v0.9.0"}
-		hs.d.tags[ProbeRepo+":v0.9.0"] = "sha256:old-probe"
-		hs.d.images["sha256:cache"] = &docker.Image{ID: "sha256:cache", RepoTags: []string{"build-cache:1"}}
+		hs.d.tags[probeRepo+":v0.9.0"] = "sha256:old-probe"
+		hs.d.images["sha256:cache"] = &storedImage{ID: "sha256:cache", RepoTags: []string{"build-cache:1"}}
 		hs.d.tags["build-cache:1"] = "sha256:cache"
-		hs.d.images["sha256:dangling"] = &docker.Image{ID: "sha256:dangling", RepoDigests: []string{"alpine@" + digest(8)}}
+		hs.d.images["sha256:dangling"] = &storedImage{ID: "sha256:dangling", RepoDigests: []string{"alpine@" + digest(8)}}
 		hs.d.volumes = []docker.Volume{
 			{Name: "va", Labels: map[string]string{jobspec.LabelRunner: "runner-a"}},
 			{Name: "vb", Labels: map[string]string{jobspec.LabelRunner: "runner-b"}},
@@ -69,7 +69,7 @@ func TestTidy(t *testing.T) {
 		hs.m.Tidy()
 		synctest.Wait()
 		removed := hs.d.removedRefs()
-		for _, want := range []string{"sha256:a2", browserRef, ProbeRepo + ":v0.9.0", "container:probe-old", "container:check-left", "volume:vb"} {
+		for _, want := range []string{"sha256:a2", browserRef, probeRepo + ":v0.9.0", "container:probe-old", "container:check-left", "volume:vb"} {
 			if !slices.Contains(removed, want) {
 				t.Errorf("removed %v, want %s among them", removed, want)
 			}

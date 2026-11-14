@@ -173,7 +173,7 @@ func writeError(w http.ResponseWriter, code int, msg string) {
 
 // managedLabelsAt are the labels the client stamps at its fixed clock.
 func managedLabelsAt() map[string]string {
-	return map[string]string{LabelManaged: "true", LabelCreated: "2026-11-10T12:00:00Z"}
+	return map[string]string{LabelManaged: "true", labelCreated: "2026-11-10T12:00:00Z"}
 }
 
 // inspectAnswer is an inspect answer for a container in state status.

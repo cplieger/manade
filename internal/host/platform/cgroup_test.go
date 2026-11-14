@@ -16,8 +16,8 @@ func TestReadV2PrivateNamespace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Version != V2 {
-		t.Errorf("Version = %d, want 2", c.Version)
+	if c.SubtreeWide {
+		t.Error("read as cgroup v1, whose OOM flags are subtree-wide")
 	}
 	if c.Memory != 2*gib {
 		t.Errorf("Memory = %d, want the 2 GiB one level above /init", c.Memory)
@@ -63,7 +63,7 @@ func TestOwnMemoryExcludesPageCache(t *testing.T) {
 	})
 	t.Run("missingKey", func(t *testing.T) {
 		_, err := Read(tree(t, with(v2Layout(), map[string]string{"/sys/fs/cgroup/init/memory.stat": "anon 1\n"})))
-		if !errors.Is(err, ErrCgroup) || !strings.Contains(err.Error(), "file_mapped") {
+		if !errors.Is(err, errCgroup) || !strings.Contains(err.Error(), "file_mapped") {
 			t.Errorf("err = %v, want ErrCgroup naming file_mapped", err)
 		}
 	})
@@ -74,8 +74,8 @@ func TestReadV1MachineNamespace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Version != V1 || c.Memory != 3*gib {
-		t.Errorf("Version, Memory = %d, %d, want 1, 3 GiB at the controller's root", c.Version, c.Memory)
+	if !c.SubtreeWide || c.Memory != 3*gib {
+		t.Errorf("SubtreeWide, Memory = %v, %d, want v1 and 3 GiB at the controller's root", c.SubtreeWide, c.Memory)
 	}
 	if c.Quota {
 		t.Error("Quota = true on a kernel without cpu.cfs_quota_us")
@@ -122,7 +122,7 @@ func TestReadV1NoQuotaSet(t *testing.T) {
 
 func TestReadV1RefusesNonHierarchicalMemory(t *testing.T) {
 	_, err := Read(tree(t, with(v1Layout(), map[string]string{"/sys/fs/cgroup/memory/memory.use_hierarchy": "0\n"})))
-	if !errors.Is(err, ErrCgroup) || !strings.Contains(err.Error(), "memory.use_hierarchy") {
+	if !errors.Is(err, errCgroup) || !strings.Contains(err.Error(), "memory.use_hierarchy") {
 		t.Errorf("err = %v, want ErrCgroup naming memory.use_hierarchy", err)
 	}
 }
@@ -141,7 +141,7 @@ func TestReadRefusesACgroupOutsideItsMount(t *testing.T) {
 	_, err := Read(tree(t, with(v1Layout(), map[string]string{
 		"/proc/self/cgroup": "6:memory:/docker/other\n8:cpuset:/docker/other\n3:cpu:/docker/other\n",
 	})))
-	if !errors.Is(err, ErrCgroup) {
+	if !errors.Is(err, errCgroup) {
 		t.Errorf("err = %v, want ErrCgroup", err)
 	}
 }
@@ -225,7 +225,7 @@ func TestCheckPrivateNamespace(t *testing.T) {
 			if tc.ok && err != nil {
 				t.Errorf("err = %v, want nil", err)
 			}
-			if !tc.ok && (!errors.Is(err, ErrCgroup) || !strings.Contains(err.Error(), "cgroup: private")) {
+			if !tc.ok && (!errors.Is(err, errCgroup) || !strings.Contains(err.Error(), "cgroup: private")) {
 				t.Errorf("err = %v, want ErrCgroup naming cgroup: private", err)
 			}
 		})
@@ -240,8 +240,8 @@ func TestHybridReadsAsV1(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Version != V1 || c.Memory != 3*gib {
-		t.Errorf("Version, Memory = %d, %d, want 1, 3 GiB", c.Version, c.Memory)
+	if !c.SubtreeWide || c.Memory != 3*gib {
+		t.Errorf("SubtreeWide, Memory = %v, %d, want v1 and 3 GiB", c.SubtreeWide, c.Memory)
 	}
 }
 

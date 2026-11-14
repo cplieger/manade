@@ -15,10 +15,10 @@ import (
 	"github.com/cplieger/manade/internal/docker"
 )
 
-// ErrMountRefused is a bind source that, resolved in the host's filesystem,
+// errMountRefused is a bind source that, resolved in the host's filesystem,
 // reaches a protected path, lies outside the host container's mounts, or
 // nests with another bind source on the host one of them writable.
-var ErrMountRefused = errors.New("jobspec: a mount source is refused")
+var errMountRefused = errors.New("jobspec: a mount source is refused")
 
 // mounts answers p's mounts. On a host that is not open each bind source is
 // resolved with every symlink followed, checked, and passed to Docker
@@ -51,12 +51,12 @@ func (h *Host) checkSource(profile string, k int, m *config.Mount) (string, erro
 	src := m.Source
 	w, err := resolve(src)
 	if err != nil {
-		return "", fmt.Errorf("%w: profile %s: source %s: %w", ErrMountRefused, profile, src, err)
+		return "", fmt.Errorf("%w: profile %s: source %s: %w", errMountRefused, profile, src, err)
 	}
 	for _, s := range w.forms {
 		for _, prot := range h.protected {
 			if pathinside.Root(prot).Contains(s) || pathinside.Root(s).Contains(prot) {
-				return "", fmt.Errorf("%w: profile %s: source %s reaches %s, which host %s protects", ErrMountRefused, profile, describe(src, s), prot, h.host.Name)
+				return "", fmt.Errorf("%w: profile %s: source %s reaches %s, which host %s protects", errMountRefused, profile, describe(src, s), prot, h.host.Name)
 			}
 		}
 	}
@@ -66,7 +66,7 @@ func (h *Host) checkSource(profile string, k int, m *config.Mount) (string, erro
 		}
 	}
 	return "", fmt.Errorf("%w: profile %s: source %s lies outside every mount of host %s's container; mount the path into the host service first",
-		ErrMountRefused, profile, describe(src, w.final), h.host.Name)
+		errMountRefused, profile, describe(src, w.final), h.host.Name)
 }
 
 // checkNesting refuses mount k of profile, walked as mine, when a path its
@@ -89,13 +89,13 @@ func (h *Host) checkNesting(profile string, k int, m *config.Mount, mine *walk) 
 		if !b.Mount.ReadOnly {
 			if a, o, ok := strictlyUnder(mine.read(), theirs.forms); ok {
 				return fmt.Errorf("%w: profile %s: source %s lies under %s, a source profile %s's jobs may write on host %s; mount the two apart",
-					ErrMountRefused, profile, describe(m.Source, a), o, b.Profile, h.host.Name)
+					errMountRefused, profile, describe(m.Source, a), o, b.Profile, h.host.Name)
 			}
 		}
 		if !m.ReadOnly {
 			if o, a, ok := strictlyUnder(theirs.read(), mine.forms); ok {
 				return fmt.Errorf("%w: profile %s: source %s is writable to jobs and an ancestor of %s, a source of profile %s, on host %s; mount it read-only, or mount the two apart",
-					ErrMountRefused, profile, describe(m.Source, a), o, b.Profile, h.host.Name)
+					errMountRefused, profile, describe(m.Source, a), o, b.Profile, h.host.Name)
 			}
 		}
 	}

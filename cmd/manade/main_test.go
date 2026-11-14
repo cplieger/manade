@@ -89,14 +89,33 @@ func setEnv(t *testing.T, d *fakeDaemon) {
 }
 
 func TestRunRefusesUsage(t *testing.T) {
-	for _, args := range [][]string{{"serve"}, {"health", "now"}, {"--help"}} {
+	for _, args := range [][]string{{"serve"}, {"health", "now"}, {"--help"}, {"storage-driver"}, {"storage-driver", "/a", "/b"}} {
 		var out bytes.Buffer
 		if code := run(args, &out); code != 2 {
 			t.Errorf("run(%q) = %d, want 2", args, code)
 		}
-		if !strings.Contains(out.String(), "usage: manade [health]") {
+		if !strings.Contains(out.String(), usage) {
 			t.Errorf("run(%q) wrote %q, want the usage line", args, out.String())
 		}
+	}
+}
+
+func TestSubcommandUsage(t *testing.T) {
+	for want, args := range map[string][]string{hostUsage: {"host", "now"}, probeUsage: {"probe", "listen", "now"}} {
+		var out bytes.Buffer
+		if code := run(args, &out); code != 2 || !strings.Contains(out.String(), want) {
+			t.Errorf("run(%q) = %d, %q, want 2 and %q", args, code, out.String(), want)
+		}
+	}
+}
+
+func TestProbeAnswersEachCheck(t *testing.T) {
+	old, oldOut := stdin, stdout
+	t.Cleanup(func() { stdin, stdout = old, oldOut })
+	var out bytes.Buffer
+	stdin, stdout = strings.NewReader(`{"kind":3,"addr":"localhost","timeout_ns":2000000000}`+"\n"), &out
+	if code := run([]string{"probe"}, &bytes.Buffer{}); code != 0 || out.String() != `{"outcome":6}`+"\n" {
+		t.Errorf("probe = %d, %q, want localhost resolved", code, out.String())
 	}
 }
 

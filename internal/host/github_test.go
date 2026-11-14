@@ -30,24 +30,24 @@ func TestUpInternetFalse(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			f := newUpFixture(t)
 			start := time.Now()
-			n, err := Up(t.Context(), closedSection(), f.platform(), Hooks{})
+			n, err := bringUp(t.Context(), closedSection(), f.platform(), guardHooks{})
 			if err != nil {
 				t.Fatal(err)
 			}
 			if !slices.Equal(compact(f.events), []string{"rules", "resolver", "domains", "lookup", "daemon"}) {
 				t.Errorf("events = %q, want the rules, the resolver, the list, the lookup, then the daemon", compact(f.events))
 			}
-			st := n.GitHubStatus()
+			st := n.gitHubStatus()
 			if st == nil || st.Source != resolver.SourceRead || !st.DomainsAt.Equal(start) {
 				t.Errorf("GitHubStatus = %+v, want the list read at start", st)
 			}
-			if !strings.Contains(readAt(t, f.root, DomainsFile), "codeload.github.com") {
+			if !strings.Contains(readAt(t, f.root, domainsFile), "codeload.github.com") {
 				t.Error("the list was not saved on the data volume")
 			}
-			if n.IPv6Status() != nil {
+			if n.iPv6Status() != nil {
 				t.Error("an internet: false host reports a /64")
 			}
-			if err := n.Stop(); err != nil || !f.dnsUDP.isClosed() || !f.dnsTCP.isClosed() || f.proc.stopped != 1 {
+			if err := n.stop(); err != nil || !f.dnsUDP.isClosed() || !f.dnsTCP.isClosed() || f.proc.stopped != 1 {
 				t.Errorf("Stop = %v, want the daemon and the resolver stopped", err)
 			}
 		})
@@ -55,7 +55,7 @@ func TestUpInternetFalse(t *testing.T) {
 	t.Run("a failed read with no saved list starts no daemon and leaves nothing serving", func(t *testing.T) {
 		f := newUpFixture(t)
 		f.fetchErr = errors.New("403 rate limit exceeded")
-		_, err := Up(t.Context(), closedSection(), f.platform(), Hooks{})
+		_, err := bringUp(t.Context(), closedSection(), f.platform(), guardHooks{})
 		if err == nil || !strings.Contains(err.Error(), "domain list") || !strings.Contains(err.Error(), "no saved copy") {
 			t.Errorf("Up = %v, want the refusal naming the list", err)
 		}
@@ -65,38 +65,38 @@ func TestUpInternetFalse(t *testing.T) {
 	})
 	t.Run("a failed read starts on the saved list", func(t *testing.T) {
 		f := newUpFixture(t)
-		writeAt(t, f.root, DomainsFile, `{"read_at":"2026-11-01T00:00:00Z","full_domains":["api.github.com","github.com"]}`)
+		writeAt(t, f.root, domainsFile, `{"read_at":"2026-11-01T00:00:00Z","full_domains":["api.github.com","github.com"]}`)
 		f.fetchErr = errors.New("503")
 		n := upClosed(t, f, closedSection())
-		if st := n.GitHubStatus(); st.Source != resolver.SourceSaved || st.DomainsAt.Format(time.DateOnly) != "2026-11-01" {
+		if st := n.gitHubStatus(); st.Source != resolver.SourceSaved || st.DomainsAt.Format(time.DateOnly) != "2026-11-01" {
 			t.Errorf("GitHubStatus = %+v, want the saved list with its age", st)
 		}
 	})
 	t.Run("a failed lookup stops the resolver", func(t *testing.T) {
 		f := newUpFixture(t)
 		f.lookupErr = errors.New("i/o timeout")
-		if _, err := Up(t.Context(), closedSection(), f.platform(), Hooks{}); err == nil || !f.dnsUDP.isClosed() {
+		if _, err := bringUp(t.Context(), closedSection(), f.platform(), guardHooks{}); err == nil || !f.dnsUDP.isClosed() {
 			t.Errorf("Up = %v, resolver closed %v", err, f.dnsUDP.isClosed())
 		}
 	})
 	t.Run("an internet host runs no resolver", func(t *testing.T) {
 		f := newUpFixture(t)
-		n, err := Up(t.Context(), section(), f.platform(), Hooks{})
-		if err != nil || slices.Contains(f.events, "resolver") || n.GitHubStatus() != nil {
-			t.Errorf("Up = %v, events %q, status %+v", err, f.events, n.GitHubStatus())
+		n, err := bringUp(t.Context(), section(), f.platform(), guardHooks{})
+		if err != nil || slices.Contains(f.events, "resolver") || n.gitHubStatus() != nil {
+			t.Errorf("Up = %v, events %q, status %+v", err, f.events, n.gitHubStatus())
 		}
 	})
 }
 
 // upClosed brings an internet: false host up and stops it when the test
 // ends, inside a synctest bubble too, whose goroutines must end with it.
-func upClosed(t *testing.T, f *upFixture, h *config.Host) *Net {
+func upClosed(t *testing.T, f *upFixture, h *config.Host) *hostNet {
 	t.Helper()
-	n, err := Up(t.Context(), h, f.platform(), Hooks{})
+	n, err := bringUp(t.Context(), h, f.platform(), guardHooks{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = n.Stop() })
+	t.Cleanup(func() { _ = n.stop() })
 	return n
 }
 
@@ -120,14 +120,14 @@ func TestLearnedAddressesInTheRules(t *testing.T) {
 		}
 		time.Sleep(2 * time.Minute)
 		f.kernel.edit(func(tb map[bool]map[string]*xtable) { tb[false]["filter"].chains["MANADE-FWD"] = []string{} })
-		if err := n.Guard.Check(t.Context()); err != nil {
+		if err := n.Guard.check(t.Context()); err != nil {
 			t.Fatal(err)
 		}
 		_, ipset = f.kernel.payloads()
 		if last := ipset[len(ipset)-1]; !strings.Contains(last, "add manade-gh4 140.82.121.10 timeout 540\n") || strings.Contains(last, "192.168.1.10") {
 			t.Errorf("restore payload = %q, want the held address with its remaining 540 s", last)
 		}
-		if st := n.GitHubStatus(); st.Addresses4 != 1 || st.Addresses6 != 0 {
+		if st := n.gitHubStatus(); st.Addresses4 != 1 || st.Addresses6 != 0 {
 			t.Errorf("GitHubStatus = %+v, want one address held", st)
 		}
 	})
@@ -138,7 +138,7 @@ func TestReloadMovesTheResolversUpstreams(t *testing.T) {
 	n := upClosed(t, f, closedSection())
 	h := closedSection()
 	h.DNS = []netip.Addr{netip.MustParseAddr("9.9.9.9")}
-	if k, fatal := n.Reload(t.Context(), h); k != nil || fatal != nil {
+	if k, fatal := n.reload(t.Context(), h); k != nil || fatal != nil {
 		t.Fatalf("Reload = %v, %v", k, fatal)
 	}
 	if readAt(t, f.root, "/etc/resolv.conf") != "nameserver 127.0.0.1\n" {
@@ -157,7 +157,7 @@ func TestHoldEndsWhenTheResolverStops(t *testing.T) {
 		f := newUpFixture(t)
 		n := upClosed(t, f, closedSection())
 		f.dnsUDP.end(errors.New("read udp 127.0.0.1:53: bad file descriptor"))
-		err := n.Hold(t.Context())
+		err := n.hold(t.Context())
 		if err == nil || !strings.Contains(err.Error(), "DNS resolver stopped") || f.proc.stopped != 1 {
 			t.Errorf("Hold = %v, stopped %d, want the failure with the daemon stopped", err, f.proc.stopped)
 		}
@@ -172,8 +172,8 @@ func TestAddLearned(t *testing.T) {
 	t.Run("nftables", func(t *testing.T) {
 		k := newFakeIPT(false)
 		k.nft = true
-		l := &Rules{Run: k.run, Kernel: &platform.Kernel{Backend: egress.NFTables}}
-		if err := l.AddLearned(t.Context(), ls); err != nil {
+		l := &ruleLoader{Run: k.run, Kernel: &platform.Kernel{Backend: egress.NFTables}}
+		if err := l.addLearned(t.Context(), ls); err != nil {
 			t.Fatal(err)
 		}
 		nft, _ := k.payloads()
@@ -189,8 +189,8 @@ func TestAddLearned(t *testing.T) {
 	})
 	t.Run("iptables", func(t *testing.T) {
 		k := newFakeIPT(false)
-		l := &Rules{Run: k.run, Kernel: iptKernel()}
-		if err := l.AddLearned(t.Context(), ls); err != nil {
+		l := &ruleLoader{Run: k.run, Kernel: iptKernel()}
+		if err := l.addLearned(t.Context(), ls); err != nil {
 			t.Fatal(err)
 		}
 		_, ipset := k.payloads()
@@ -201,8 +201,8 @@ func TestAddLearned(t *testing.T) {
 	t.Run("a refused write names what it added", func(t *testing.T) {
 		k := newFakeIPT(false)
 		k.fail["ipset restore"] = errors.New("Hash is full")
-		l := &Rules{Run: k.run, Kernel: iptKernel()}
-		if err := l.AddLearned(t.Context(), ls); err == nil || !strings.Contains(err.Error(), "learned GitHub addresses") {
+		l := &ruleLoader{Run: k.run, Kernel: iptKernel()}
+		if err := l.addLearned(t.Context(), ls); err == nil || !strings.Contains(err.Error(), "learned GitHub addresses") {
 			t.Errorf("AddLearned = %v", err)
 		}
 	})
@@ -216,7 +216,7 @@ func TestReloadFiltersLearnedAddressesByTheNewSection(t *testing.T) {
 	next := closedSection()
 	next.Egress.IPv6 = true
 	next.Egress.Block6 = []netip.Prefix{pfx("2606:50c0::/32")}
-	if k, fatal := n.Reload(t.Context(), next); k != nil || fatal != nil {
+	if k, fatal := n.reload(t.Context(), next); k != nil || fatal != nil {
 		t.Fatalf("Reload = %v, %v", k, fatal)
 	}
 	_, before := f.kernel.payloads()

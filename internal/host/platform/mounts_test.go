@@ -16,10 +16,10 @@ func TestParseMountinfo(t *testing.T) {
 		t.Fatalf("got %d mounts, want 2", len(ms))
 	}
 	m := ms[0]
-	if m.Root != "/mnt1" || m.Point != "/mnt two" || m.FSType != "ext3" || m.Source != "/dev/root" || m.Super != "rw,errors=continue" {
+	if m.Root != "/mnt1" || m.Point != "/mnt two" || m.FSType != "ext3" || m.Super != "rw,errors=continue" {
 		t.Errorf("mount 0 = %+v", m)
 	}
-	if ms[1].HasSuper("memory_localevents") || !ms[1].HasSuper("nsdelegate") {
+	if ms[1].hasSuper("memory_localevents") || !ms[1].hasSuper("nsdelegate") {
 		t.Errorf("mount 1 super options %q: the mount option counted as a super option", ms[1].Super)
 	}
 }

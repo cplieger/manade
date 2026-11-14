@@ -193,7 +193,9 @@ func (c *Client) request(ctx context.Context, hc *http.Client, op, method, path 
 	case io.Reader:
 		rd, contentType = b, "application/x-tar"
 	default:
-		raw, err := json.Marshal(b)
+		// body, not b: deadset follows a parameter forwarded to the encoder
+		// and keeps the fields it writes, never a type switch's binding.
+		raw, err := json.Marshal(body)
 		if err != nil {
 			return nil, fmt.Errorf("docker %s: %w", op, err)
 		}
@@ -312,7 +314,7 @@ func (c *Client) managedLabels(labels map[string]string) map[string]string {
 	out := make(map[string]string, len(labels)+2)
 	maps.Copy(out, labels)
 	out[LabelManaged] = managedValue
-	out[LabelCreated] = c.now().UTC().Format(time.RFC3339)
+	out[labelCreated] = c.now().UTC().Format(time.RFC3339)
 	return out
 }
 

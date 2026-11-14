@@ -68,3 +68,35 @@ func TestLearnable(t *testing.T) {
 		t.Error("an IPv6 address is learnable on a host without ipv6, which has no IPv6 set")
 	}
 }
+
+func TestProbeSets(t *testing.T) {
+	a4, a6 := netip.MustParseAddr("172.18.0.2"), netip.MustParseAddr("fd00::2")
+	for _, tc := range []struct {
+		name string
+		got  string
+		want string
+	}{
+		{
+			"nftables sources on an ipv6 host", ProbeSources(NFTables, true, []netip.Addr{a4, a6}),
+			"flush set inet manade manade-probe4\nflush set inet manade manade-target4\nflush set inet manade manade-probe6\nflush set inet manade manade-target6\n" +
+				"add element inet manade manade-probe4 { 172.18.0.2 }\nadd element inet manade manade-probe6 { fd00::2 }\n",
+		},
+		{
+			"ipset sources leave IPv6 out without ipv6", ProbeSources(IPTables, false, []netip.Addr{a4, a6}),
+			"flush manade-probe4\nflush manade-target4\nadd manade-probe4 172.18.0.2\n",
+		},
+		{
+			"a target alone", ProbeTarget(IPTables, true, netip.MustParseAddr("::ffff:10.0.0.1")),
+			"flush manade-target4\nflush manade-target6\nadd manade-target4 10.0.0.1\n",
+		},
+		{
+			"the zero target empties the target sets", ProbeTarget(NFTables, false, netip.Addr{}),
+			"flush set inet manade manade-target4\n",
+		},
+		{"clearing", ProbeSources(IPTables, false, nil), "flush manade-probe4\nflush manade-target4\n"},
+	} {
+		if tc.got != tc.want {
+			t.Errorf("%s:\n%s\nwant\n%s", tc.name, tc.got, tc.want)
+		}
+	}
+}

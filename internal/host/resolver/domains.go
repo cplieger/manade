@@ -13,13 +13,14 @@ import (
 
 	"github.com/cplieger/go/filesafe"
 	"github.com/cplieger/go/httpclient"
+	"github.com/cplieger/manade/internal/egress"
 )
 
-// MetaURL is where GitHub publishes its domain list.
-const MetaURL = "https://" + GitHubAPI + "/meta"
+// metaURL is where GitHub publishes its domain list.
+const metaURL = "https://" + egress.GitHubAPI + "/meta"
 
-// DomainsRefresh is how often a host reads the list again.
-const DomainsRefresh = 6 * time.Hour
+// domainsRefresh is how often a host reads the list again.
+const domainsRefresh = 6 * time.Hour
 
 // metaLimit caps the meta body and the saved list; meta is a few hundred KiB.
 const metaLimit = 8 << 20
@@ -43,8 +44,8 @@ type savedList struct {
 	Domains
 }
 
-// ParseMeta reads `domains.actions_inbound` out of a `GET /meta` body.
-func ParseMeta(body []byte) (Domains, error) {
+// parseMeta reads `domains.actions_inbound` out of a `GET /meta` body.
+func parseMeta(body []byte) (Domains, error) {
 	var meta struct {
 		Domains struct {
 			ActionsInbound *Domains `json:"actions_inbound"`
@@ -66,10 +67,10 @@ func ParseMeta(body []byte) (Domains, error) {
 // Fetch answers a `GET /meta` body.
 type Fetch func(ctx context.Context) ([]byte, error)
 
-// FetchMeta answers the Fetch that reads MetaURL through client.
+// FetchMeta answers the Fetch that reads metaURL through client.
 func FetchMeta(client *http.Client) Fetch {
 	return func(ctx context.Context) ([]byte, error) {
-		return httpclient.GetBytes(ctx, client, MetaURL, httpclient.WithMaxBodyBytes(metaLimit),
+		return httpclient.GetBytes(ctx, client, metaURL, httpclient.WithMaxBodyBytes(metaLimit),
 			httpclient.WithHeaders(func(r *http.Request) {
 				r.Header.Set("Accept", "application/vnd.github+json")
 			}))
@@ -91,10 +92,10 @@ type Source struct {
 	path  string
 }
 
-// NewSource answers a Source holding Bootstrap.
+// NewSource answers a Source holding bootstrap.
 func NewSource(fetch Fetch, path string, log *slog.Logger) *Source {
 	s := &Source{fetch: fetch, path: path, log: log}
-	s.cur.Store(&current{m: NewMatcher(Bootstrap), list: List{Domains: Bootstrap}})
+	s.cur.Store(&current{m: newMatcher(bootstrap), list: List{Domains: bootstrap}})
 	return s
 }
 
@@ -108,7 +109,7 @@ func (s *Source) List() List { return s.cur.Load().list }
 // with this Source's Matcher; when the read fails it loads the saved copy.
 // It fails only when neither gives a list.
 func (s *Source) Start(ctx context.Context) error {
-	err := s.Refresh(ctx)
+	err := s.refresh(ctx)
 	if err == nil {
 		return nil
 	}
@@ -123,7 +124,7 @@ func (s *Source) Start(ctx context.Context) error {
 		}
 		return fmt.Errorf("an internet: false host needs GitHub's domain list: %w; %w", err, lerr)
 	}
-	s.cur.Store(&current{m: NewMatcher(l.Domains), list: l})
+	s.cur.Store(&current{m: newMatcher(l.Domains), list: l})
 	s.log.Warn("GitHub's domain list was not read; using the saved copy", "err", err, "read_at", l.At)
 	return nil
 }
@@ -133,19 +134,19 @@ type saveError struct{ err error }
 func (e *saveError) Error() string { return "saving GitHub's domain list: " + e.err.Error() }
 func (e *saveError) Unwrap() error { return e.err }
 
-// Refresh reads the list once. A good read replaces the list, then is saved;
+// refresh reads the list once. A good read replaces the list, then is saved;
 // a failed one keeps the last good list.
-func (s *Source) Refresh(ctx context.Context) error {
+func (s *Source) refresh(ctx context.Context) error {
 	body, err := s.fetch(ctx)
 	if err != nil {
-		return fmt.Errorf("reading %s: %w", MetaURL, err)
+		return fmt.Errorf("reading %s: %w", metaURL, err)
 	}
-	d, err := ParseMeta(body)
+	d, err := parseMeta(body)
 	if err != nil {
 		return err
 	}
 	l := List{At: time.Now(), Source: SourceRead, Domains: d}
-	s.cur.Store(&current{m: NewMatcher(d), list: l})
+	s.cur.Store(&current{m: newMatcher(d), list: l})
 	b, err := json.Marshal(savedList{At: l.At, Domains: d})
 	if err == nil {
 		_, err = filesafe.WriteFile(ctx, s.path, b, filesafe.WithMode(0o600), filesafe.WithMkdirAll(true))
@@ -174,17 +175,17 @@ func (s *Source) load(ctx context.Context) (List, bool, error) {
 	return List{At: sl.At, Source: SourceSaved, Domains: sl.Domains}, true, nil
 }
 
-// Run reads the list every DomainsRefresh until ctx ends, logging a failed
+// Run reads the list every domainsRefresh until ctx ends, logging a failed
 // read at WARN.
 func (s *Source) Run(ctx context.Context) {
-	t := time.NewTicker(DomainsRefresh)
+	t := time.NewTicker(domainsRefresh)
 	defer t.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			if err := s.Refresh(ctx); err != nil && ctx.Err() == nil {
+			if err := s.refresh(ctx); err != nil && ctx.Err() == nil {
 				s.log.Warn("GitHub's domain list was not refreshed; keeping the last good one", "err", err, "read_at", s.List().At)
 			}
 		}

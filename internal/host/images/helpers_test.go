@@ -58,7 +58,7 @@ func shipped(id, name, repoDigest string) remote {
 // containers and volumes the tidy pass reads, held in memory. Calls block
 // only on its hold channels, which a synctest bubble counts as durable.
 type fakeDaemon struct {
-	images     map[string]*docker.Image
+	images     map[string]*storedImage
 	tags       map[string]string
 	registry   map[string]remote
 	files      map[string]jobspec.Files
@@ -82,7 +82,7 @@ type pullAt struct {
 
 func newFake() *fakeDaemon {
 	return &fakeDaemon{
-		images: map[string]*docker.Image{}, tags: map[string]string{}, registry: map[string]remote{},
+		images: map[string]*storedImage{}, tags: map[string]string{}, registry: map[string]remote{},
 		files: map[string]jobspec.Files{}, pullErr: map[string]error{}, digestErr: map[string]error{},
 		containers: map[string]docker.Summary{}, ctrImage: map[string]string{},
 	}
@@ -97,6 +97,12 @@ func (d *fakeDaemon) serve(ref string, r remote) {
 	d.registry[ref] = r
 }
 
+// storedImage is an image the fake daemon holds, with the tags naming it.
+type storedImage struct {
+	RepoTags []string
+	docker.Image
+}
+
 func (d *fakeDaemon) InspectImage(_ context.Context, ref string) (docker.Image, bool, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -108,8 +114,8 @@ func (d *fakeDaemon) InspectImage(_ context.Context, ref string) (docker.Image, 
 	if !ok {
 		return docker.Image{}, false, nil
 	}
-	out := *img
-	out.RepoTags, out.RepoDigests = slices.Clone(img.RepoTags), slices.Clone(img.RepoDigests)
+	out := img.Image
+	out.RepoDigests = slices.Clone(img.RepoDigests)
 	return out, true, nil
 }
 
@@ -124,8 +130,8 @@ func (d *fakeDaemon) PullImage(_ context.Context, ref, _ string) error {
 	if !ok {
 		return errors.New("manifest unknown")
 	}
-	img := r.img
-	img.RepoTags, img.RepoDigests = nil, slices.Clone(r.img.RepoDigests)
+	img := storedImage{Image: r.img}
+	img.RepoDigests = slices.Clone(r.img.RepoDigests)
 	if cur, ok := d.images[img.ID]; ok {
 		img.RepoTags = cur.RepoTags
 	}
@@ -216,7 +222,7 @@ func (d *fakeDaemon) LoadImage(_ context.Context, r io.Reader) error {
 		}
 	}
 	sum := sha256.Sum256(cfgBytes)
-	img := &docker.Image{ID: "sha256:" + hex.EncodeToString(sum[:]), RepoTags: manifest[0].RepoTags}
+	img := &storedImage{ID: "sha256:" + hex.EncodeToString(sum[:]), RepoTags: manifest[0].RepoTags}
 	img.Config.Labels = cfg.Config.Labels
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -277,7 +283,7 @@ func (d *fakeDaemon) Create(_ context.Context, name string, req *docker.CreateRe
 	}
 	labels := map[string]string{docker.LabelManaged: "true"}
 	maps.Copy(labels, req.Labels)
-	d.containers[name] = docker.Summary{ID: name, State: docker.StateCreated, Labels: labels, Names: []string{"/" + name}}
+	d.containers[name] = docker.Summary{ID: name, State: docker.StateCreated, Labels: labels}
 	d.ctrImage[name] = req.Image
 	return docker.Result{Outcome: docker.Done, ID: name}
 }

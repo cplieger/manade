@@ -7,25 +7,29 @@ import (
 )
 
 // route4 is /proc/net/route on a little-endian machine with a default route
-// via 172.20.0.1, the on-link 172.20.0.0/16, a loopback entry, a route that
-// is down and 10.0.0.0/8 via a gateway.
+// via 172.20.0.2 at metric 600, the on-link 172.20.0.0/16, a loopback entry,
+// a route that is down, 10.0.0.0/8 via a gateway and the preferred default
+// route via 172.20.0.1 at metric 100.
 const route4 = "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n" +
-	"eth0\t00000000\t010014AC\t0003\t0\t0\t0\t00000000\t0\t0\t0\n" +
+	"eth0\t00000000\t020014AC\t0003\t0\t0\t600\t00000000\t0\t0\t0\n" +
 	"eth0\t000014AC\t00000000\t0001\t0\t0\t0\t0000FFFF\t0\t0\t0\n" +
 	"lo\t0000007F\t00000000\t0001\t0\t0\t0\t000000FF\t0\t0\t0\n" +
 	"eth1\t0000A8C0\t00000000\t0000\t0\t0\t0\t00FFFFFF\t0\t0\t0\n" +
-	"eth0\t0000000A\t010014AC\t0003\t0\t0\t0\t000000FF\t0\t0\t0\n"
+	"eth0\t0000000A\t010014AC\t0003\t0\t0\t0\t000000FF\t0\t0\t0\n" +
+	"eth0\t00000000\t010014AC\t0003\t0\t0\t100\t00000000\t0\t0\t0\n"
 
 // route6 is /proc/net/ipv6_route with the on-link fd00:c8::/64, a link-local
-// /64, a local route for the host's own address, multicast and a default
-// route via fd00:c8::1.
+// /64, a local route for the host's own address, multicast, a default route
+// via fd00:c8::1 and one via fd00:c8::9 at the same metric, which the kernel
+// tries second.
 const route6 = "" +
 	"fd0000c8000000000000000000000000 40 00000000000000000000000000000000 00 00000000000000000000000000000000 00000100 00000001 00000000 00000001     eth0\n" +
 	"fe800000000000000000000000000000 40 00000000000000000000000000000000 00 00000000000000000000000000000000 00000100 00000001 00000000 00000001     eth0\n" +
 	"00000000000000000000000000000000 00 00000000000000000000000000000000 00 fd0000c8000000000000000000000001 00000400 00000001 00000000 00000003     eth0\n" +
 	"fd0000c8000000000000000000000002 80 00000000000000000000000000000000 00 00000000000000000000000000000000 00000000 00000002 00000000 80200001     eth0\n" +
 	"00000000000000000000000000000001 80 00000000000000000000000000000000 00 00000000000000000000000000000000 00000000 00000002 00000000 80200001       lo\n" +
-	"ff000000000000000000000000000000 08 00000000000000000000000000000000 00 00000000000000000000000000000000 00000100 00000002 00000000 00000001     eth0\n"
+	"ff000000000000000000000000000000 08 00000000000000000000000000000000 00 00000000000000000000000000000000 00000100 00000002 00000000 00000001     eth0\n" +
+	"00000000000000000000000000000000 00 00000000000000000000000000000000 00 fd0000c8000000000000000000000009 00000400 00000001 00000000 00000003     eth0\n"
 
 func TestReadRoutes(t *testing.T) {
 	t.Run("both families", func(t *testing.T) {
@@ -37,13 +41,16 @@ func TestReadRoutes(t *testing.T) {
 		if !slices.Equal(rt.OnLink, want) {
 			t.Errorf("OnLink = %v, want %v", rt.OnLink, want)
 		}
-		if !rt.Default6 {
-			t.Error("Default6 = false, want the route via fd00:c8::1")
+		if rt.Gateway4 != addr("172.20.0.1") {
+			t.Errorf("Gateway4 = %v, want 172.20.0.1, the lower metric's", rt.Gateway4)
+		}
+		if rt.Gateway6 != addr("fd00:c8::1") {
+			t.Errorf("Gateway6 = %v, want fd00:c8::1, the first of two at one metric", rt.Gateway6)
 		}
 	})
 	t.Run("a kernel without IPv6", func(t *testing.T) {
 		rt, err := ReadRoutes(tree(t, map[string]string{"/proc/net/route": route4}))
-		if err != nil || len(rt.OnLink) != 1 || rt.Default6 {
+		if err != nil || len(rt.OnLink) != 1 || rt.Gateway6.IsValid() {
 			t.Errorf("ReadRoutes = %+v, %v, want the one IPv4 on-link route", rt, err)
 		}
 	})

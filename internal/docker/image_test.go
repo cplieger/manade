@@ -21,8 +21,6 @@ func TestInspectImage(t *testing.T) {
 				"RepoDigests": []string{"ghcr.io/cplieger/manade-runner@sha256:759a"},
 				"Config":      map[string]any{"User": "runner", "Labels": map[string]string{LabelRunnerImage: "base"}},
 			})
-		case "two-tags:1":
-			writeJSON(w, http.StatusOK, map[string]any{"Id": imageID, "RepoTags": []string{"two-tags:1", "two-tags:latest"}})
 		default:
 			writeError(w, http.StatusNotFound, "No such image: "+ref)
 		}
@@ -36,14 +34,8 @@ func TestInspectImage(t *testing.T) {
 		if img.ID != imageID || img.Config.User != "runner" || img.Config.Labels[LabelRunnerImage] != "base" {
 			t.Errorf("image = %+v", img)
 		}
-		if !slices.Equal(img.RepoTags, []string{"ghcr.io/cplieger/manade-runner:base"}) {
-			t.Errorf("RepoTags = %v", img.RepoTags)
-		}
-	})
-	t.Run("keepsEveryTag", func(t *testing.T) {
-		img, _, err := c.InspectImage(t.Context(), "two-tags:1")
-		if err != nil || !slices.Equal(img.RepoTags, []string{"two-tags:1", "two-tags:latest"}) {
-			t.Errorf("RepoTags = %v, %v; want both tags as the daemon answered", img.RepoTags, err)
+		if !slices.Equal(img.RepoDigests, []string{"ghcr.io/cplieger/manade-runner@sha256:759a"}) {
+			t.Errorf("RepoDigests = %v", img.RepoDigests)
 		}
 	})
 	t.Run("missingIsNotFoundWithoutError", func(t *testing.T) {

@@ -17,8 +17,8 @@ import (
 	"github.com/cplieger/manade/internal/docker"
 )
 
-// ProbeRepo is the probe image's repository; its tag is the host's version.
-const ProbeRepo = "manade-probe"
+// probeRepo is the probe image's repository; its tag is the host's version.
+const probeRepo = "manade-probe"
 
 // probeFile is where the probe image holds the host's binary.
 const probeFile = "manade"
@@ -32,7 +32,7 @@ func probeRef(version string) string {
 	if !tagRe.MatchString(version) {
 		version = "dev"
 	}
-	return ProbeRepo + ":" + version
+	return probeRepo + ":" + version
 }
 
 // LoadProbe builds the probe image from the host's own binary, one layer,

@@ -172,7 +172,7 @@ func readSelf() (*Self, []error) {
 // when raw is empty, a unix:// path, or a TCP host:port.
 func parseListen(raw, name string) (Address, error) {
 	if raw == "" {
-		return Address{Socket: DefaultSocket(name)}, nil
+		return Address{Socket: defaultSocket(name)}, nil
 	}
 	if path, ok := strings.CutPrefix(raw, "unix://"); ok {
 		if _, err := parseHostPath(path); err != nil {

@@ -121,7 +121,7 @@ func NewServer(backend Backend, instanceID string, log *slog.Logger) *Server {
 // quickTimeout for the requests in flight, whose contexts end with ctx.
 func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	srv := &http.Server{
-		Handler:           s.Handler(),
+		Handler:           s.handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       quickTimeout,
 		IdleTimeout:       2 * time.Minute,
@@ -148,8 +148,8 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	return nil
 }
 
-// Handler answers every route under /v1.
-func (s *Server) Handler() http.Handler {
+// handler answers every route under /v1.
+func (s *Server) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("GET /v1/status", s.bounded(quickTimeout, s.status))
 	mux.Handle("POST /v1/runners", s.bounded(quickTimeout, s.createRunner))

@@ -8,16 +8,6 @@ import (
 	"strings"
 )
 
-// Version is a cgroup layout.
-type Version int
-
-// The layouts. A hybrid machine, v1 controllers with a cgroup2 mount at
-// /sys/fs/cgroup/unified, reads as V1.
-const (
-	V1 Version = 1
-	V2 Version = 2
-)
-
 // cgroupRoot is where the kernel's cgroup filesystems are mounted.
 const cgroupRoot = "/sys/fs/cgroup"
 
@@ -25,8 +15,8 @@ const cgroupRoot = "/sys/fs/cgroup"
 // PAGE_COUNTER_MAX pages, rounded to the page size.
 const unlimitedV1 = 1 << 62
 
-// ErrCgroup is a cgroup layout the host cannot read or must not run under.
-var ErrCgroup = errors.New("platform: cgroup")
+// errCgroup is a cgroup layout the host cannot read or must not run under.
+var errCgroup = errors.New("platform: cgroup")
 
 // Cgroup is what the host container's cgroup holds its jobs to, and its
 // own figures, read afresh at each Read.
@@ -35,7 +25,6 @@ type Cgroup struct {
 	CPUSet string
 	// OOMAbsent says why OOMKills is not counted; "" when it is.
 	OOMAbsent string
-	Version   Version
 	// Memory is the smallest memory limit from the host's cgroup up; 0
 	// when none is set.
 	Memory int64
@@ -64,16 +53,16 @@ type Cgroup struct {
 	OOMCounted  bool
 }
 
-// IsV2 reports whether the machine runs the cgroup v2 layout, by the test
+// isV2 reports whether the machine runs the cgroup v2 layout, by the test
 // the dind script makes.
-func IsV2(r Root) bool { return r.exists(cgroupRoot + "/cgroup.controllers") }
+func isV2(r Root) bool { return r.exists(cgroupRoot + "/cgroup.controllers") }
 
 // CheckPrivateNamespace refuses a cgroup v2 host in the machine's cgroup
 // namespace, where the dind script would rewrite the machine's root cgroup
 // and the jobs' cgroups would land outside the host's. It must run before
 // the dind script, which moves the supervisor into /init.
 func CheckPrivateNamespace(r Root) error {
-	if !IsV2(r) {
+	if !isV2(r) {
 		return nil
 	}
 	ms, procs, err := readLayout(r)
@@ -86,7 +75,7 @@ func CheckPrivateNamespace(r Root) error {
 	}
 	if p := procs[""]; p != "/" || m.Root != "/" {
 		return fmt.Errorf("%w: the host runs in the machine's cgroup namespace (its cgroup reads %q, the cgroup2 mount's root %q); give the host service compose's cgroup: private",
-			ErrCgroup, p, m.Root)
+			errCgroup, p, m.Root)
 	}
 	return nil
 }
@@ -97,7 +86,7 @@ func Read(r Root) (*Cgroup, error) {
 	if err != nil {
 		return nil, err
 	}
-	if IsV2(r) {
+	if isV2(r) {
 		return readV2(r, ms, procs)
 	}
 	return readV1(r, ms, procs)
@@ -134,13 +123,13 @@ func v2Mount(ms []Mount) (*Mount, error) {
 			return &ms[i], nil
 		}
 	}
-	return nil, fmt.Errorf("%w: no cgroup2 mount at %s", ErrCgroup, cgroupRoot)
+	return nil, fmt.Errorf("%w: no cgroup2 mount at %s", errCgroup, cgroupRoot)
 }
 
 // v1Mount answers the cgroup v1 mount of controller c.
 func v1Mount(ms []Mount, c string) (*Mount, bool) {
 	for i := range ms {
-		if ms[i].FSType == "cgroup" && ms[i].HasSuper(c) {
+		if ms[i].FSType == "cgroup" && ms[i].hasSuper(c) {
 			return &ms[i], true
 		}
 	}
@@ -154,7 +143,7 @@ func v1Mount(ms []Mount, c string) (*Mount, bool) {
 func walk(m *Mount, p string) ([]string, error) {
 	rel, ok := strings.CutPrefix(p, m.Root)
 	if !ok || (rel != "" && m.Root != "/" && !strings.HasPrefix(rel, "/")) {
-		return nil, fmt.Errorf("%w: cgroup %s lies outside the root %s of the mount at %s", ErrCgroup, p, m.Root, m.Point)
+		return nil, fmt.Errorf("%w: cgroup %s lies outside the root %s of the mount at %s", errCgroup, p, m.Root, m.Point)
 	}
 	d := path.Join(m.Point, rel)
 	dirs := []string{d}
@@ -179,7 +168,7 @@ func smallest(r Root, dirs []string, name string, parse func(string) (int64, boo
 		present = true
 		v, set, err := parse(s)
 		if err != nil {
-			return 0, "", false, fmt.Errorf("%w: %s/%s: %w", ErrCgroup, d, name, err)
+			return 0, "", false, fmt.Errorf("%w: %s/%s: %w", errCgroup, d, name, err)
 		}
 		if set && (at == "" || v < limit) {
 			limit, at = v, d
@@ -207,13 +196,13 @@ func readV2(r Root, ms []Mount, procs map[string]string) (*Cgroup, error) {
 	}
 	p, ok := procs[""]
 	if !ok {
-		return nil, fmt.Errorf("%w: /proc/self/cgroup has no cgroup v2 line", ErrCgroup)
+		return nil, fmt.Errorf("%w: /proc/self/cgroup has no cgroup v2 line", errCgroup)
 	}
 	dirs, err := walk(m, p)
 	if err != nil {
 		return nil, err
 	}
-	c := &Cgroup{Version: V2}
+	c := &Cgroup{}
 	var memAt string
 	if c.Memory, memAt, _, err = smallest(r, dirs, "memory.max", parseMax); err != nil {
 		return nil, err
@@ -244,20 +233,20 @@ func readV2(r Root, ms []Mount, procs map[string]string) (*Cgroup, error) {
 }
 
 func readV1(r Root, ms []Mount, procs map[string]string) (*Cgroup, error) {
-	c := &Cgroup{Version: V1, SubtreeWide: true, OOMAbsent: "cgroup v1 counts a cgroup's own OOM kills only, never its jobs'"}
+	c := &Cgroup{SubtreeWide: true, OOMAbsent: "cgroup v1 counts a cgroup's own OOM kills only, never its jobs'"}
 	mem, err := v1Dirs(ms, procs, "memory")
 	if err != nil {
 		return nil, err
 	}
 	if mem == nil {
-		return nil, fmt.Errorf("%w: no cgroup v1 memory controller is mounted", ErrCgroup)
+		return nil, fmt.Errorf("%w: no cgroup v1 memory controller is mounted", errCgroup)
 	}
 	h, _, err := r.lookup(mem[0] + "/memory.use_hierarchy")
 	if err != nil {
 		return nil, err
 	}
 	if h != "1" {
-		return nil, fmt.Errorf("%w: %s/memory.use_hierarchy is %q, not 1, so the host's memory limit would not hold its jobs", ErrCgroup, mem[0], h)
+		return nil, fmt.Errorf("%w: %s/memory.use_hierarchy is %q, not 1, so the host's memory limit would not hold its jobs", errCgroup, mem[0], h)
 	}
 	if c.Memory, _, _, err = smallest(r, mem, "memory.limit_in_bytes", parseV1Memory); err != nil {
 		return nil, err
@@ -299,7 +288,7 @@ func (c *Cgroup) readV1CPU(r Root, ms []Mount, procs map[string]string) error {
 			return perr
 		}
 		if period, perr = strconv.ParseInt(ps, 10, 64); perr != nil || period <= 0 {
-			return fmt.Errorf("%w: %s/cpu.cfs_period_us: %q", ErrCgroup, at, ps)
+			return fmt.Errorf("%w: %s/cpu.cfs_period_us: %q", errCgroup, at, ps)
 		}
 		c.MilliCPUs = quota * 1000 / period
 	}
@@ -319,7 +308,7 @@ func v1Dirs(ms []Mount, procs map[string]string, c string) ([]string, error) {
 	}
 	p, ok := procs[c]
 	if !ok {
-		return nil, fmt.Errorf("%w: /proc/self/cgroup has no %s line", ErrCgroup, c)
+		return nil, fmt.Errorf("%w: /proc/self/cgroup has no %s line", errCgroup, c)
 	}
 	return walk(m, p)
 }
@@ -338,7 +327,7 @@ func (c *Cgroup) readCPUSet(r Root, dirs []string, names ...string) error {
 	}
 	cpus, err := ParseCPUList(s)
 	if err != nil {
-		return fmt.Errorf("%w: cpuset %q: %w", ErrCgroup, s, err)
+		return fmt.Errorf("%w: cpuset %q: %w", errCgroup, s, err)
 	}
 	c.CPUSet, c.CPUs = s, len(cpus)
 	if c.MilliCPUs == 0 {
@@ -353,7 +342,7 @@ func (c *Cgroup) readCPUSet(r Root, dirs []string, names ...string) error {
 // option, which keeps memory.events local (Documentation/admin-guide/cgroup-v2.rst).
 func (c *Cgroup) readOOM(r Root, m *Mount, dir string) error {
 	switch {
-	case m.HasSuper("memory_localevents"):
+	case m.hasSuper("memory_localevents"):
 		c.OOMAbsent = "the cgroup2 mount carries memory_localevents, so memory.events counts the host cgroup's own OOM kills only"
 		return nil
 	case !r.exists(dir + "/memory.events.local"):
@@ -366,10 +355,10 @@ func (c *Cgroup) readOOM(r Root, m *Mount, dir string) error {
 	}
 	v, ok, err := statKey(s, "oom_kill")
 	if err != nil {
-		return fmt.Errorf("%w: %s/memory.events: %w", ErrCgroup, dir, err)
+		return fmt.Errorf("%w: %s/memory.events: %w", errCgroup, dir, err)
 	}
 	if !ok {
-		return fmt.Errorf("%w: %s/memory.events has no oom_kill count", ErrCgroup, dir)
+		return fmt.Errorf("%w: %s/memory.events has no oom_kill count", errCgroup, dir)
 	}
 	c.OOMKills, c.OOMCounted = uint64(v), true //nolint:gosec // statKey parses unsigned counts.
 	return nil
@@ -386,10 +375,10 @@ func ownMemory(r Root, dir string, keys ...string) (int64, error) {
 	for _, k := range keys {
 		v, ok, err := statKey(s, k)
 		if err != nil {
-			return 0, fmt.Errorf("%w: %s/memory.stat: %s: %w", ErrCgroup, dir, k, err)
+			return 0, fmt.Errorf("%w: %s/memory.stat: %s: %w", errCgroup, dir, k, err)
 		}
 		if !ok {
-			return 0, fmt.Errorf("%w: %s/memory.stat has no %s", ErrCgroup, dir, k)
+			return 0, fmt.Errorf("%w: %s/memory.stat has no %s", errCgroup, dir, k)
 		}
 		sum += v
 	}

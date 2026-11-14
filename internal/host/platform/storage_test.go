@@ -48,7 +48,7 @@ func TestPickStorage(t *testing.T) {
 			got, err := pickStorage(tc.s, "/var/lib/docker", tc.who)
 			text := got.Why
 			if tc.refused {
-				if !errors.Is(err, ErrNoStorageDriver) {
+				if !errors.Is(err, errNoStorageDriver) {
 					t.Fatalf("err = %v, want ErrNoStorageDriver", err)
 				}
 				text = err.Error()

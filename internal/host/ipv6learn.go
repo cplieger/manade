@@ -16,21 +16,21 @@ import (
 )
 
 const (
-	// EchoInterval is how often a host with ipv6 and internet asks its
+	// echoInterval is how often a host with ipv6 and internet asks its
 	// ipv6_echo, so a rotated prefix is followed.
-	EchoInterval = 10 * time.Minute
+	echoInterval = 10 * time.Minute
 	// echoTimeout bounds one ask, its retries included.
 	echoTimeout = time.Minute
 	// echoLimit caps the echo's body, a few hundred bytes.
 	echoLimit = 64 << 10
 )
 
-// Echo answers the body of a GET of url made over IPv6 only.
-type Echo func(ctx context.Context, url string) ([]byte, error)
+// echoFunc answers the body of a GET of url made over IPv6 only.
+type echoFunc func(ctx context.Context, url string) ([]byte, error)
 
-// EchoOverIPv6 answers the Echo whose connections are IPv6 only and go
+// echoOverIPv6 answers the echoFunc whose connections are IPv6 only and go
 // direct: through a proxy the echo would show the proxy's address.
-func EchoOverIPv6() (Echo, error) {
+func echoOverIPv6() (echoFunc, error) {
 	tr, err := httpclient.CloneDefaultTransport()
 	if err != nil {
 		return nil, err
@@ -46,9 +46,9 @@ func EchoOverIPv6() (Echo, error) {
 	}, nil
 }
 
-// Learn64 asks echo at url for the host's IPv6 egress address, its `ip=`
+// ask64 asks echo at url for the host's IPv6 egress address, its `ip=`
 // line, and answers that address's /64, the machine's.
-func Learn64(ctx context.Context, echo Echo, url string) (netip.Prefix, error) {
+func ask64(ctx context.Context, echo echoFunc, url string) (netip.Prefix, error) {
 	ctx, cancel := context.WithTimeout(ctx, echoTimeout)
 	defer cancel()
 	body, err := echo(ctx, url)
@@ -84,17 +84,17 @@ type learned64 struct {
 }
 
 // learns64 reports whether the host learns the machine's /64.
-func (n *Net) learns64() bool {
+func (n *hostNet) learns64() bool {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	return n.host.Egress.IPv6 && n.host.Egress.Internet
 }
 
-// learn64 asks the host's ipv6_echo at once and every EchoInterval until
+// learn64 asks the host's ipv6_echo at once and every echoInterval until
 // ctx ends, answering nil then. A changed /64 loads the rules again, and a
 // failed load ends it with the failure; a failed ask keeps the last /64.
-func (n *Net) learn64(ctx context.Context, echo Echo) error {
-	t := time.NewTicker(EchoInterval)
+func (n *hostNet) learn64(ctx context.Context, echo echoFunc) error {
+	t := time.NewTicker(echoInterval)
 	defer t.Stop()
 	for {
 		if err := n.ask64(ctx, echo); err != nil {
@@ -108,11 +108,11 @@ func (n *Net) learn64(ctx context.Context, echo Echo) error {
 	}
 }
 
-func (n *Net) ask64(ctx context.Context, echo Echo) error {
+func (n *hostNet) ask64(ctx context.Context, echo echoFunc) error {
 	n.mu.Lock()
 	url := n.host.Egress.IPv6Echo
 	n.mu.Unlock()
-	p, err := Learn64(ctx, echo, url)
+	p, err := ask64(ctx, echo, url)
 	if ctx.Err() != nil {
 		return nil
 	}
@@ -129,12 +129,12 @@ func (n *Net) ask64(ctx context.Context, echo Echo) error {
 		return nil
 	}
 	n.log.Info("Learned the machine's IPv6 /64", "prefix", p, "was", old.prefix)
-	return n.Guard.Refresh(ctx)
+	return n.Guard.refresh(ctx)
 }
 
-// IPv6Status answers the learned /64 or why it is unknown, on a host with
+// iPv6Status answers the learned /64 or why it is unknown, on a host with
 // ipv6 and internet; nil on any other.
-func (n *Net) IPv6Status() *hostapi.IPv6Status {
+func (n *hostNet) iPv6Status() *hostapi.IPv6Status {
 	if !n.learns64() {
 		return nil
 	}

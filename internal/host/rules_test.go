@@ -39,8 +39,8 @@ func mustGenerate(t *testing.T, h *config.Host) *egress.Ruleset {
 func TestRulesLoadIPTables(t *testing.T) {
 	t.Run("loaded, jumped first and read back", func(t *testing.T) {
 		k := newFakeIPT(false)
-		l := &Rules{Run: k.run, Kernel: iptKernel(), Root: tree(t, nil)}
-		if err := l.Load(t.Context(), mustGenerate(t, section("10.0.0.50/32"))); err != nil {
+		l := &ruleLoader{Run: k.run, Kernel: iptKernel(), Root: tree(t, nil)}
+		if err := l.load(t.Context(), mustGenerate(t, section("10.0.0.50/32"))); err != nil {
 			t.Fatalf("Load: %v", err)
 		}
 		for _, j := range []struct {
@@ -67,10 +67,10 @@ func TestRulesLoadIPTables(t *testing.T) {
 	})
 	t.Run("a reload keeps one jump per chain", func(t *testing.T) {
 		k := newFakeIPT(false)
-		l := &Rules{Run: k.run, Kernel: iptKernel(), Root: tree(t, nil)}
+		l := &ruleLoader{Run: k.run, Kernel: iptKernel(), Root: tree(t, nil)}
 		rs := mustGenerate(t, section())
 		for range 2 {
-			if err := l.Load(t.Context(), rs); err != nil {
+			if err := l.load(t.Context(), rs); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -80,19 +80,19 @@ func TestRulesLoadIPTables(t *testing.T) {
 	})
 	t.Run("a jump the daemon moved down is put back first, once", func(t *testing.T) {
 		k := newFakeIPT(false)
-		l := &Rules{Run: k.run, Kernel: iptKernel(), Root: tree(t, nil)}
+		l := &ruleLoader{Run: k.run, Kernel: iptKernel(), Root: tree(t, nil)}
 		rs := mustGenerate(t, section())
-		if err := l.Load(t.Context(), rs); err != nil {
+		if err := l.load(t.Context(), rs); err != nil {
 			t.Fatal(err)
 		}
 		k.edit(func(tb map[bool]map[string]*xtable) {
 			f := tb[true]["filter"]
 			f.chains["FORWARD"] = slices.Insert(f.chains["FORWARD"], 0, "-j DOCKER-FORWARD")
 		})
-		if err := l.Check(t.Context(), rs); err == nil {
+		if err := l.check(t.Context(), rs); err == nil {
 			t.Fatal("Check passed with MANADE-FWD second in ip6tables FORWARD")
 		}
-		if err := l.Load(t.Context(), rs); err != nil {
+		if err := l.load(t.Context(), rs); err != nil {
 			t.Fatal(err)
 		}
 		if got := k.chain(true, "filter", "FORWARD"); !slices.Equal(got, []string{"-j MANADE-FWD", "-j DOCKER-FORWARD"}) {
@@ -102,16 +102,16 @@ func TestRulesLoadIPTables(t *testing.T) {
 	t.Run("no ip_set", func(t *testing.T) {
 		k := newFakeIPT(false)
 		k.fail["ipset list -n"] = errors.New("Kernel error received: ipset protocol error")
-		l := &Rules{Run: k.run, Kernel: iptKernel(), Root: tree(t, nil)}
-		if err := l.Load(t.Context(), mustGenerate(t, section())); err == nil || !strings.Contains(err.Error(), "ip_set") {
+		l := &ruleLoader{Run: k.run, Kernel: iptKernel(), Root: tree(t, nil)}
+		if err := l.load(t.Context(), mustGenerate(t, section())); err == nil || !strings.Contains(err.Error(), "ip_set") {
 			t.Errorf("Load = %v, want a refusal naming ip_set", err)
 		}
 	})
 	t.Run("no xt_set", func(t *testing.T) {
 		k := newFakeIPT(false)
 		k.noSetMatch = true
-		l := &Rules{Run: k.run, Kernel: iptKernel(), Root: tree(t, map[string]string{ipTablesMatches: "conntrack\ntcp\nudp\n"})}
-		if err := l.Load(t.Context(), mustGenerate(t, section())); err == nil || !strings.Contains(err.Error(), "xt_set") {
+		l := &ruleLoader{Run: k.run, Kernel: iptKernel(), Root: tree(t, map[string]string{ipTablesMatches: "conntrack\ntcp\nudp\n"})}
+		if err := l.load(t.Context(), mustGenerate(t, section())); err == nil || !strings.Contains(err.Error(), "xt_set") {
 			t.Errorf("Load = %v, want a refusal naming xt_set", err)
 		}
 	})
@@ -120,12 +120,12 @@ func TestRulesLoadIPTables(t *testing.T) {
 func TestRulesLoadNFTables(t *testing.T) {
 	k := newFakeIPT(false)
 	k.nft = true
-	l := &Rules{Run: k.run, Kernel: &platform.Kernel{Backend: egress.NFTables}, Root: tree(t, nil)}
+	l := &ruleLoader{Run: k.run, Kernel: &platform.Kernel{Backend: egress.NFTables}, Root: tree(t, nil)}
 	rs, err := egress.Generate(&egress.Input{Host: section()}, egress.NFTables)
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = l.Load(t.Context(), rs)
+	err = l.load(t.Context(), rs)
 	if len(k.nftFiles) != 1 || k.nftFiles[0] != rs.NFT {
 		t.Errorf("nft -f - read %d payloads, want the rule set's once", len(k.nftFiles))
 	}
@@ -136,18 +136,18 @@ func TestRulesLoadNFTables(t *testing.T) {
 
 // guardFixture is a loaded host the guard holds: IPv4 only, IPv6 off,
 // resolv.conf written.
-func guardFixture(t *testing.T) (*fakeIPT, platform.Root, *Guard, *[]string) {
+func guardFixture(t *testing.T) (*fakeIPT, platform.Root, *guard, *[]string) {
 	t.Helper()
 	k := newFakeIPT(false)
 	r := tree(t, map[string]string{disableAll: "1\n", disableDefault: "1\n", "/etc/resolv.conf": resolvRendered})
-	l := &Rules{Run: k.run, Kernel: iptKernel(), Root: r}
-	want := Want{Generate: generateFor(t, section()), Resolv: []byte(resolvRendered), IPv6Off: true}
+	l := &ruleLoader{Run: k.run, Kernel: iptKernel(), Root: r}
+	want := wanted{Generate: generateFor(t, section()), Resolv: []byte(resolvRendered), IPv6Off: true}
 	rs, _ := want.Generate()
-	if err := l.Load(t.Context(), rs); err != nil {
+	if err := l.load(t.Context(), rs); err != nil {
 		t.Fatal(err)
 	}
 	var restored []string
-	g := NewGuard(l, want, slog.New(slog.DiscardHandler), Hooks{Restored: func(w string) { restored = append(restored, w) }})
+	g := newGuard(l, want, slog.New(slog.DiscardHandler), guardHooks{Restored: func(w string) { restored = append(restored, w) }})
 	return k, r, g, &restored
 }
 
@@ -156,7 +156,7 @@ func TestGuardCheck(t *testing.T) {
 		_, _, g, restored := guardFixture(t)
 		checked := 0
 		g.hooks.Checked = func() { checked++ }
-		if err := g.Check(t.Context()); err != nil || len(*restored) != 0 || checked != 1 {
+		if err := g.check(t.Context()); err != nil || len(*restored) != 0 || checked != 1 {
 			t.Errorf("Check = %v, restored %q, checked %d", err, *restored, checked)
 		}
 	})
@@ -164,24 +164,24 @@ func TestGuardCheck(t *testing.T) {
 		k, _, g, restored := guardFixture(t)
 		want := k.chain(false, "filter", "MANADE-FWD")
 		k.edit(func(tb map[bool]map[string]*xtable) { tb[false]["filter"].chains["MANADE-FWD"] = []string{} })
-		if err := g.Check(t.Context()); err != nil {
+		if err := g.check(t.Context()); err != nil {
 			t.Fatal(err)
 		}
-		if !slices.Equal(*restored, []string{RestoredRules}) || !slices.Equal(k.chain(false, "filter", "MANADE-FWD"), want) {
+		if !slices.Equal(*restored, []string{restoredRules}) || !slices.Equal(k.chain(false, "filter", "MANADE-FWD"), want) {
 			t.Errorf("restored %q, MANADE-FWD back %t", *restored, slices.Equal(k.chain(false, "filter", "MANADE-FWD"), want))
 		}
 	})
 	t.Run("IPv6 back on is turned off again", func(t *testing.T) {
 		_, r, g, restored := guardFixture(t)
 		writeAt(t, r, disableAll, "0\n")
-		if err := g.Check(t.Context()); err != nil || !slices.Equal(*restored, []string{RestoredIPv6}) || readAt(t, r, disableAll) != "1\n" {
+		if err := g.check(t.Context()); err != nil || !slices.Equal(*restored, []string{restoredIPv6}) || readAt(t, r, disableAll) != "1\n" {
 			t.Errorf("Check = %v, restored %q, disable_ipv6 %q", err, *restored, readAt(t, r, disableAll))
 		}
 	})
 	t.Run("a replaced resolv.conf is written again", func(t *testing.T) {
 		_, r, g, restored := guardFixture(t)
 		writeAt(t, r, "/etc/resolv.conf", "nameserver 127.0.0.11\n")
-		if err := g.Check(t.Context()); err != nil || !slices.Equal(*restored, []string{RestoredResolvConf}) || readAt(t, r, "/etc/resolv.conf") != resolvRendered {
+		if err := g.check(t.Context()); err != nil || !slices.Equal(*restored, []string{restoredResolvConf}) || readAt(t, r, "/etc/resolv.conf") != resolvRendered {
 			t.Errorf("Check = %v, restored %q, resolv.conf %q", err, *restored, readAt(t, r, "/etc/resolv.conf"))
 		}
 	})
@@ -189,7 +189,7 @@ func TestGuardCheck(t *testing.T) {
 		_, r, g, restored := guardFixture(t)
 		writeAt(t, r, platform.BridgeNFCall6, "0\n")
 		g.want.BridgeNF6, g.want.IPv6Off = true, false
-		if err := g.Check(t.Context()); err != nil || !slices.Equal(*restored, []string{RestoredBridgeNF6}) || readAt(t, r, platform.BridgeNFCall6) != "1\n" {
+		if err := g.check(t.Context()); err != nil || !slices.Equal(*restored, []string{restoredBridgeNF6}) || readAt(t, r, platform.BridgeNFCall6) != "1\n" {
 			t.Errorf("Check = %v, restored %q, sysctl %q", err, *restored, readAt(t, r, platform.BridgeNFCall6))
 		}
 	})
@@ -197,7 +197,7 @@ func TestGuardCheck(t *testing.T) {
 		k, _, g, restored := guardFixture(t)
 		k.edit(func(tb map[bool]map[string]*xtable) { tb[false]["filter"].chains["MANADE-OUT"] = []string{} })
 		k.fail[platform.LegacyDir+"/iptables-restore"] = errors.New("iptables-restore: line 3 failed")
-		if err := g.Check(t.Context()); err == nil || !strings.Contains(err.Error(), "restoring the egress rules") || len(*restored) != 0 {
+		if err := g.check(t.Context()); err == nil || !strings.Contains(err.Error(), "restoring the egress rules") || len(*restored) != 0 {
 			t.Errorf("Check = %v, restored %q, want the failure and no restore counted", err, *restored)
 		}
 	})
@@ -211,7 +211,7 @@ func TestGuardRun(t *testing.T) {
 		k.edit(func(tb map[bool]map[string]*xtable) { tb[false]["filter"].chains["MANADE-OUT"] = []string{} })
 		k.fail[platform.LegacyDir+"/iptables-restore"] = errors.New("refused")
 		done := make(chan error, 1)
-		go func() { done <- g.Run(ctx) }()
+		go func() { done <- g.run(ctx) }()
 		synctest.Wait()
 		select {
 		case err := <-done:
@@ -227,7 +227,7 @@ func TestGuardRun(t *testing.T) {
 		_, _, g, _ := guardFixture(t)
 		ctx, cancel := context.WithCancel(t.Context())
 		done := make(chan error, 1)
-		go func() { done <- g.Run(ctx) }()
+		go func() { done <- g.run(ctx) }()
 		cancel()
 		if err := <-done; err != nil {
 			t.Errorf("Run = %v on a cancelled context, want nil", err)
@@ -240,7 +240,7 @@ func TestGuardSwap(t *testing.T) {
 		k, r, g, _ := guardFixture(t)
 		h := section("10.0.0.50/32")
 		h.DNS = h.DNS[:1]
-		kept, fatal := g.Swap(t.Context(), Want{Generate: generateFor(t, h), Resolv: []byte("nameserver 1.1.1.1\n"), IPv6Off: true})
+		kept, fatal := g.swap(t.Context(), wanted{Generate: generateFor(t, h), Resolv: []byte("nameserver 1.1.1.1\n"), IPv6Off: true})
 		if kept != nil || fatal != nil {
 			t.Fatalf("Swap = %v, %v", kept, fatal)
 		}
@@ -251,7 +251,7 @@ func TestGuardSwap(t *testing.T) {
 			t.Errorf("resolv.conf = %q", readAt(t, r, "/etc/resolv.conf"))
 		}
 		writeAt(t, r, "/etc/resolv.conf", resolvRendered)
-		if err := g.Check(t.Context()); err != nil || readAt(t, r, "/etc/resolv.conf") != "nameserver 1.1.1.1\n" {
+		if err := g.check(t.Context()); err != nil || readAt(t, r, "/etc/resolv.conf") != "nameserver 1.1.1.1\n" {
 			t.Errorf("the guard holds the old resolv.conf: %v", err)
 		}
 	})
@@ -259,7 +259,7 @@ func TestGuardSwap(t *testing.T) {
 		k, _, g, _ := guardFixture(t)
 		old := k.chain(false, "filter", "MANADE-FWD")
 		k.failOnce[platform.LegacyDir+"/iptables-save"] = errors.New("iptables-save: resource busy")
-		kept, fatal := g.Swap(t.Context(), Want{Generate: generateFor(t, section("10.0.0.50/32")), Resolv: []byte(resolvRendered), IPv6Off: true})
+		kept, fatal := g.swap(t.Context(), wanted{Generate: generateFor(t, section("10.0.0.50/32")), Resolv: []byte(resolvRendered), IPv6Off: true})
 		if kept == nil || fatal != nil {
 			t.Fatalf("Swap = %v, %v, want kept", kept, fatal)
 		}
@@ -270,8 +270,8 @@ func TestGuardSwap(t *testing.T) {
 	t.Run("a section that fails to load keeps the old rules", func(t *testing.T) {
 		k, r, g, _ := guardFixture(t)
 		old := k.chain(false, "filter", "MANADE-FWD")
-		bad := Want{Generate: func() (*egress.Ruleset, error) { return nil, errors.New("no backend") }, Resolv: []byte("nameserver 9.9.9.9\n")}
-		kept, fatal := g.Swap(t.Context(), bad)
+		bad := wanted{Generate: func() (*egress.Ruleset, error) { return nil, errors.New("no backend") }, Resolv: []byte("nameserver 9.9.9.9\n")}
+		kept, fatal := g.swap(t.Context(), bad)
 		if kept == nil || fatal != nil {
 			t.Fatalf("Swap = %v, %v, want kept", kept, fatal)
 		}
@@ -289,25 +289,25 @@ func (l *heldLocker) Unlock() { l.held = false }
 
 func TestGuardLoadsUnderLoading(t *testing.T) {
 	k := newFakeIPT(false)
-	l := &Rules{Run: k.run, Kernel: iptKernel(), Root: tree(t, map[string]string{"/etc/resolv.conf": resolvRendered, disableAll: "1\n", disableDefault: "1\n"})}
+	l := &ruleLoader{Run: k.run, Kernel: iptKernel(), Root: tree(t, map[string]string{"/etc/resolv.conf": resolvRendered, disableAll: "1\n", disableDefault: "1\n"})}
 	lock := &heldLocker{}
 	var held []string
-	want := func(name string) Want {
-		return Want{Loading: lock, Resolv: []byte(resolvRendered), IPv6Off: true, Generate: func() (*egress.Ruleset, error) {
+	want := func(name string) wanted {
+		return wanted{Loading: lock, Resolv: []byte(resolvRendered), IPv6Off: true, Generate: func() (*egress.Ruleset, error) {
 			if lock.held {
 				held = append(held, name)
 			}
 			return egress.Generate(&egress.Input{Host: section()}, egress.IPTables)
 		}}
 	}
-	g := NewGuard(l, want("restore"), slog.New(slog.DiscardHandler), Hooks{})
-	if err := g.Check(t.Context()); err != nil {
+	g := newGuard(l, want("restore"), slog.New(slog.DiscardHandler), guardHooks{})
+	if err := g.check(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.Refresh(t.Context()); err != nil {
+	if err := g.refresh(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if kept, fatal := g.Swap(t.Context(), want("swap")); kept != nil || fatal != nil {
+	if kept, fatal := g.swap(t.Context(), want("swap")); kept != nil || fatal != nil {
 		t.Fatal(kept, fatal)
 	}
 	// The check's own generation only compares, so it needs no lock; each

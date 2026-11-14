@@ -18,8 +18,8 @@ import (
 // first in the supervisor's and dockerd's PATH.
 const LegacyDir = "/usr/local/sbin/.iptables-legacy"
 
-// ErrNoBackend is a kernel with neither nf_tables nor ip_tables.
-var ErrNoBackend = errors.New("platform: the kernel offers no rule backend")
+// errNoBackend is a kernel with neither nf_tables nor ip_tables.
+var errNoBackend = errors.New("platform: the kernel offers no rule backend")
 
 // Command runs one program to completion with stdin, which may be nil, and
 // answers its standard output; its error carries the tail of the program's
@@ -80,7 +80,7 @@ func ProbeKernel(ctx context.Context, run Command) (*Kernel, error) {
 	} else {
 		legacy := &Kernel{Backend: egress.IPTables}
 		if err := ok(legacy.Binary("iptables"), "-w", "-t", "filter", "-n", "-L"); err != nil {
-			return nil, fmt.Errorf("%w: nftables: %w; legacy iptables: %w", ErrNoBackend, nftErr, err)
+			return nil, fmt.Errorf("%w: nftables: %w; legacy iptables: %w", errNoBackend, nftErr, err)
 		}
 		k.Backend = egress.IPTables
 	}
@@ -92,10 +92,10 @@ func ProbeKernel(ctx context.Context, run Command) (*Kernel, error) {
 // The bridge netfilter sysctls. Before Linux 5.3 they exist only in the
 // machine's initial network namespace.
 const (
-	BridgeNFCall4 = "/proc/sys/net/bridge/bridge-nf-call-iptables"
+	bridgeNFCall4 = "/proc/sys/net/bridge/bridge-nf-call-iptables"
 	BridgeNFCall6 = "/proc/sys/net/bridge/bridge-nf-call-ip6tables"
 )
 
 // BridgeNF reports which bridge netfilter sysctls the host's own network
 // namespace has.
-func BridgeNF(r Root) (v4, v6 bool) { return r.exists(BridgeNFCall4), r.exists(BridgeNFCall6) }
+func BridgeNF(r Root) (v4, v6 bool) { return r.exists(bridgeNFCall4), r.exists(BridgeNFCall6) }

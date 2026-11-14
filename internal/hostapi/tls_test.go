@@ -23,7 +23,7 @@ func tlsServer(t *testing.T, dir string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := &http.Server{Handler: NewServer(&fakeBackend{}, "inst-1", nil).Handler(), ReadHeaderTimeout: quickTimeout}
+	srv := &http.Server{Handler: NewServer(&fakeBackend{}, "inst-1", nil).handler(), ReadHeaderTimeout: quickTimeout}
 	go func() { _ = srv.Serve(ln) }()
 	t.Cleanup(func() { _ = srv.Close() })
 	return ln.Addr().String()

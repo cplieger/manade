@@ -92,9 +92,9 @@ func NewHost(cfg *config.Config, h *config.Host, plat *Platform) *Host {
 	return &Host{host: h, protected: prot, binds: cfg.BindSources(h.Name), plat: *plat}
 }
 
-// ErrUnenforceable is a profile asking for a limit its host's kernel or
+// errUnenforceable is a profile asking for a limit its host's kernel or
 // filesystem cannot enforce.
-var ErrUnenforceable = errors.New("jobspec: the host cannot enforce the profile's limits")
+var errUnenforceable = errors.New("jobspec: the host cannot enforce the profile's limits")
 
 // Check refuses profile p on this host when it asks for a limit the host
 // cannot enforce, naming the profile and the host. A pids limit the kernel
@@ -116,7 +116,7 @@ func (h *Host) Check(p *config.Profile) error {
 	if len(why) == 0 {
 		return nil
 	}
-	return fmt.Errorf("%w: profile %s on host %s: %s", ErrUnenforceable, p.Name, h.host.Name, strings.Join(why, "; "))
+	return fmt.Errorf("%w: profile %s on host %s: %s", errUnenforceable, p.Name, h.host.Name, strings.Join(why, "; "))
 }
 
 // Runner is one runner's identity, its one-time config and what the host
@@ -142,7 +142,7 @@ type Runner struct {
 // Runner is the create request for r on profile p, which Check passed. Each
 // bind source is resolved again here, every symlink followed, so call it
 // just before the create: on a host that is not open a source that reaches
-// a protected path or leaves the host's mounts fails with ErrMountRefused.
+// a protected path or leaves the host's mounts fails with errMountRefused.
 func (h *Host) Runner(p *config.Profile, r *Runner) (*docker.CreateRequest, error) {
 	hc, err := h.limits(p, r.CPUs)
 	if err != nil {
@@ -244,8 +244,7 @@ func cpuList(cpus []int) string {
 // as a job's container is, on the job network with Docker's default
 // capabilities, a non-root user and no mounts.
 type Probe struct {
-	// Name is unique to the run's container; Run labels both of a run's.
-	Name    string
+	// Run labels both of a run's containers.
 	Run     string
 	ImageID string
 	Command []string

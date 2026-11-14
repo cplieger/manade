@@ -21,9 +21,9 @@ const (
 	UserFileLimit = 1 << 20
 )
 
-// ErrRootUser is an image whose user resolves to uid 0, gid 0 or a
+// errRootUser is an image whose user resolves to uid 0, gid 0 or a
 // supplementary gid of 0, or does not resolve through its own files.
-var ErrRootUser = errors.New("jobspec: the image's user is root or does not resolve")
+var errRootUser = errors.New("jobspec: the image's user is root or does not resolve")
 
 // Files are an image's /etc/passwd and /etc/group; nil is a missing file,
 // which resolves exactly as an empty one does.
@@ -38,13 +38,13 @@ type Files struct {
 func NeedsUserCheck(p *config.Profile) bool { return p.User == "" && !p.AllowRoot }
 
 // CheckUser resolves imageUser, the image's USER, through its files as Docker
-// does, and fails with ErrRootUser unless uid, gid and every supplementary
+// does, and fails with errRootUser unless uid, gid and every supplementary
 // gid are non-zero. The error quotes imageUser sanitized, and no file text.
 func CheckUser(imageUser string, f Files) error {
 	shown := textsafe.SanitizeSingleLineBounded(imageUser, 32)
 	u, err := resolveUser(imageUser, f)
 	if err != nil {
-		return fmt.Errorf("%w: image user %q: %w", ErrRootUser, shown, err)
+		return fmt.Errorf("%w: image user %q: %w", errRootUser, shown, err)
 	}
 	in0 := ""
 	if slices.Contains(u.sgids, 0) {
@@ -52,7 +52,7 @@ func CheckUser(imageUser string, f Files) error {
 	}
 	if u.uid == 0 || u.gid == 0 || in0 != "" {
 		return fmt.Errorf("%w: image user %q resolves to %d:%d%s; set a numeric non-root user or allow_root: true",
-			ErrRootUser, shown, u.uid, u.gid, in0)
+			errRootUser, shown, u.uid, u.gid, in0)
 	}
 	return nil
 }

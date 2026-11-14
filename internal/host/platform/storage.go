@@ -31,9 +31,9 @@ const (
 	ForJob
 )
 
-// ErrNoStorageDriver is a host data root that can hold neither overlay2
+// errNoStorageDriver is a host data root that can hold neither overlay2
 // nor btrfs.
-var ErrNoStorageDriver = errors.New("platform: no storage driver fits the data root")
+var errNoStorageDriver = errors.New("platform: no storage driver fits the data root")
 
 // StoragePick is a pick and why it was made.
 type StoragePick struct {
@@ -70,7 +70,7 @@ type storageSeams struct {
 // kernel lists overlay, dataRoot is not overlayfs and a test overlay in it
 // takes both a delete's and a rename's whiteout, since a kernel lists
 // overlay whatever the volume holds and OpenZFS before 2.2 takes only the
-// first; else btrfs on btrfs; else vfs for a job and ErrNoStorageDriver
+// first; else btrfs on btrfs; else vfs for a job and errNoStorageDriver
 // for a host. It mounts the test overlay, so it needs CAP_SYS_ADMIN.
 func PickStorage(r Root, dataRoot string, who For) (StoragePick, error) {
 	return pickStorage(&storageSeams{
@@ -95,7 +95,7 @@ func pickStorage(s *storageSeams, dataRoot string, who For) (StoragePick, error)
 	switch {
 	case magic == magicOverlay:
 		if who == ForHost {
-			return StoragePick{}, fmt.Errorf("%w: %s is on overlayfs, the container's own layer, which cannot hold the daemon's overlays; mount a volume there", ErrNoStorageDriver, dataRoot)
+			return StoragePick{}, fmt.Errorf("%w: %s is on overlayfs, the container's own layer, which cannot hold the daemon's overlays; mount a volume there", errNoStorageDriver, dataRoot)
 		}
 		why += ", which cannot hold an overlay"
 	case !listed:
@@ -113,7 +113,7 @@ func pickStorage(s *storageSeams, dataRoot string, who For) (StoragePick, error)
 	if who == ForJob {
 		return StoragePick{Driver: VFS, Why: why}, nil
 	}
-	return StoragePick{}, fmt.Errorf("%w: %s; give %s a volume on OpenZFS 2.2 or later, ext4, XFS with ftype=1 or btrfs", ErrNoStorageDriver, why, dataRoot)
+	return StoragePick{}, fmt.Errorf("%w: %s; give %s a volume on OpenZFS 2.2 or later, ext4, XFS with ftype=1 or btrfs", errNoStorageDriver, why, dataRoot)
 }
 
 // listsFilesystem reports whether /proc/filesystems lists name.
@@ -222,5 +222,5 @@ func ProjectQuota(ms []Mount, dir string) bool {
 			best = &ms[i]
 		}
 	}
-	return best != nil && best.FSType == "xfs" && (best.HasSuper("prjquota") || best.HasSuper("pquota"))
+	return best != nil && best.FSType == "xfs" && (best.hasSuper("prjquota") || best.hasSuper("pquota"))
 }

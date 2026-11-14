@@ -280,7 +280,7 @@ func TestClientTLS(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		srv := &http.Server{Handler: NewServer(&fakeBackend{}, "inst-1", nil).Handler(), ReadHeaderTimeout: quickTimeout}
+		srv := &http.Server{Handler: NewServer(&fakeBackend{}, "inst-1", nil).handler(), ReadHeaderTimeout: quickTimeout}
 		go func() { _ = srv.Serve(ln) }()
 		t.Cleanup(func() { _ = srv.Close() })
 		if err := status(t, "nas", ln.Addr().String(), cfg); err == nil || !strings.Contains(err.Error(), "server authentication") {

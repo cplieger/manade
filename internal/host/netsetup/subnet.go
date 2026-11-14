@@ -28,9 +28,9 @@ var dockerPools = func() []netip.Prefix {
 	return out
 }()
 
-// ErrNoSubnet is a job subnet that cannot be picked or a configured one
+// errNoSubnet is a job subnet that cannot be picked or a configured one
 // that clashes with the namespace's routes.
-var ErrNoSubnet = errors.New("netsetup: job subnet")
+var errNoSubnet = errors.New("netsetup: job subnet")
 
 // Conflicts answers what of h's section the job subnet s takes from the
 // host: a resolver inside it, whose lookups the bridge would capture, and an
@@ -63,7 +63,7 @@ func PickSubnet(h *config.Host, onLink []netip.Prefix) (netip.Prefix, error) {
 		}
 	}
 	return netip.Prefix{}, fmt.Errorf("%w: every pool of 172.17.0.0/16 to 172.31.0.0/16 and 192.168.0.0/16 in /20s overlaps an on-link route, a resolver or an allow entry; set hosts.%s.network.subnet",
-		ErrNoSubnet, h.Name)
+		errNoSubnet, h.Name)
 }
 
 // CheckSubnet refuses a configured job subnet that overlaps an on-link route
@@ -71,7 +71,7 @@ func PickSubnet(h *config.Host, onLink []netip.Prefix) (netip.Prefix, error) {
 func CheckSubnet(h *config.Host, onLink []netip.Prefix) error {
 	if r := overlapping(h.Subnet, onLink); r != "" {
 		return fmt.Errorf("%w: hosts.%s.network.subnet %s overlaps the on-link route %s of the host's network; pick another subnet",
-			ErrNoSubnet, h.Name, h.Subnet, r)
+			errNoSubnet, h.Name, h.Subnet, r)
 	}
 	return nil
 }
@@ -118,7 +118,7 @@ func JobPrefix6(ctx context.Context, path string, onLink []netip.Prefix, random 
 		}
 		return p, nil
 	}
-	return netip.Prefix{}, fmt.Errorf("%w: 8 random ULA /64s each overlapped an on-link route", ErrNoSubnet)
+	return netip.Prefix{}, fmt.Errorf("%w: 8 random ULA /64s each overlapped an on-link route", errNoSubnet)
 }
 
 func isULA64(p netip.Prefix) bool {

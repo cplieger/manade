@@ -17,7 +17,7 @@ import (
 
 func serve(t *testing.T, b *fakeBackend) *httptest.Server {
 	t.Helper()
-	srv := httptest.NewServer(NewServer(b, "inst-1", nil).Handler())
+	srv := httptest.NewServer(NewServer(b, "inst-1", nil).handler())
 	t.Cleanup(srv.Close)
 	return srv
 }
@@ -206,7 +206,7 @@ func TestDeleteRunner(t *testing.T) {
 	t.Run("an oversized diag is dropped with a warning and answers 204", func(t *testing.T) {
 		var logs bytes.Buffer
 		b := &fakeBackend{diag: make([]byte, DiagLimit+1)}
-		srv := httptest.NewServer(NewServer(b, "inst-1", slog.New(slog.NewTextHandler(&logs, nil))).Handler())
+		srv := httptest.NewServer(NewServer(b, "inst-1", slog.New(slog.NewTextHandler(&logs, nil))).handler())
 		t.Cleanup(srv.Close)
 		resp, body := do(t, http.MethodDelete, srv.URL+"/v1/runners/r1?diag=1", "")
 		if resp.StatusCode != http.StatusNoContent || len(body) != 0 || len(b.deleted) != 1 {
@@ -303,7 +303,7 @@ func TestEvents(t *testing.T) {
 	b := &fakeBackend{changes: make(chan Runner)}
 	s := NewServer(b, "inst-1", nil)
 	s.heartbeat = 20 * time.Millisecond
-	srv := httptest.NewServer(s.Handler())
+	srv := httptest.NewServer(s.handler())
 	t.Cleanup(srv.Close)
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL+"/v1/events", http.NoBody)
 	if err != nil {

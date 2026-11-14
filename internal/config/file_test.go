@@ -166,7 +166,7 @@ func TestIPv6EchoOnlyWhereLearned(t *testing.T) {
 	}{
 		{"ipv6Off", `{ipv6_echo: "https://echo.example/ip"}`, ""},
 		{"internetOff", `{ipv6: true, internet: false}`, ""},
-		{"default", `{ipv6: true}`, DefaultIPv6Echo},
+		{"default", `{ipv6: true}`, defaultIPv6Echo},
 		{"own", `{ipv6: true, ipv6_echo: "https://echo.example/ip"}`, "https://echo.example/ip"},
 	}
 	for _, tt := range tests {

@@ -12,16 +12,14 @@ type Mount struct {
 	// Root is the path of the filesystem mounted at Point.
 	Root  string
 	Point string
-	// Options are the mount's own options; Super the filesystem's, after
-	// the " - " separator.
-	Options string
-	FSType  string
-	Source  string
-	Super   string
+	// Super are the filesystem's options, after the " - " separator, never
+	// the mount's own.
+	Super  string
+	FSType string
 }
 
-// HasSuper reports whether opt is among m's filesystem options.
-func (m *Mount) HasSuper(opt string) bool { return hasOption(m.Super, opt) }
+// hasSuper reports whether opt is among m's filesystem options.
+func (m *Mount) hasSuper(opt string) bool { return hasOption(m.Super, opt) }
 
 func hasOption(opts, opt string) bool { return slices.Contains(strings.Split(opts, ","), opt) }
 
@@ -48,8 +46,7 @@ func parseMountinfo(s string) ([]Mount, error) {
 			return nil, fmt.Errorf("mountinfo line %d: not the proc(5) format: %q", n+1, line)
 		}
 		out = append(out, Mount{
-			Root: unescape(f[3]), Point: unescape(f[4]), Options: f[5],
-			FSType: f[sep+1], Source: unescape(f[sep+2]), Super: f[sep+3],
+			Root: unescape(f[3]), Point: unescape(f[4]), FSType: f[sep+1], Super: f[sep+3],
 		})
 	}
 	return out, nil

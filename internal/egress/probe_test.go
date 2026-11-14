@@ -316,7 +316,7 @@ func TestPlanProbeTargetsAndTimeouts(t *testing.T) {
 	for _, c := range p.Checks {
 		t.Run(fmt.Sprintf("%d %s", c.Leg, c.Addr), func(t *testing.T) {
 			t.Parallel()
-			wantTimeout := ConnectTimeout
+			wantTimeout := connectTimeout
 			switch {
 			case c.Kind == KindResolve && c.Leg == LegJob:
 				// Docker's embedded resolver waits 4 s on each of the

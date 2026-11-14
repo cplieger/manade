@@ -26,85 +26,90 @@ import (
 
 // The job network every runner joins, on the bridge the rules match.
 const (
-	JobNetwork = "manade"
-	JobBridge  = "manade0"
+	jobNetwork = "manade"
+	jobBridge  = "manade0"
 )
 
 // daemonStartTimeout bounds the wait for the daemon's first answer.
 const daemonStartTimeout = 5 * time.Minute
 
-// Process is the running daemon.
-type Process interface {
+// process is the running daemon.
+type process interface {
+	PID() int
 	Done() <-chan struct{}
 	Err() error
 	Stop() error
 }
 
-// Networks creates the job network on the host's daemon.
-type Networks interface {
+// jobNetworks creates the job network on the host's daemon.
+type jobNetworks interface {
 	EnsureNetwork(ctx context.Context, spec *docker.NetworkSpec) error
 }
 
-// Platform is what bring-up reads and starts, the real kernel and daemon in
+// seams is what bring-up reads and starts, the real kernel and daemon in
 // production.
-type Platform struct {
+type seams struct {
 	Run         platform.Command
 	Lookup      netsetup.Lookup
 	Random      io.Reader
 	PickStorage func(dataRoot string) (platform.StoragePick, error)
-	StartDaemon func(spec *DaemonSpec) (Process, error)
+	StartDaemon func(spec *daemonSpec) (process, error)
 	// Dial connects to the started daemon; bring-up retries it until the
 	// daemon answers.
-	Dial func(ctx context.Context) (Networks, error)
+	Dial func(ctx context.Context) (jobNetworks, error)
 	// ListenDNS, FetchDomains and Echo serve an internet: false host's
-	// resolver, read its domain list and learn an ipv6 host's /64; ListenDNS,
-	// resolver.FetchMeta and EchoOverIPv6 in production.
+	// resolver, read its domain list and learn an ipv6 host's /64; listenDNS,
+	// resolver.FetchMeta and echoOverIPv6 in production.
 	ListenDNS    func(ctx context.Context) (net.PacketConn, net.Listener, error)
 	FetchDomains resolver.Fetch
-	Echo         Echo
+	Echo         echoFunc
 	Log          *slog.Logger
 	Root         platform.Root
 }
 
-// Net is a host whose namespace, rules and daemon are up.
-type Net struct {
-	kept       error
-	Daemon     Process
-	Docker     Networks
-	Guard      *Guard
-	rules      *Rules
-	host       *config.Host
-	log        *slog.Logger
-	echo       Echo
-	learner    *resolver.Learner
-	github     *gitHub
-	self64     atomic.Pointer[learned64]
-	dns        atomic.Pointer[[]netip.AddrPort]
-	Kernel     *platform.Kernel
-	Storage    platform.StoragePick
-	Subnet     netip.Prefix
-	Job6       netip.Prefix
-	Own64      netip.Prefix
+// hostNet is a host whose namespace, rules and daemon are up.
+type hostNet struct {
+	Daemon  process
+	Docker  jobNetworks
+	Guard   *guard
+	rules   *ruleLoader
+	host    *config.Host
+	log     *slog.Logger
+	echo    echoFunc
+	learner *resolver.Learner
+	github  *gitHub
+	self64  atomic.Pointer[learned64]
+	dns     atomic.Pointer[[]netip.AddrPort]
+	Kernel  *platform.Kernel
+	Storage platform.StoragePick
+	Subnet  netip.Prefix
+	Job6    netip.Prefix
+	Own64   netip.Prefix
+	// Gateway4 and Gateway6 are the host container's default gateways;
+	// Addr6 its own IPv6 address, with ipv6.
+	Gateway4   netip.Addr
+	Gateway6   netip.Addr
+	Addr6      netip.Addr
 	Original   egress.Resolvers
 	mu         sync.Mutex
 	NoBridgeNF bool
 }
 
-// Up brings host h up: it checks the cgroup namespace and picks the storage
+// bringUp brings host h up: it checks the cgroup namespace and picks the storage
 // driver and the rule backend, writes resolv.conf, sets the namespace's
 // IPv6, picks the job subnets, loads and compares the rules, resolves
 // GitHub's API name, and only then starts the daemon and creates the job
 // network. Any failure before the daemon starts leaves no daemon; one after
 // stops it.
-func Up(ctx context.Context, h *config.Host, p *Platform, hooks Hooks) (*Net, error) {
+func bringUp(ctx context.Context, h *config.Host, p *seams, hooks guardHooks) (*hostNet, error) {
 	if err := platform.CheckPrivateNamespace(p.Root); err != nil {
 		return nil, err
 	}
-	n := &Net{host: h, log: p.Log, echo: p.Echo}
+	n := &hostNet{host: h, log: p.Log, echo: p.Echo}
 	n.self64.Store(&learned64{err: errors.New("the host has not asked its ipv6_echo yet")})
 	n.setUpstreams(h)
 	var err error
-	if n.Storage, err = p.PickStorage(DataRoot); err != nil {
+	if n.Storage, err = p.PickStorage(dataRoot); err != nil {
 		return nil, err
 	}
 	if n.Kernel, err = platform.ProbeKernel(ctx, p.Run); err != nil {
@@ -116,21 +121,21 @@ func Up(ctx context.Context, h *config.Host, p *Platform, hooks Hooks) (*Net, er
 	return n, nil
 }
 
-func (n *Net) up(ctx context.Context, p *Platform, hooks Hooks) error {
+func (n *hostNet) up(ctx context.Context, p *seams, hooks guardHooks) error {
 	h := n.host
-	n.rules = &Rules{Run: p.Run, Kernel: n.Kernel, Root: p.Root}
+	n.rules = &ruleLoader{Run: p.Run, Kernel: n.Kernel, Root: p.Root}
 	if err := n.namespace(ctx, p); err != nil {
 		return err
 	}
 	if !h.Egress.Internet {
-		n.learner = resolver.NewLearner(n.rules.AddLearned, n.learnable(h), p.Log)
+		n.learner = resolver.NewLearner(n.rules.addLearned, n.learnable(h), p.Log)
 	}
 	want := n.want(h)
 	rs, err := want.Generate()
 	if err != nil {
 		return err
 	}
-	err = n.rules.Load(ctx, rs)
+	err = n.rules.load(ctx, rs)
 	if err != nil {
 		return err
 	}
@@ -145,12 +150,12 @@ func (n *Net) up(ctx context.Context, p *Platform, hooks Hooks) error {
 		}
 		return err
 	}
-	n.Guard = NewGuard(n.rules, want, p.Log, hooks)
+	n.Guard = newGuard(n.rules, want, p.Log, hooks)
 	return nil
 }
 
 // checkAndStart resolves GitHub's API name, then starts the daemon.
-func (n *Net) checkAndStart(ctx context.Context, p *Platform, want Want) error {
+func (n *hostNet) checkAndStart(ctx context.Context, p *seams, want wanted) error {
 	h := n.host
 	err := netsetup.CheckName(ctx, h, netsetup.Nameservers(h), p.Lookup)
 	if err != nil {
@@ -165,7 +170,7 @@ func (n *Net) checkAndStart(ctx context.Context, p *Platform, want Want) error {
 	return n.startDaemon(ctx, p)
 }
 
-func (n *Net) namespace(ctx context.Context, p *Platform) error {
+func (n *hostNet) namespace(ctx context.Context, p *seams) error {
 	h := n.host
 	var err error
 	if n.Original, err = netsetup.ReadOriginal(p.Root); err != nil {
@@ -179,6 +184,7 @@ func (n *Net) namespace(ctx context.Context, p *Platform) error {
 	if err != nil {
 		return err
 	}
+	n.Gateway4, n.Gateway6 = routes.Gateway4, routes.Gateway6
 	switch {
 	case h.Egress.IPv6:
 		err = n.ipv6(ctx, p, routes)
@@ -196,7 +202,7 @@ func (n *Net) namespace(ctx context.Context, p *Platform) error {
 	return err
 }
 
-func (n *Net) ipv6(ctx context.Context, p *Platform, routes netsetup.Routes) error {
+func (n *hostNet) ipv6(ctx context.Context, p *seams, routes netsetup.Routes) error {
 	addrs, err := netsetup.GlobalAddrs6(p.Root)
 	if err != nil {
 		return err
@@ -204,17 +210,18 @@ func (n *Net) ipv6(ctx context.Context, p *Platform, routes netsetup.Routes) err
 	if n.Own64, err = netsetup.CheckIPv6(addrs, routes, n.Kernel.IPv6NAT); err != nil {
 		return err
 	}
+	n.Addr6 = addrs[0]
 	err = netsetup.EnableIPv6Forwarding(p.Root)
 	if err != nil {
 		return err
 	}
-	n.Job6, err = netsetup.JobPrefix6(ctx, p.Root.Path(StateDir+"/job-ipv6"), routes.OnLink, p.Random)
+	n.Job6, err = netsetup.JobPrefix6(ctx, p.Root.Path(stateDir+"/job-ipv6"), routes.OnLink, p.Random)
 	return err
 }
 
-func (n *Net) want(h *config.Host) Want {
+func (n *hostNet) want(h *config.Host) wanted {
 	_, bridge6 := platform.BridgeNF(n.rules.Root)
-	w := Want{
+	w := wanted{
 		Generate: func() (*egress.Ruleset, error) {
 			st := egress.State{Own64: n.Own64, Self64: n.self64.Load().prefix}
 			if n.learner != nil {
@@ -232,10 +239,10 @@ func (n *Net) want(h *config.Host) Want {
 	return w
 }
 
-func (n *Net) startDaemon(ctx context.Context, p *Platform) error {
+func (n *hostNet) startDaemon(ctx context.Context, p *seams) error {
 	v4, _ := platform.BridgeNF(p.Root)
 	n.NoBridgeNF = !v4
-	d, err := p.StartDaemon(&DaemonSpec{Kernel: n.Kernel, Storage: n.Storage.Driver, NoBridgeNF: n.NoBridgeNF})
+	d, err := p.StartDaemon(&daemonSpec{Kernel: n.Kernel, Storage: n.Storage.Driver, NoBridgeNF: n.NoBridgeNF})
 	if err != nil {
 		return err
 	}
@@ -245,7 +252,7 @@ func (n *Net) startDaemon(ctx context.Context, p *Platform) error {
 	}
 	wctx, cancel := context.WithTimeout(ctx, daemonStartTimeout)
 	defer cancel()
-	err = WaitDaemon(wctx, d.Done(), func(ctx context.Context) error {
+	err = waitDaemon(wctx, d.Done(), func(ctx context.Context) error {
 		c, derr := p.Dial(ctx)
 		if derr == nil {
 			n.Docker = c
@@ -255,19 +262,19 @@ func (n *Net) startDaemon(ctx context.Context, p *Platform) error {
 	if err != nil {
 		return fail(err)
 	}
-	spec := &docker.NetworkSpec{Name: JobNetwork, Bridge: JobBridge, Subnet: n.Subnet, Subnet6: n.Job6}
+	spec := &docker.NetworkSpec{Name: jobNetwork, Bridge: jobBridge, Subnet: n.Subnet, Subnet6: n.Job6}
 	if err := n.Docker.EnsureNetwork(ctx, spec); err != nil {
 		return fail(fmt.Errorf("creating the job network: %w", err))
 	}
 	return nil
 }
 
-// Hold runs the guard, an internet: false host's domain list refresh and an
+// hold runs the guard, an internet: false host's domain list refresh and an
 // ipv6 host's /64 learner until ctx ends, answering nil, or until a restore
 // or a new /64's load fails, the resolver stops or the daemon exits, answering why;
 // on any failure but the daemon's exit it stops the daemon first, since jobs
 // may no longer run under the host's policy. It waits for what it started.
-func (n *Net) Hold(ctx context.Context) error {
+func (n *hostNet) hold(ctx context.Context) error {
 	hctx, cancel := context.WithCancelCause(ctx)
 	var wg sync.WaitGroup
 	defer wg.Wait()
@@ -296,7 +303,7 @@ func (n *Net) Hold(ctx context.Context) error {
 			}
 		})
 	}
-	err := n.Guard.Run(hctx)
+	err := n.Guard.run(hctx)
 	select {
 	case <-n.Daemon.Done():
 		return fmt.Errorf("dockerd exited: %w", errors.Join(err, n.Daemon.Err()))
@@ -311,9 +318,9 @@ func (n *Net) Hold(ctx context.Context) error {
 	return nil
 }
 
-// Stop stops the daemon, which stops each runner, then the host's resolver,
+// stop stops the daemon, which stops each runner, then the host's resolver,
 // and waits for both.
-func (n *Net) Stop() error {
+func (n *hostNet) stop() error {
 	err := n.Daemon.Stop()
 	if n.github != nil {
 		err = errors.Join(err, n.github.shutdown())
@@ -321,12 +328,12 @@ func (n *Net) Stop() error {
 	return err
 }
 
-// Reload swaps the host's rules for section h, read again on SIGHUP. A
+// reload swaps the host's rules for section h, read again on SIGHUP. A
 // section that changes what only a restart applies, or whose resolvers or
-// allow entries overlap the job subnet in use, keeps the old rules: kept
-// says why, and Kept answers it until a later Reload succeeds. fatal is a
-// failure the guard would answer, and the caller stops the host.
-func (n *Net) Reload(ctx context.Context, h *config.Host) (kept, fatal error) {
+// allow entries overlap the job subnet in use, keeps the old rules and
+// answers why as kept. fatal is a failure the guard would answer, and the
+// caller stops the host.
+func (n *hostNet) reload(ctx context.Context, h *config.Host) (kept, fatal error) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	kept = restartOnly(n.host, h)
@@ -337,7 +344,7 @@ func (n *Net) Reload(ctx context.Context, h *config.Host) (kept, fatal error) {
 		// The new filter goes in first: a learned address written after it
 		// passes it, and one written before is filtered by the swap's load.
 		n.setAllowed(h)
-		kept, fatal = n.Guard.Swap(ctx, n.want(h))
+		kept, fatal = n.Guard.swap(ctx, n.want(h))
 	}
 	if kept == nil && fatal == nil {
 		n.host = h
@@ -345,26 +352,18 @@ func (n *Net) Reload(ctx context.Context, h *config.Host) (kept, fatal error) {
 	} else {
 		n.setAllowed(n.host)
 	}
-	n.kept = kept
 	return kept, fatal
 }
 
-func (n *Net) setUpstreams(h *config.Host) {
+func (n *hostNet) setUpstreams(h *config.Host) {
 	ups := resolver.Upstreams(h.DNS)
 	n.dns.Store(&ups)
 }
 
-func (n *Net) setAllowed(h *config.Host) {
+func (n *hostNet) setAllowed(h *config.Host) {
 	if n.learner != nil {
 		n.learner.SetAllowed(n.learnable(h))
 	}
-}
-
-// Kept answers why the last Reload kept the old rules, or nil.
-func (n *Net) Kept() error {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	return n.kept
 }
 
 // restartOnly names the keys whose change the running host cannot apply:

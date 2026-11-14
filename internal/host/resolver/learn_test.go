@@ -189,7 +189,7 @@ func TestBound(t *testing.T) {
 		if n := strings.Count(log.String(), "level=WARN"); n != 2 {
 			t.Errorf("%d WARN lines, want a second one a minute later", n)
 		}
-		time.Sleep(time.Hour + LearnPad)
+		time.Sleep(time.Hour + learnPad)
 		_ = l.Learn(t.Context(), []Record{{Addr: addr("140.82.121.13"), TTL: time.Minute}})
 		if c := l.Counts(); c.Held[IPv4] != 1 || c.Refused[IPv4] != 3 {
 			t.Errorf("Counts = %+v, want the expired set emptied and the add taken", c)

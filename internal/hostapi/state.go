@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/cplieger/go/textsafe"
+	"github.com/cplieger/manade/internal/docker"
 )
 
 // RecordState is how far the host has taken a runner it accepted.
@@ -21,17 +22,6 @@ const (
 	RecordStarted
 	// RecordFailed is a runner whose create or start failed.
 	RecordFailed
-)
-
-// The Docker states a labelled container reads, as the daemon names them.
-const (
-	DockerCreated    = "created"
-	DockerRunning    = "running"
-	DockerPaused     = "paused"
-	DockerRestarting = "restarting"
-	DockerRemoving   = "removing"
-	DockerExited     = "exited"
-	DockerDead       = "dead"
 )
 
 // Container is one of the daemon's labelled runner containers.
@@ -66,11 +56,11 @@ type Record struct {
 
 // The reasons a list gives a runner whose record and container disagree.
 const (
-	ReasonRemovedOutside = "container removed outside the host"
-	ReasonResetOutside   = "container reset outside the host"
+	reasonRemovedOutside = "container removed outside the host"
+	reasonResetOutside   = "container reset outside the host"
 	ReasonHostRestarted  = "host restarted before its start"
-	// ReasonUnknownState is followed by the Docker state word, quoted.
-	ReasonUnknownState = "container in an unknown Docker state"
+	// reasonUnknownState is followed by the Docker state word, quoted.
+	reasonUnknownState = "container in an unknown Docker state"
 )
 
 // stateWordLimit caps the Docker state word a reason repeats.
@@ -95,11 +85,11 @@ func State(c *Container, r *Record) (Runner, bool) {
 	case c == nil && r.RemovedBy != "":
 		run.State = StateExited
 	case c == nil:
-		run.State, run.Reason = recorded(r, ReasonRemovedOutside)
-	case c.State == DockerCreated && r == nil:
+		run.State, run.Reason = recorded(r, reasonRemovedOutside)
+	case c.State == docker.StateCreated && r == nil:
 		run.State, run.Reason = StateFailed, ReasonHostRestarted
-	case c.State == DockerCreated:
-		run.State, run.Reason = recorded(r, ReasonResetOutside)
+	case c.State == docker.StateCreated:
+		run.State, run.Reason = recorded(r, reasonResetOutside)
 	default:
 		fromContainer(c, &run)
 	}
@@ -110,14 +100,14 @@ func State(c *Container, r *Record) (Runner, bool) {
 // Docker state, whatever the record says.
 func fromContainer(c *Container, run *Runner) {
 	switch c.State {
-	case DockerRunning, DockerPaused, DockerRestarting:
+	case docker.StateRunning, docker.StatePaused, docker.StateRestarting:
 		run.State = StateRunning
-	case DockerExited, DockerDead, DockerRemoving:
+	case docker.StateExited, docker.StateDead, docker.StateRemoving:
 		code := c.ExitCode
 		run.State, run.ExitCode, run.ExitedAt, run.OOMKilled = StateExited, &code, c.FinishedAt, c.OOMKilled
 	default:
 		word, _ := textsafe.SanitizeSingleLineCapped(c.State, stateWordLimit, "…")
-		run.State, run.Reason = StateFailed, ReasonUnknownState+" "+strconv.Quote(word)
+		run.State, run.Reason = StateFailed, reasonUnknownState+" "+strconv.Quote(word)
 	}
 }
 
@@ -149,7 +139,7 @@ func describe(c *Container, r *Record) Runner {
 		return run
 	}
 	run.Name, run.Profile, run.Scope, run.RunnerID = c.Name, c.Profile, c.Scope, c.RunnerID
-	if c.State != DockerCreated {
+	if c.State != docker.StateCreated {
 		run.StartedAt = c.StartedAt
 	}
 	if r == nil || r.State != RecordCreating {

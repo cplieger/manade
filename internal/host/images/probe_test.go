@@ -46,9 +46,9 @@ func TestLoadProbe(t *testing.T) {
 	if m.ProbeImage() != id {
 		t.Errorf("ProbeImage = %q, want %q", m.ProbeImage(), id)
 	}
-	img, found, _ := hs.d.InspectImage(t.Context(), ProbeRepo+":"+testVersion)
+	img, found, _ := hs.d.InspectImage(t.Context(), probeRepo+":"+testVersion)
 	if !found || img.ID != id || img.Config.Labels[docker.LabelProbeImage] != testVersion {
-		t.Errorf("probe image = %+v, %v; want tagged %s:%s and labelled", img, found, ProbeRepo, testVersion)
+		t.Errorf("probe image = %+v, %v; want tagged %s:%s and labelled", img, found, probeRepo, testVersion)
 	}
 	files := untar(t, cd.tar)
 	var cfg struct {
@@ -108,11 +108,11 @@ func (*noLoad) LoadImage(_ context.Context, r io.Reader) error {
 
 func TestProbeRef(t *testing.T) {
 	for v, want := range map[string]string{
-		"v1.0.0-dev.12": ProbeRepo + ":v1.0.0-dev.12",
-		"dev":           ProbeRepo + ":dev",
-		"":              ProbeRepo + ":dev",
-		"v1+build":      ProbeRepo + ":dev",
-		"-x":            ProbeRepo + ":dev",
+		"v1.0.0-dev.12": probeRepo + ":v1.0.0-dev.12",
+		"dev":           probeRepo + ":dev",
+		"":              probeRepo + ":dev",
+		"v1+build":      probeRepo + ":dev",
+		"-x":            probeRepo + ":dev",
 	} {
 		if got := probeRef(v); got != want {
 			t.Errorf("probeRef(%q) = %q, want %q", v, got, want)

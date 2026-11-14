@@ -15,8 +15,8 @@ import (
 )
 
 func TestDaemonArgv(t *testing.T) {
-	s := &DaemonSpec{Kernel: iptKernel(), Storage: platform.Btrfs}
-	got := s.Argv()
+	s := &daemonSpec{Kernel: iptKernel(), Storage: platform.Btrfs}
+	got := s.argv()
 	want := []string{
 		"dind", "dockerd", "--host=unix:///run/docker.sock", "--data-root=/var/lib/docker", "--storage-driver=btrfs",
 		"--bridge=none", "--ip6tables=false", "--shutdown-timeout=15",
@@ -29,7 +29,7 @@ func TestDaemonArgv(t *testing.T) {
 func TestDaemonEnv(t *testing.T) {
 	base := []string{"HOME=/root", "PATH=/usr/local/bin:/usr/bin", "DOCKER_INSECURE_NO_IPTABLES_RAW=0"}
 	t.Run("the floor", func(t *testing.T) {
-		got := (&DaemonSpec{Kernel: iptKernel(), NoBridgeNF: true}).Env(base)
+		got := (&daemonSpec{Kernel: iptKernel(), NoBridgeNF: true}).env(base)
 		want := []string{
 			"HOME=/root", "PATH=" + platform.LegacyDir + ":/usr/local/bin:/usr/bin",
 			"DOCKER_INSECURE_NO_IPTABLES_RAW=1", "DOCKER_IGNORE_BR_NETFILTER_ERROR=1",
@@ -39,7 +39,7 @@ func TestDaemonEnv(t *testing.T) {
 		}
 	})
 	t.Run("a new kernel leaves the environment alone", func(t *testing.T) {
-		got := (&DaemonSpec{Kernel: &platform.Kernel{Backend: egress.NFTables}}).Env(base[:2])
+		got := (&daemonSpec{Kernel: &platform.Kernel{Backend: egress.NFTables}}).env(base[:2])
 		if !slices.Equal(got, base[:2]) {
 			t.Errorf("Env = %q, want %q", got, base[:2])
 		}
@@ -48,7 +48,7 @@ func TestDaemonEnv(t *testing.T) {
 
 func TestDaemonStop(t *testing.T) {
 	t.Run("an exit on SIGTERM is no error", func(t *testing.T) {
-		d, err := StartDaemon(t.Context(), []string{"sleep", "60"}, nil, io.Discard)
+		d, err := startDaemon(t.Context(), []string{"sleep", "60"}, nil, io.Discard)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -63,7 +63,7 @@ func TestDaemonStop(t *testing.T) {
 		old := stopWait
 		stopWait = 100 * time.Millisecond
 		t.Cleanup(func() { stopWait = old })
-		d, err := StartDaemon(t.Context(), []string{"sh", "-c", `trap "" TERM; echo ready; while :; do sleep 0.05; done`}, nil, &readySignal{ch: make(chan struct{})})
+		d, err := startDaemon(t.Context(), []string{"sh", "-c", `trap "" TERM; echo ready; while :; do sleep 0.05; done`}, nil, &readySignal{ch: make(chan struct{})})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -73,7 +73,7 @@ func TestDaemonStop(t *testing.T) {
 		}
 	})
 	t.Run("a failing exit on SIGTERM is answered", func(t *testing.T) {
-		d, err := StartDaemon(t.Context(), []string{"sh", "-c", `trap "exit 3" TERM; echo ready; while :; do sleep 0.05; done`}, nil, &readySignal{ch: make(chan struct{})})
+		d, err := startDaemon(t.Context(), []string{"sh", "-c", `trap "exit 3" TERM; echo ready; while :; do sleep 0.05; done`}, nil, &readySignal{ch: make(chan struct{})})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -83,7 +83,7 @@ func TestDaemonStop(t *testing.T) {
 		}
 	})
 	t.Run("an exit of its own is answered", func(t *testing.T) {
-		d, err := StartDaemon(t.Context(), []string{"sh", "-c", "exit 4"}, nil, io.Discard)
+		d, err := startDaemon(t.Context(), []string{"sh", "-c", "exit 4"}, nil, io.Discard)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -111,7 +111,7 @@ func (r *readySignal) Write(p []byte) (int, error) {
 func TestWaitDaemon(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		calls := 0
-		err := WaitDaemon(t.Context(), make(chan struct{}), func(context.Context) error {
+		err := waitDaemon(t.Context(), make(chan struct{}), func(context.Context) error {
 			calls++
 			if calls < 3 {
 				return errors.New("connection refused")
@@ -125,7 +125,7 @@ func TestWaitDaemon(t *testing.T) {
 	t.Run("the daemon exits first", func(t *testing.T) {
 		done := make(chan struct{})
 		close(done)
-		err := WaitDaemon(t.Context(), done, func(context.Context) error { return errors.New("connection refused") })
+		err := waitDaemon(t.Context(), done, func(context.Context) error { return errors.New("connection refused") })
 		if err == nil || !strings.Contains(err.Error(), "exited") {
 			t.Errorf("WaitDaemon = %v", err)
 		}

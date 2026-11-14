@@ -58,7 +58,7 @@ func TestLearn64(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e := &echoes{replies: []func() ([]byte, error){tc.reply}}
-			p, err := Learn64(t.Context(), e.echo, url)
+			p, err := ask64(t.Context(), e.echo, url)
 			if tc.err != "" {
 				if err == nil || !strings.Contains(err.Error(), tc.err) || !strings.Contains(err.Error(), url) {
 					t.Errorf("Learn64 = %v, %v, want an error naming %q and the echo", p, err, tc.err)
@@ -77,7 +77,7 @@ func TestEchoOverIPv6(t *testing.T) {
 		_, _ = w.Write(trace(r.RemoteAddr))
 	}))
 	defer srv.Close()
-	echo, err := EchoOverIPv6()
+	echo, err := echoOverIPv6()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,11 +139,11 @@ func TestHoldLearns64(t *testing.T) {
 			func() ([]byte, error) { return nil, errors.New("timeout") },
 		}}
 		f := v6Fixture(t, e)
-		n, err := Up(t.Context(), v6Section(), f.platform(), Hooks{})
+		n, err := bringUp(t.Context(), v6Section(), f.platform(), guardHooks{})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if st := n.IPv6Status(); st == nil || st.Reason == "" || st.Prefix.IsValid() {
+		if st := n.iPv6Status(); st == nil || st.Reason == "" || st.Prefix.IsValid() {
 			t.Errorf("IPv6Status before any ask = %+v, want a reason", st)
 		}
 		if passes6(fwd6(f)) {
@@ -151,33 +151,33 @@ func TestHoldLearns64(t *testing.T) {
 		}
 		ctx, cancel := context.WithCancel(t.Context())
 		done := make(chan error)
-		go func() { done <- n.Hold(ctx) }()
+		go func() { done <- n.hold(ctx) }()
 		synctest.Wait()
-		if st := n.IPv6Status(); st.Prefix.IsValid() || !strings.Contains(st.Reason, "timeout") {
+		if st := n.iPv6Status(); st.Prefix.IsValid() || !strings.Contains(st.Reason, "timeout") {
 			t.Errorf("IPv6Status after a failed ask = %+v, want the failure", st)
 		}
-		time.Sleep(EchoInterval)
+		time.Sleep(echoInterval)
 		synctest.Wait()
-		if st := n.IPv6Status(); st.Prefix != pfx("2a01:e0a:1259:2710::/64") {
+		if st := n.iPv6Status(); st.Prefix != pfx("2a01:e0a:1259:2710::/64") {
 			t.Errorf("IPv6Status = %+v, want the learned /64", st)
 		}
 		if r := fwd6(f); !passes6(r) || !dropsPrefix(r, "2a01:e0a:1259:2710::/64") {
 			t.Errorf("MANADE-FWD6 = %q, want IPv6 passing with the learned /64 dropped", r)
 		}
 		loads := restores(f)
-		time.Sleep(EchoInterval)
+		time.Sleep(echoInterval)
 		synctest.Wait()
 		if got := restores(f); got != loads {
 			t.Errorf("the same /64 loaded the rules again (%d restores, then %d)", loads, got)
 		}
-		time.Sleep(EchoInterval)
+		time.Sleep(echoInterval)
 		synctest.Wait()
 		if r := fwd6(f); !dropsPrefix(r, "2a01:e0a:aaaa:bbbb::/64") || dropsPrefix(r, "2a01:e0a:1259:2710::/64") {
 			t.Errorf("MANADE-FWD6 = %q, want the rotated /64 followed", r)
 		}
-		time.Sleep(EchoInterval)
+		time.Sleep(echoInterval)
 		synctest.Wait()
-		if st := n.IPv6Status(); st.Prefix != pfx("2a01:e0a:aaaa:bbbb::/64") {
+		if st := n.iPv6Status(); st.Prefix != pfx("2a01:e0a:aaaa:bbbb::/64") {
 			t.Errorf("IPv6Status after a failed ask = %+v, want the last /64 kept", st)
 		}
 		cancel()
@@ -193,12 +193,12 @@ func TestHoldLearns64(t *testing.T) {
 func TestHoldEndsWhenA64CannotLoad(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := v6Fixture(t, &echoes{replies: []func() ([]byte, error){answer("2a01:e0a:1259:2710::7008")}})
-		n, err := Up(t.Context(), v6Section(), f.platform(), Hooks{})
+		n, err := bringUp(t.Context(), v6Section(), f.platform(), guardHooks{})
 		if err != nil {
 			t.Fatal(err)
 		}
 		f.kernel.fail[platform.LegacyDir+"/ip6tables-restore"] = errors.New("refused")
-		if err := n.Hold(t.Context()); err == nil || !strings.Contains(err.Error(), "loading the egress rules again") || f.proc.stopped != 1 {
+		if err := n.hold(t.Context()); err == nil || !strings.Contains(err.Error(), "loading the egress rules again") || f.proc.stopped != 1 {
 			t.Errorf("Hold = %v, stopped %d, want the failure with the daemon stopped", err, f.proc.stopped)
 		}
 	})
@@ -210,16 +210,16 @@ func TestNoEchoWithoutIPv6AndInternet(t *testing.T) {
 		t.Error("an IPv4 host asked its ipv6_echo")
 		return nil, errors.New("no")
 	}
-	n, err := Up(t.Context(), section(), f.platform(), Hooks{})
+	n, err := bringUp(t.Context(), section(), f.platform(), guardHooks{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n.IPv6Status() != nil {
+	if n.iPv6Status() != nil {
 		t.Error("an IPv4 host reports a /64")
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	if err := n.Hold(ctx); err != nil {
+	if err := n.hold(ctx); err != nil {
 		t.Errorf("Hold = %v", err)
 	}
 }

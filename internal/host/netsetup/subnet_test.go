@@ -44,7 +44,7 @@ func TestPickSubnet(t *testing.T) {
 	}
 	t.Run("every pool taken", func(t *testing.T) {
 		_, err := PickSubnet(section(), []netip.Prefix{pfx("172.16.0.0/12"), pfx("192.168.0.0/16")})
-		if !errors.Is(err, ErrNoSubnet) || !strings.Contains(err.Error(), "hosts.lan.network.subnet") {
+		if !errors.Is(err, errNoSubnet) || !strings.Contains(err.Error(), "hosts.lan.network.subnet") {
 			t.Errorf("PickSubnet = %v, want a refusal naming hosts.lan.network.subnet", err)
 		}
 	})
@@ -68,7 +68,7 @@ func TestCheckSubnet(t *testing.T) {
 	h := section()
 	h.Subnet = pfx("172.20.0.0/24")
 	err := CheckSubnet(h, []netip.Prefix{pfx("fd00::/64"), pfx("172.20.0.0/16")})
-	if !errors.Is(err, ErrNoSubnet) || !strings.Contains(err.Error(), "172.20.0.0/24") || !strings.Contains(err.Error(), "172.20.0.0/16") {
+	if !errors.Is(err, errNoSubnet) || !strings.Contains(err.Error(), "172.20.0.0/24") || !strings.Contains(err.Error(), "172.20.0.0/16") {
 		t.Errorf("CheckSubnet = %v, want a refusal naming both", err)
 	}
 	if err := CheckSubnet(h, []netip.Prefix{pfx("172.21.0.0/16")}); err != nil {

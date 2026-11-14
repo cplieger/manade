@@ -26,7 +26,7 @@ const metaBody = `{"verifiable_password_authentication":false,"actions":["4.148.
 "wildcard_domains":["*.githubusercontent.com","*.github.com","ghcr.io"]}}}`
 
 func TestParseMeta(t *testing.T) {
-	d, err := ParseMeta([]byte(metaBody))
+	d, err := parseMeta([]byte(metaBody))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,7 +41,7 @@ func TestParseMeta(t *testing.T) {
 		{"a bad name", `{"domains":{"actions_inbound":{"full_domains":["a b"]}}}`, `"a b"`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := ParseMeta([]byte(tc.body)); err == nil || !strings.Contains(err.Error(), tc.want) {
+			if _, err := parseMeta([]byte(tc.body)); err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Errorf("ParseMeta = %v, want an error naming %s", err, tc.want)
 			}
 		})
@@ -170,11 +170,11 @@ func TestSourceRunRefreshesEverySixHours(t *testing.T) {
 		ctx, cancel := context.WithCancel(t.Context())
 		done := make(chan struct{})
 		go func() { s.Run(ctx); close(done) }()
-		time.Sleep(DomainsRefresh + time.Second)
+		time.Sleep(domainsRefresh + time.Second)
 		if f.calls.Load() != 2 || !s.List().At.Equal(first) || !s.Matcher().Match("codeload.github.com") {
 			t.Errorf("after a failed refresh: calls %d, list %+v, want the last good list kept", f.calls.Load(), s.List())
 		}
-		time.Sleep(DomainsRefresh)
+		time.Sleep(domainsRefresh)
 		if f.calls.Load() != 3 || s.Matcher().Match("codeload.github.com") || s.List().At.Equal(first) {
 			t.Errorf("after a good refresh: calls %d, list %+v, want the new list", f.calls.Load(), s.List())
 		}

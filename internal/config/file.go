@@ -83,13 +83,13 @@ func (f *fileConfig) apply(cfg *Config, p *problems) {
 func (f *fileConfig) hosts(refresh time.Duration, p *problems) []Host {
 	if f.Hosts == nil {
 		h := fileHost{Capacity: f.Capacity}
-		return []Host{h.parse(DefaultHost, hostPath(DefaultHost), "capacity", refresh, p)}
+		return []Host{h.parse(defaultHost, hostPath(defaultHost), "capacity", refresh, p)}
 	}
 	if f.Capacity != nil {
 		p.addf("capacity", "set each host's budget under hosts.<name>.capacity when hosts is set")
 	}
 	if len(f.Hosts) == 0 {
-		p.addf("hosts", "define at least one host, or leave hosts out for one host named %s", DefaultHost)
+		p.addf("hosts", "define at least one host, or leave hosts out for one host named %s", defaultHost)
 	}
 	out := make([]Host, 0, len(f.Hosts))
 	for _, name := range slices.Sorted(maps.Keys(f.Hosts)) {

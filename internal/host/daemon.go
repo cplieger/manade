@@ -18,11 +18,11 @@ import (
 // Where the host's daemon keeps its data and serves its API, inside the
 // host container only.
 const (
-	DataRoot     = "/var/lib/docker"
-	DaemonSocket = "/run/docker.sock"
-	// StateDir holds the host's own files on the data volume, outside
+	dataRoot     = "/var/lib/docker"
+	daemonSocket = "/run/docker.sock"
+	// stateDir holds the host's own files on the data volume, outside
 	// Docker's layout.
-	StateDir = DataRoot + "/manade"
+	stateDir = dataRoot + "/manade"
 )
 
 // shutdownTimeout is dockerd's wait for its containers on SIGTERM; with
@@ -33,8 +33,8 @@ const shutdownTimeout = 15
 // test can shorten it.
 var stopWait = 25 * time.Second
 
-// DaemonSpec is what the daemon's command line is built from.
-type DaemonSpec struct {
+// daemonSpec is what the daemon's command line is built from.
+type daemonSpec struct {
 	Kernel  *platform.Kernel
 	Storage platform.Driver
 	// NoBridgeNF is a namespace without bridge-nf-call-iptables, which
@@ -42,15 +42,15 @@ type DaemonSpec struct {
 	NoBridgeNF bool
 }
 
-// Argv answers the daemon's command line, run through the image's dind
+// argv answers the daemon's command line, run through the image's dind
 // script and never dockerd-entrypoint.sh, whose defaults generate TLS files
 // and listen on TCP 2376. An explicit graph driver keeps Docker 29 off its
 // containerd image store, which a full volume wedges.
-func (s *DaemonSpec) Argv() []string {
+func (s *daemonSpec) argv() []string {
 	return []string{
 		"dind", "dockerd",
-		"--host=unix://" + DaemonSocket,
-		"--data-root=" + DataRoot,
+		"--host=unix://" + daemonSocket,
+		"--data-root=" + dataRoot,
 		"--storage-driver=" + string(s.Storage),
 		"--bridge=none",
 		"--ip6tables=false",
@@ -58,10 +58,10 @@ func (s *DaemonSpec) Argv() []string {
 	}
 }
 
-// Env answers the daemon's environment from base, the supervisor's: on the
+// env answers the daemon's environment from base, the supervisor's: on the
 // iptables backend the legacy binaries first in PATH, since the image's
 // default iptables is the nf_tables variant, and the kernel's opt-outs.
-func (s *DaemonSpec) Env(base []string) []string {
+func (s *daemonSpec) env(base []string) []string {
 	set := map[string]string{}
 	path := ""
 	for _, kv := range base {
@@ -93,23 +93,23 @@ func (s *DaemonSpec) Env(base []string) []string {
 	return out
 }
 
-// Daemon is the running dockerd.
-type Daemon struct {
+// dockerd is the running dockerd.
+type dockerd struct {
 	cmd  *exec.Cmd
 	done chan struct{}
 	err  error
 }
 
-// StartDaemon starts argv with env, its output to out. ctx's cancellation
+// startDaemon starts argv with env, its output to out. ctx's cancellation
 // never ends the process: only Stop does, so dockerd always gets its
 // SIGTERM.
-func StartDaemon(ctx context.Context, argv, env []string, out io.Writer) (*Daemon, error) {
-	cmd := exec.CommandContext(context.WithoutCancel(ctx), argv[0], argv[1:]...) //nolint:gosec // G204: argv is DaemonSpec.Argv, which this package builds
+func startDaemon(ctx context.Context, argv, env []string, out io.Writer) (*dockerd, error) {
+	cmd := exec.CommandContext(context.WithoutCancel(ctx), argv[0], argv[1:]...) //nolint:gosec // G204: argv is daemonSpec.argv, which this package builds
 	cmd.Env, cmd.Stdout, cmd.Stderr = env, out, out
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("starting dockerd: %w", err)
 	}
-	d := &Daemon{cmd: cmd, done: make(chan struct{})}
+	d := &dockerd{cmd: cmd, done: make(chan struct{})}
 	go func() {
 		d.err = cmd.Wait()
 		close(d.done)
@@ -118,18 +118,18 @@ func StartDaemon(ctx context.Context, argv, env []string, out io.Writer) (*Daemo
 }
 
 // PID is the daemon's process ID.
-func (d *Daemon) PID() int { return d.cmd.Process.Pid }
+func (d *dockerd) PID() int { return d.cmd.Process.Pid }
 
 // Done is closed once the daemon has exited.
-func (d *Daemon) Done() <-chan struct{} { return d.done }
+func (d *dockerd) Done() <-chan struct{} { return d.done }
 
 // Err answers how the daemon exited; call it after Done is closed.
-func (d *Daemon) Err() error { return d.err }
+func (d *dockerd) Err() error { return d.err }
 
 // Stop sends the daemon SIGTERM, which stops each runner, and waits for it
 // to exit, killing it after stopWait. It answers how the daemon exited, nil
 // for an exit on that SIGTERM.
-func (d *Daemon) Stop() error {
+func (d *dockerd) Stop() error {
 	select {
 	case <-d.done:
 		return d.err
@@ -155,11 +155,11 @@ func (d *Daemon) Stop() error {
 	return d.err
 }
 
-// daemonPoll is how often WaitDaemon asks the daemon.
+// daemonPoll is how often waitDaemon asks the daemon.
 const daemonPoll = 500 * time.Millisecond
 
-// WaitDaemon calls answer until it succeeds, the daemon exits or ctx ends.
-func WaitDaemon(ctx context.Context, done <-chan struct{}, answer func(ctx context.Context) error) error {
+// waitDaemon calls answer until it succeeds, the daemon exits or ctx ends.
+func waitDaemon(ctx context.Context, done <-chan struct{}, answer func(ctx context.Context) error) error {
 	t := time.NewTicker(daemonPoll)
 	defer t.Stop()
 	for {

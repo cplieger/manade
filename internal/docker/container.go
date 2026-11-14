@@ -20,7 +20,7 @@ import (
 // image the host builds.
 const (
 	LabelManaged     = "manade.managed"
-	LabelCreated     = "manade.created"
+	labelCreated     = "manade.created"
 	LabelRunnerImage = "manade.runner-image"
 	LabelProbeImage  = "manade.probe-image"
 
@@ -37,7 +37,6 @@ type CreateRequest struct {
 	Image      string            `json:"Image"`
 	User       string            `json:"User,omitempty"`
 	Entrypoint []string          `json:"Entrypoint,omitempty"`
-	Cmd        []string          `json:"Cmd,omitempty"`
 	Env        []string          `json:"Env,omitempty"`
 	HostConfig HostConfig        `json:"HostConfig"`
 	// OpenStdin and StdinOnce, with AttachStdin and AttachStdout, let an
@@ -168,7 +167,7 @@ func ownIfMine(ctr *Container, req *CreateRequest, callErr error) Result {
 		return Result{Outcome: Failed, Err: callErr}
 	}
 	for k, v := range req.Labels {
-		if k != LabelManaged && k != LabelCreated && ctr.Config.Labels[k] != v {
+		if k != LabelManaged && k != labelCreated && ctr.Config.Labels[k] != v {
 			return Result{Outcome: Failed, Err: callErr}
 		}
 	}
@@ -314,11 +313,13 @@ func (c *Client) startOnce(ctx context.Context, id string) (timedOut bool, err e
 
 // The container states the daemon reports, as it names them.
 const (
-	StateCreated  = "created"
-	StateRunning  = "running"
-	StateRemoving = "removing"
-	StateExited   = "exited"
-	StateDead     = "dead"
+	StateCreated    = "created"
+	StateRunning    = "running"
+	StatePaused     = "paused"
+	StateRestarting = "restarting"
+	StateRemoving   = "removing"
+	StateExited     = "exited"
+	StateDead       = "dead"
 )
 
 // Summary is one entry of ListContainers.
@@ -327,7 +328,6 @@ type Summary struct {
 	ID     string `json:"Id"`
 	// State is the daemon's state word, one of the State constants.
 	State string
-	Names []string
 }
 
 // ListContainers lists every managed container, running or not.
@@ -357,11 +357,7 @@ type Container struct {
 	NetworkSettings struct {
 		Networks map[string]Endpoint
 	}
-	ID string `json:"Id"`
-	// Name is the container's name with Docker's leading slash.
-	Name string
-	// Image is the ID of the image the container was created from.
-	Image string
+	ID    string `json:"Id"`
 	State struct {
 		StartedAt  time.Time
 		FinishedAt time.Time
@@ -414,8 +410,8 @@ func (c *Client) inspectIn(ctx context.Context, ref string) (ctr Container, foun
 	return ctr, true, nil
 }
 
-// ErrNotOwned is a removal refused for an object without LabelManaged.
-var ErrNotOwned = errors.New("docker: not created by this host")
+// errNotOwned is a removal refused for an object without LabelManaged.
+var errNotOwned = errors.New("docker: not created by this host")
 
 // StopContainer sends the container SIGTERM and kills it after grace. A
 // container already stopped or gone is no error.
@@ -431,7 +427,7 @@ func (c *Client) StopContainer(ctx context.Context, id string, grace time.Durati
 }
 
 // RemoveOwned force-removes a container only when it carries LabelManaged;
-// ErrNotOwned otherwise. It re-inspects first and removes the inspected ID,
+// errNotOwned otherwise. It re-inspects first and removes the inspected ID,
 // so a name cannot be swapped in between. A container already gone is no
 // error; one whose removal is already in progress answers ErrConflict.
 func (c *Client) RemoveOwned(ctx context.Context, ref string) error {
@@ -440,7 +436,7 @@ func (c *Client) RemoveOwned(ctx context.Context, ref string) error {
 		return err
 	}
 	if ctr.Config.Labels[LabelManaged] != managedValue {
-		return fmt.Errorf("%w: container %s", ErrNotOwned, ctr.ID)
+		return fmt.Errorf("%w: container %s", errNotOwned, ctr.ID)
 	}
 	return c.remove(ctx, ctr.ID)
 }

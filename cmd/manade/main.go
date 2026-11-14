@@ -1,6 +1,10 @@
 // Command manade serves a pool of self-hosted GitHub Actions runners on one
 // Docker daemon. With no argument it serves; `manade health` is the image's
-// healthcheck, which reads the health marker the server keeps.
+// healthcheck, which reads the health marker the server keeps. `manade host`
+// runs a runner host, `manade probe` its probe's in-container side, `manade
+// pki` issues the TLS files of a pool whose hosts are reached over TCP, and
+// `manade storage-driver <dir>` answers the graph driver a job's own daemon
+// runs on.
 package main
 
 import (
@@ -41,6 +45,8 @@ const dockerTimeout = 30 * time.Second
 
 func main() { os.Exit(run(os.Args[1:], os.Stderr)) }
 
+const usage = "usage: manade [health | host [health] | probe [listen] | pki <dir> <host>... | storage-driver <dir>]"
+
 // run dispatches one command and returns the exit code: 0 after a clean
 // shutdown, 1 when the pool cannot start or stops on a failure, 2 on a usage
 // error. The health command exits inside RunProbe.
@@ -51,8 +57,16 @@ func run(args []string, stderr io.Writer) int {
 	case len(args) == 1 && args[0] == "health":
 		health.RunProbe(markerPath, health.WithMaxAge(markerLease.Duration()))
 		return 0
+	case args[0] == "host":
+		return runHost(args[1:], stderr)
+	case args[0] == "probe":
+		return runProbe(args[1:], stderr)
+	case args[0] == "pki":
+		return runPKI(args[1:], stderr)
+	case len(args) == 2 && args[0] == "storage-driver":
+		return runStorageDriver(args[1], stderr)
 	default:
-		_, _ = fmt.Fprintln(stderr, "usage: manade [health]")
+		_, _ = fmt.Fprintln(stderr, usage)
 		return 2
 	}
 }

@@ -22,16 +22,16 @@ const maxJumpDeletes = 64
 // ipTablesMatches lists the iptables matches the kernel has loaded.
 const ipTablesMatches = "/proc/net/ip_tables_matches"
 
-// Rules loads rule sets through the kernel's backend and reads them back.
-type Rules struct {
+// ruleLoader loads rule sets through the kernel's backend and reads them back.
+type ruleLoader struct {
 	Run    platform.Command
 	Kernel *platform.Kernel
 	Root   platform.Root
 }
 
-// Load loads rs, then reads the kernel back and compares, so a load the
+// load loads rs, then reads the kernel back and compares, so a load the
 // kernel took differently fails like one it refused.
-func (l *Rules) Load(ctx context.Context, rs *egress.Ruleset) error {
+func (l *ruleLoader) load(ctx context.Context, rs *egress.Ruleset) error {
 	var err error
 	if rs.Backend == egress.NFTables {
 		_, err = l.Run(ctx, []byte(rs.NFT), "nft", "-f", "-")
@@ -41,11 +41,11 @@ func (l *Rules) Load(ctx context.Context, rs *egress.Ruleset) error {
 	if err != nil {
 		return fmt.Errorf("loading the egress rules: %w", err)
 	}
-	return l.Check(ctx, rs)
+	return l.check(ctx, rs)
 }
 
-// Check reads the kernel's rules back and compares them with rs.
-func (l *Rules) Check(ctx context.Context, rs *egress.Ruleset) error {
+// check reads the kernel's rules back and compares them with rs.
+func (l *ruleLoader) check(ctx context.Context, rs *egress.Ruleset) error {
 	rb, err := l.readBack(ctx, rs)
 	if err != nil {
 		return fmt.Errorf("reading the egress rules back: %w", err)
@@ -53,9 +53,9 @@ func (l *Rules) Check(ctx context.Context, rs *egress.Ruleset) error {
 	return rs.Compare(rb)
 }
 
-// AddLearned adds ls to the loaded rule set's learned sets, renewing the
+// addLearned adds ls to the loaded rule set's learned sets, renewing the
 // timeout of any already there; it is a resolver.SetWriter.
-func (l *Rules) AddLearned(ctx context.Context, ls []egress.Learned) error {
+func (l *ruleLoader) addLearned(ctx context.Context, ls []egress.Learned) error {
 	payload := []byte(egress.Refresh(l.Kernel.Backend, ls))
 	var err error
 	if l.Kernel.Backend == egress.NFTables {
@@ -69,7 +69,7 @@ func (l *Rules) AddLearned(ctx context.Context, ls []egress.Learned) error {
 	return nil
 }
 
-func (l *Rules) loadIPT(ctx context.Context, rs *egress.Ruleset) error {
+func (l *ruleLoader) loadIPT(ctx context.Context, rs *egress.Ruleset) error {
 	if err := l.loadSets(ctx, rs); err != nil {
 		return err
 	}
@@ -92,7 +92,7 @@ func (l *Rules) loadIPT(ctx context.Context, rs *egress.Ruleset) error {
 	return nil
 }
 
-func (l *Rules) loadSets(ctx context.Context, rs *egress.Ruleset) error {
+func (l *ruleLoader) loadSets(ctx context.Context, rs *egress.Ruleset) error {
 	if rs.IPSet == "" {
 		return nil
 	}
@@ -103,7 +103,7 @@ func (l *Rules) loadSets(ctx context.Context, rs *egress.Ruleset) error {
 	return err
 }
 
-func (l *Rules) restore(ctx context.Context, rs *egress.Ruleset, v6 bool, payload string) error {
+func (l *ruleLoader) restore(ctx context.Context, rs *egress.Ruleset, v6 bool, payload string) error {
 	if payload == "" {
 		return nil
 	}
@@ -114,13 +114,13 @@ func (l *Rules) restore(ctx context.Context, rs *egress.Ruleset, v6 bool, payloa
 	return err
 }
 
-func (l *Rules) hasSetMatch() bool {
+func (l *ruleLoader) hasSetMatch() bool {
 	b, err := os.ReadFile(l.Root.Path(ipTablesMatches))
 	return err == nil && slices.Contains(strings.Fields(string(b)), "set")
 }
 
 // ensureFirst makes j its chain's first rule, removing any copy elsewhere.
-func (l *Rules) ensureFirst(ctx context.Context, j egress.Jump) error {
+func (l *ruleLoader) ensureFirst(ctx context.Context, j egress.Jump) error {
 	bin := l.Kernel.Binary(saveTool(j.IPv6))
 	out, err := l.Run(ctx, nil, bin, "-w", "-t", j.Table, "-S", j.Chain)
 	if err != nil {
@@ -136,7 +136,7 @@ func (l *Rules) ensureFirst(ctx context.Context, j egress.Jump) error {
 
 // deleteJump deletes every copy of j; the delete of a missing rule fails,
 // which ends the loop.
-func (l *Rules) deleteJump(ctx context.Context, j egress.Jump) {
+func (l *ruleLoader) deleteJump(ctx context.Context, j egress.Jump) {
 	bin := l.Kernel.Binary(saveTool(j.IPv6))
 	for range maxJumpDeletes {
 		if _, err := l.Run(ctx, nil, bin, "-w", "-t", j.Table, "-D", j.Chain, "-j", j.Target); err != nil {
@@ -163,17 +163,18 @@ func saveTool(v6 bool) string {
 	return "iptables"
 }
 
-func (l *Rules) readBack(ctx context.Context, rs *egress.Ruleset) (*egress.ReadBack, error) {
+func (l *ruleLoader) readBack(ctx context.Context, rs *egress.Ruleset) (*egress.ReadBack, error) {
 	rb := &egress.ReadBack{}
 	var err error
 	if rs.Backend == egress.NFTables {
 		rb.NFT, err = l.Run(ctx, nil, "nft", "-j", "list", "ruleset")
 		return rb, err
 	}
-	if rb.IPv4, err = l.Run(ctx, nil, l.Kernel.Binary("iptables-save")); err != nil {
+	// -c lists each rule's counters, which the probe's verdicts read.
+	if rb.IPv4, err = l.Run(ctx, nil, l.Kernel.Binary("iptables-save"), "-c"); err != nil {
 		return nil, err
 	}
-	if rb.IPv6, err = l.Run(ctx, nil, l.Kernel.Binary("ip6tables-save")); err != nil {
+	if rb.IPv6, err = l.Run(ctx, nil, l.Kernel.Binary("ip6tables-save"), "-c"); err != nil {
 		return nil, err
 	}
 	if rs.IPSet != "" {
@@ -182,16 +183,16 @@ func (l *Rules) readBack(ctx context.Context, rs *egress.Ruleset) (*egress.ReadB
 	return rb, err
 }
 
-// What the 5-second check restores, as Hooks.Restored names it.
+// What the 5-second check restores, as guardHooks.Restored names it.
 const (
-	RestoredRules      = "rules"
-	RestoredIPv6       = "ipv6"
-	RestoredBridgeNF6  = "bridge-nf-call-ip6tables"
-	RestoredResolvConf = "resolv.conf"
+	restoredRules      = "rules"
+	restoredIPv6       = "ipv6"
+	restoredBridgeNF6  = "bridge-nf-call-ip6tables"
+	restoredResolvConf = "resolv.conf"
 )
 
-// Hooks are told what the 5-second check did. Either may be nil.
-type Hooks struct {
+// guardHooks are told what the 5-second check did. Either may be nil.
+type guardHooks struct {
 	// Restored is called once per restored item, after it was restored.
 	Restored func(what string)
 	// Checked is called after each check that ended with everything in
@@ -199,8 +200,8 @@ type Hooks struct {
 	Checked func()
 }
 
-// Want is what the 5-second check holds in place.
-type Want struct {
+// wanted is what the 5-second check holds in place.
+type wanted struct {
 	// Loading, when set, is held from each load's generation to its load.
 	Loading sync.Locker
 	// Generate builds the rule set from what the host holds at the time, so
@@ -213,36 +214,36 @@ type Want struct {
 	BridgeNF6 bool
 }
 
-// Guard holds the host's rules and namespace settings in place. Its methods
+// guard holds the host's rules and namespace settings in place. Its methods
 // are safe for concurrent use; a check and a swap run one at a time.
-type Guard struct {
-	rules *Rules
+type guard struct {
+	rules *ruleLoader
 	log   *slog.Logger
-	hooks Hooks
-	want  Want
+	hooks guardHooks
+	want  wanted
 	mu    sync.Mutex
 }
 
-// NewGuard answers a Guard holding want, which the caller has loaded.
-func NewGuard(rules *Rules, want Want, log *slog.Logger, hooks Hooks) *Guard {
-	return &Guard{rules: rules, want: want, log: log, hooks: hooks}
+// newGuard answers a guard holding want, which the caller has loaded.
+func newGuard(rules *ruleLoader, want wanted, log *slog.Logger, hooks guardHooks) *guard {
+	return &guard{rules: rules, want: want, log: log, hooks: hooks}
 }
 
-// CheckInterval is how often Run checks.
-const CheckInterval = 5 * time.Second
+// checkInterval is how often run checks.
+const checkInterval = 5 * time.Second
 
-// Run checks every CheckInterval until ctx ends, answering nil then, or
+// run checks every checkInterval until ctx ends, answering nil then, or
 // until a restore fails, answering why: the caller then stops the daemon,
 // since jobs may no longer run under the host's policy.
-func (g *Guard) Run(ctx context.Context) error {
-	t := time.NewTicker(CheckInterval)
+func (g *guard) run(ctx context.Context) error {
+	t := time.NewTicker(checkInterval)
 	defer t.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
 		case <-t.C:
-			if err := g.Check(ctx); err != nil {
+			if err := g.check(ctx); err != nil {
 				if ctx.Err() != nil {
 					return nil
 				}
@@ -252,20 +253,20 @@ func (g *Guard) Run(ctx context.Context) error {
 	}
 }
 
-// Check restores whatever has left its wanted state, logging each restore
+// check restores whatever has left its wanted state, logging each restore
 // at ERROR, and fails only when a restore fails.
-func (g *Guard) Check(ctx context.Context) error {
+func (g *guard) check(ctx context.Context) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	rs, err := g.want.Generate()
 	if err != nil {
 		return err
 	}
-	if cerr := g.rules.Check(ctx, rs); cerr != nil {
+	if cerr := g.rules.check(ctx, rs); cerr != nil {
 		if err := g.load(ctx, g.want); err != nil {
 			return fmt.Errorf("restoring the egress rules: %w", err)
 		}
-		g.restored(RestoredRules, cerr)
+		g.restored(restoredRules, cerr)
 	}
 	for _, s := range g.settings() {
 		if !s.wanted {
@@ -292,39 +293,39 @@ type setting struct {
 	wanted    bool
 }
 
-func (g *Guard) settings() []setting {
+func (g *guard) settings() []setting {
 	r, w := g.rules.Root, g.want
 	return []setting{
 		{
-			what: RestoredIPv6, why: "IPv6 was on in the host's namespace", wanted: w.IPv6Off,
+			what: restoredIPv6, why: "IPv6 was on in the host's namespace", wanted: w.IPv6Off,
 			holds: func() (bool, error) { return netsetup.IPv6Off(r) },
 			set:   func() error { return netsetup.TurnIPv6Off(r) },
 		},
 		{
-			what: RestoredBridgeNF6, why: "bridge-nf-call-ip6tables was not 1", wanted: w.BridgeNF6,
+			what: restoredBridgeNF6, why: "bridge-nf-call-ip6tables was not 1", wanted: w.BridgeNF6,
 			holds: func() (bool, error) { return netsetup.BridgeNF6On(r) },
 			set:   func() error { return netsetup.SetBridgeNF6(r) },
 		},
 		{
-			what: RestoredResolvConf, why: "resolv.conf was replaced", wanted: true,
+			what: restoredResolvConf, why: "resolv.conf was replaced", wanted: true,
 			holds: func() (bool, error) { return netsetup.ResolvConfHolds(r, w.Resolv) },
 			set:   func() error { return netsetup.WriteResolvConf(r, w.Resolv) },
 		},
 	}
 }
 
-func (g *Guard) restored(what string, why error) {
+func (g *guard) restored(what string, why error) {
 	g.log.Error("A host setting changed from outside and was restored", "what", what, "err", why)
 	if g.hooks.Restored != nil {
 		g.hooks.Restored(what)
 	}
 }
 
-// Swap loads want's rules and resolv.conf and holds them from now on. When
+// swap loads want's rules and resolv.conf and holds them from now on. When
 // the rules fail to load it loads the ones it held again and keeps holding
 // them, answering the failure as kept. fatal is a failure a restore would
 // answer: the old rules failing to load again, or resolv.conf unwritable.
-func (g *Guard) Swap(ctx context.Context, want Want) (kept, fatal error) {
+func (g *guard) swap(ctx context.Context, want wanted) (kept, fatal error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if err := g.load(ctx, want); err != nil {
@@ -337,10 +338,10 @@ func (g *Guard) Swap(ctx context.Context, want Want) (kept, fatal error) {
 	return nil, netsetup.WriteResolvConf(g.rules.Root, want.Resolv)
 }
 
-// Refresh loads the rule set generated from what the host holds now, for a
+// refresh loads the rule set generated from what the host holds now, for a
 // change the host made itself, such as a learned /64. A failure is one a
 // restore would answer, and the caller stops the host.
-func (g *Guard) Refresh(ctx context.Context) error {
+func (g *guard) refresh(ctx context.Context) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if err := g.load(ctx, g.want); err != nil {
@@ -350,7 +351,7 @@ func (g *Guard) Refresh(ctx context.Context) error {
 }
 
 // load generates want's rule set and loads it, holding want.Loading.
-func (g *Guard) load(ctx context.Context, want Want) error {
+func (g *guard) load(ctx context.Context, want wanted) error {
 	if want.Loading != nil {
 		want.Loading.Lock()
 		defer want.Loading.Unlock()
@@ -359,5 +360,21 @@ func (g *Guard) load(ctx context.Context, want Want) error {
 	if err != nil {
 		return err
 	}
-	return g.rules.Load(ctx, rs)
+	return g.rules.load(ctx, rs)
+}
+
+// probeCounts reads the probe counters of the rule set the guard holds; a
+// rule set that no longer matches fails, as the next check restores it.
+func (g *guard) probeCounts(ctx context.Context) (egress.ProbeCounts, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	rs, err := g.want.Generate()
+	if err != nil {
+		return egress.ProbeCounts{}, err
+	}
+	rb, err := g.rules.readBack(ctx, rs)
+	if err != nil {
+		return egress.ProbeCounts{}, fmt.Errorf("reading the probe counters: %w", err)
+	}
+	return rs.ProbeCounts(rb)
 }

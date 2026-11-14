@@ -23,8 +23,8 @@ func TestNameservers(t *testing.T) {
 }
 
 func TestResolvConfWrittenInPlace(t *testing.T) {
-	r := tree(t, map[string]string{ResolvConf: "# ExtServers: [host(192.168.1.1)]\nnameserver 127.0.0.11\noptions ndots:0\n"})
-	before, err := os.Stat(r.Path(ResolvConf))
+	r := tree(t, map[string]string{resolvConf: "# ExtServers: [host(192.168.1.1)]\nnameserver 127.0.0.11\noptions ndots:0\n"})
+	before, err := os.Stat(r.Path(resolvConf))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,7 +39,7 @@ func TestResolvConfWrittenInPlace(t *testing.T) {
 	if err := WriteResolvConf(r, content); err != nil {
 		t.Fatal(err)
 	}
-	after, err := os.Stat(r.Path(ResolvConf))
+	after, err := os.Stat(r.Path(resolvConf))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,13 +91,13 @@ func TestCheckName(t *testing.T) {
 func TestCheckIPv6(t *testing.T) {
 	global := []netip.Addr{addr("fd00:c8::2"), addr("2a01:e0a:1259:2710::b")}
 	t.Run("every prerequisite", func(t *testing.T) {
-		own, err := CheckIPv6(global, Routes{Default6: true}, true)
+		own, err := CheckIPv6(global, Routes{Gateway6: addr("fd00:c8::1")}, true)
 		if err != nil || own != pfx("2a01:e0a:1259:2710::/64") {
 			t.Errorf("CheckIPv6 = %v, %v, want the global address's /64", own, err)
 		}
 	})
 	t.Run("a ULA address alone gives no own /64", func(t *testing.T) {
-		own, err := CheckIPv6(global[:1], Routes{Default6: true}, true)
+		own, err := CheckIPv6(global[:1], Routes{Gateway6: addr("fd00:c8::1")}, true)
 		if err != nil || own.IsValid() {
 			t.Errorf("CheckIPv6 = %v, %v, want no own /64", own, err)
 		}
@@ -105,7 +105,7 @@ func TestCheckIPv6(t *testing.T) {
 	t.Run("the floor kernel names all three", func(t *testing.T) {
 		_, err := CheckIPv6(nil, Routes{}, false)
 		for _, want := range []string{"no IPv6 address", "no IPv6 default route", "no IPv6 nat table"} {
-			if !errors.Is(err, ErrNoIPv6) || !strings.Contains(err.Error(), want) {
+			if !errors.Is(err, errNoIPv6) || !strings.Contains(err.Error(), want) {
 				t.Errorf("CheckIPv6 = %v, want ErrNoIPv6 naming %q", err, want)
 			}
 		}

@@ -2,6 +2,7 @@ package egress
 
 import (
 	"fmt"
+	"net/netip"
 	"strings"
 )
 
@@ -29,4 +30,70 @@ func Refresh(b Backend, ls []Learned) string {
 			el, seconds(l.Left), el, el, seconds(l.Left))
 	}
 	return w.String()
+}
+
+// The probe's set pairs, sources then target, by family.
+var probeSets = [2][2]string{{setProbe4, setTarget4}, {setProbe6, setTarget6}}
+
+// ProbeSources answers the payload that empties every probe set and makes
+// addrs the probe's sources: for NFTables an `nft -f` transaction, for
+// IPTables an `ipset restore` payload. ipv6 says the host has the IPv6
+// sets; an IPv6 address on a host without them is left out.
+func ProbeSources(b Backend, ipv6 bool, addrs []netip.Addr) string {
+	return probePayload(b, ipv6, 0, addrs, true)
+}
+
+// ProbeTarget answers the payload that makes a the target alone, or
+// empties the target sets for the zero Addr.
+func ProbeTarget(b Backend, ipv6 bool, a netip.Addr) string {
+	var addrs []netip.Addr
+	if a.IsValid() {
+		addrs = []netip.Addr{a}
+	}
+	return probePayload(b, ipv6, 1, addrs, false)
+}
+
+// probePayload flushes set kind (0 sources, 1 target) of each family, the
+// other kind too when all is set, then adds addrs.
+func probePayload(b Backend, ipv6 bool, kind int, addrs []netip.Addr, all bool) string {
+	families := probeSets[:1]
+	if ipv6 {
+		families = probeSets[:]
+	}
+	var w strings.Builder
+	for _, f := range families {
+		for k, name := range f {
+			if k == kind || all {
+				w.WriteString(setCommand(b, "flush", name, netip.Addr{}))
+			}
+		}
+	}
+	for _, a := range addrs {
+		a = a.Unmap()
+		if a.Is6() && !ipv6 {
+			continue
+		}
+		w.WriteString(setCommand(b, "add", families[family6(a)][kind], a))
+	}
+	return w.String()
+}
+
+func family6(a netip.Addr) int {
+	if a.Is6() {
+		return 1
+	}
+	return 0
+}
+
+// setCommand is one flush or add of set name in b's payload syntax.
+func setCommand(b Backend, op, name string, a netip.Addr) string {
+	switch {
+	case b == IPTables && op == "flush":
+		return "flush " + name + "\n"
+	case b == IPTables:
+		return "add " + name + " " + a.String() + "\n"
+	case op == "flush":
+		return "flush set inet " + nftTable + " " + name + "\n"
+	}
+	return "add element inet " + nftTable + " " + name + " { " + a.String() + " }\n"
 }

@@ -64,7 +64,7 @@ func TestProbeKernel(t *testing.T) {
 func TestProbeKernelRefusesNeither(t *testing.T) {
 	f := &fakeKernel{ok: map[string]bool{}}
 	_, err := ProbeKernel(t.Context(), f.run)
-	if !errors.Is(err, ErrNoBackend) || !strings.Contains(err.Error(), "nft list tables") || !strings.Contains(err.Error(), LegacyDir) {
+	if !errors.Is(err, errNoBackend) || !strings.Contains(err.Error(), "nft list tables") || !strings.Contains(err.Error(), LegacyDir) {
 		t.Errorf("err = %v, want ErrNoBackend naming both attempts", err)
 	}
 }
@@ -94,7 +94,7 @@ func TestExec(t *testing.T) {
 }
 
 func TestBridgeNF(t *testing.T) {
-	v4, v6 := BridgeNF(tree(t, map[string]string{BridgeNFCall4: "1\n"}))
+	v4, v6 := BridgeNF(tree(t, map[string]string{bridgeNFCall4: "1\n"}))
 	if !v4 || v6 {
 		t.Errorf("BridgeNF = %t, %t, want true, false", v4, v6)
 	}

@@ -5,55 +5,7 @@
       "code": "DS1101",
       "symbol": "go://github.com/cplieger/manade/internal/config#Secret.LogValue",
       "path": "internal/config/config.go",
-      "reason": "staging: slog reaches LogValue once cmd/manade loads this package (build plan item 5); delete this entry there and give LogValue and String the DS1102 directives a reachable Secret needs"
-    },
-    {
-      "code": "DS1101",
-      "symbol": "go://github.com/cplieger/manade/internal/hostapi#CPUQuota",
-      "path": "internal/hostapi/types.go",
-      "reason": "staging: the supervisor (build plan item 5) reports its CPU mode with CPUQuota or CPUPinning; delete this entry there"
-    },
-    {
-      "code": "DS1101",
-      "symbol": "go://github.com/cplieger/manade/internal/hostapi#CPUPinning",
-      "path": "internal/hostapi/types.go",
-      "reason": "staging: the supervisor (build plan item 5) reports its CPU mode with CPUQuota or CPUPinning; delete this entry there"
-    },
-    {
-      "code": "DS1101",
-      "symbol": "go://github.com/cplieger/manade/internal/hostapi#RulesLoaded",
-      "path": "internal/hostapi/types.go",
-      "reason": "staging: the supervisor (build plan item 5) reports its rules state; delete this entry there"
-    },
-    {
-      "code": "DS1101",
-      "symbol": "go://github.com/cplieger/manade/internal/hostapi#RulesKept",
-      "path": "internal/hostapi/types.go",
-      "reason": "staging: the supervisor (build plan item 5) reports a SIGHUP section it kept the old rules for; delete this entry there"
-    },
-    {
-      "code": "DS1101",
-      "symbol": "go://github.com/cplieger/manade/internal/hostapi#LatencyBuckets",
-      "path": "internal/hostapi/types.go",
-      "reason": "staging: the supervisor (build plan item 5) records its create and start latency over LatencyBuckets; delete this entry there"
-    },
-    {
-      "code": "DS1501",
-      "symbol": "go://github.com/cplieger/manade/internal/hostapi#RunnerState",
-      "path": "internal/hostapi/types.go",
-      "reason": "staging: the orchestrator (build plan item 7) acts on each runner state; delete this entry there"
-    },
-    {
-      "code": "DS1501",
-      "symbol": "go://github.com/cplieger/manade/internal/hostapi#Limits",
-      "path": "internal/hostapi/types.go",
-      "reason": "staging: the supervisor (build plan item 5) builds runners with Limits and the orchestrator (item 7) reserves them; delete this entry there"
-    },
-    {
-      "code": "DS1501",
-      "symbol": "go://github.com/cplieger/manade/internal/hostapi#Runner",
-      "path": "internal/hostapi/types.go",
-      "reason": "staging: the supervisor (build plan item 5) implements Backend and the orchestrator (item 7) reads runner lists; delete this entry there"
+      "reason": "staging: slog reaches LogValue once the orchestrator (build plan item 7, batch 4) logs the GitHub token it holds; delete this entry there and give LogValue and String the DS1102 directives a reachable Secret needs"
     },
     {
       "code": "DS1501",
@@ -63,39 +15,351 @@
     },
     {
       "code": "DS1501",
-      "symbol": "go://github.com/cplieger/manade/internal/hostapi#ProbeCheck",
-      "path": "internal/hostapi/types.go",
-      "reason": "staging: the supervisor (build plan item 5) fills this part of the status and the orchestrator (item 7) reads it; delete this entry there"
-    },
-    {
-      "code": "DS1501",
       "symbol": "go://github.com/cplieger/manade/internal/docker#APIError",
       "path": "internal/docker/client.go",
       "reason": "staging: the supervisor (build plan item 5) reads a refused call's status and message; delete this entry there"
     },
     {
-      "code": "DS1101",
-      "symbol": "go://github.com/cplieger/manade/internal/docker#APIError.Error",
-      "path": "internal/docker/client.go",
-      "reason": "staging: an APIError reaches error formatting once the supervisor (build plan item 5) logs a refused call; delete this entry there"
+      "code": "DS1501",
+      "symbol": "go://github.com/cplieger/manade/internal/config#RoleOrchestrator",
+      "path": "internal/config/config.go",
+      "reason": "staging: the orchestrator (build plan items 7 and 8, batch 4) reads the orchestrator role, its scopes and its GitHub credentials; delete this entry there"
     },
     {
-      "code": "DS1101",
-      "symbol": "go://github.com/cplieger/manade/internal/jobspec#PasswdPath",
-      "path": "internal/jobspec/user.go",
-      "reason": "staging: the image manager (build plan item 5) reads an image's passwd and group files for CheckUser; delete this entry there"
+      "code": "DS1301",
+      "symbol": "go://github.com/cplieger/manade/internal/config#Config.Scopes",
+      "path": "internal/config/config.go",
+      "reason": "staging: the orchestrator (build plan items 7 and 8, batch 4) reads the orchestrator role, its scopes and its GitHub credentials; delete this entry there"
     },
     {
-      "code": "DS1101",
-      "symbol": "go://github.com/cplieger/manade/internal/jobspec#GroupPath",
-      "path": "internal/jobspec/user.go",
-      "reason": "staging: the image manager (build plan item 5) reads an image's passwd and group files for CheckUser; delete this entry there"
+      "code": "DS1301",
+      "symbol": "go://github.com/cplieger/manade/internal/config#Config.HeadReserveAfter",
+      "path": "internal/config/config.go",
+      "reason": "staging: the orchestrator (build plan items 7 and 8, batch 4) reads the orchestrator role, its scopes and its GitHub credentials; delete this entry there"
     },
     {
-      "code": "DS1101",
-      "symbol": "go://github.com/cplieger/manade/internal/jobspec#UserFileLimit",
-      "path": "internal/jobspec/user.go",
-      "reason": "staging: the image manager (build plan item 5) reads an image's passwd and group files for CheckUser; delete this entry there"
+      "code": "DS1102",
+      "symbol": "go://github.com/cplieger/manade/internal/config#Secret.Reveal",
+      "path": "internal/config/config.go",
+      "reason": "staging: the orchestrator (build plan items 7 and 8, batch 4) reads the orchestrator role, its scopes and its GitHub credentials; delete this entry there"
+    },
+    {
+      "code": "DS1301",
+      "symbol": "go://github.com/cplieger/manade/internal/config#Orchestrator.MetricsListenAddr",
+      "path": "internal/config/env.go",
+      "reason": "staging: the orchestrator (build plan items 7 and 8, batch 4) reads the orchestrator role, its scopes and its GitHub credentials; delete this entry there"
+    },
+    {
+      "code": "DS1301",
+      "symbol": "go://github.com/cplieger/manade/internal/config#Orchestrator.DiagDir",
+      "path": "internal/config/env.go",
+      "reason": "staging: the orchestrator (build plan items 7 and 8, batch 4) reads the orchestrator role, its scopes and its GitHub credentials; delete this entry there"
+    },
+    {
+      "code": "DS1301",
+      "symbol": "go://github.com/cplieger/manade/internal/config#Orchestrator.DiagRetention",
+      "path": "internal/config/env.go",
+      "reason": "staging: the orchestrator (build plan items 7 and 8, batch 4) reads the orchestrator role, its scopes and its GitHub credentials; delete this entry there"
+    },
+    {
+      "code": "DS1301",
+      "symbol": "go://github.com/cplieger/manade/internal/config#GitHub.Proxy",
+      "path": "internal/config/env.go",
+      "reason": "staging: the orchestrator (build plan items 7 and 8, batch 4) reads the orchestrator role, its scopes and its GitHub credentials; delete this entry there"
+    },
+    {
+      "code": "DS1301",
+      "symbol": "go://github.com/cplieger/manade/internal/config#GitHub.Token",
+      "path": "internal/config/env.go",
+      "reason": "staging: the orchestrator (build plan items 7 and 8, batch 4) reads the orchestrator role, its scopes and its GitHub credentials; delete this entry there"
+    },
+    {
+      "code": "DS1501",
+      "symbol": "go://github.com/cplieger/manade/internal/config#ScopeRepo",
+      "path": "internal/config/file.go",
+      "reason": "staging: the orchestrator (build plan items 7 and 8, batch 4) reads the orchestrator role, its scopes and its GitHub credentials; delete this entry there"
+    },
+    {
+      "code": "DS1501",
+      "symbol": "go://github.com/cplieger/manade/internal/config#ScopeOrg",
+      "path": "internal/config/file.go",
+      "reason": "staging: the orchestrator (build plan items 7 and 8, batch 4) reads the orchestrator role, its scopes and its GitHub credentials; delete this entry there"
+    },
+    {
+      "code": "DS1501",
+      "symbol": "go://github.com/cplieger/manade/internal/config#ScopeEnterprise",
+      "path": "internal/config/file.go",
+      "reason": "staging: the orchestrator (build plan items 7 and 8, batch 4) reads the orchestrator role, its scopes and its GitHub credentials; delete this entry there"
+    },
+    {
+      "code": "DS1301",
+      "symbol": "go://github.com/cplieger/manade/internal/config#Scope.Owner",
+      "path": "internal/config/file.go",
+      "reason": "staging: the orchestrator (build plan items 7 and 8, batch 4) reads the orchestrator role, its scopes and its GitHub credentials; delete this entry there"
+    },
+    {
+      "code": "DS1301",
+      "symbol": "go://github.com/cplieger/manade/internal/config#Scope.Repo",
+      "path": "internal/config/file.go",
+      "reason": "staging: the orchestrator (build plan items 7 and 8, batch 4) reads the orchestrator role, its scopes and its GitHub credentials; delete this entry there"
+    },
+    {
+      "code": "DS1301",
+      "symbol": "go://github.com/cplieger/manade/internal/config#Scope.RunnerGroup",
+      "path": "internal/config/file.go",
+      "reason": "staging: the orchestrator (build plan items 7 and 8, batch 4) reads the orchestrator role, its scopes and its GitHub credentials; delete this entry there"
+    },
+    {
+      "code": "DS1301",
+      "symbol": "go://github.com/cplieger/manade/internal/config#Scope.InstallationID",
+      "path": "internal/config/file.go",
+      "reason": "staging: the orchestrator (build plan items 7 and 8, batch 4) reads the orchestrator role, its scopes and its GitHub credentials; delete this entry there"
+    },
+    {
+      "code": "DS1102",
+      "symbol": "go://github.com/cplieger/manade/internal/config#Profile.Allowed",
+      "path": "internal/config/profile.go",
+      "reason": "staging: the orchestrator (build plan items 7 and 8, batch 4) reads the orchestrator role, its scopes and its GitHub credentials; delete this entry there"
+    },
+    {
+      "code": "DS1102",
+      "symbol": "go://github.com/cplieger/manade/internal/hostapi#APIError",
+      "path": "internal/hostapi/client.go",
+      "reason": "staging: the orchestrator (build plan item 7, batch 4) calls the host API through this client and reads its answers; delete this entry there"
+    },
+    {
+      "code": "DS1102",
+      "symbol": "go://github.com/cplieger/manade/internal/hostapi#Client",
+      "path": "internal/hostapi/client.go",
+      "reason": "staging: the orchestrator (build plan item 7, batch 4) calls the host API through this client and reads its answers; delete this entry there"
+    },
+    {
+      "code": "DS1102",
+      "symbol": "go://github.com/cplieger/manade/internal/hostapi#NewClient",
+      "path": "internal/hostapi/client.go",
+      "reason": "staging: the orchestrator (build plan item 7, batch 4) calls the host API through this client and reads its answers; delete this entry there"
+    },
+    {
+      "code": "DS1002",
+      "symbol": "go://github.com/cplieger/manade/internal/hostapi#decodeAnswer",
+      "path": "internal/hostapi/client.go",
+      "reason": "staging: the orchestrator (build plan item 7, batch 4) calls the host API through this client and reads its answers; delete this entry there"
+    },
+    {
+      "code": "DS1002",
+      "symbol": "go://github.com/cplieger/manade/internal/hostapi#answerError",
+      "path": "internal/hostapi/client.go",
+      "reason": "staging: the orchestrator (build plan item 7, batch 4) calls the host API through this client and reads its answers; delete this entry there"
+    },
+    {
+      "code": "DS1501",
+      "symbol": "go://github.com/cplieger/manade/internal/hostapi#ErrProbeTimeout",
+      "path": "internal/hostapi/server.go",
+      "reason": "staging: the orchestrator (build plan item 7, batch 4) calls the host API through this client and reads its answers; delete this entry there"
+    },
+    {
+      "code": "DS1102",
+      "symbol": "go://github.com/cplieger/manade/internal/hostapi#ClientTLS",
+      "path": "internal/hostapi/tls.go",
+      "reason": "staging: the orchestrator (build plan item 7, batch 4) calls the host API through this client and reads its answers; delete this entry there"
+    },
+    {
+      "code": "DS1501",
+      "symbol": "go://github.com/cplieger/manade/internal/hostapi#Heartbeat",
+      "path": "internal/hostapi/types.go",
+      "reason": "staging: the orchestrator (build plan item 7, batch 4) calls the host API through this client and reads its answers; delete this entry there"
+    },
+    {
+      "code": "DS1102",
+      "symbol": "go://github.com/cplieger/manade/internal/hostapi#clientSlack",
+      "path": "internal/hostapi/types.go",
+      "reason": "staging: the orchestrator (build plan item 7, batch 4) calls the host API through this client and reads its answers; delete this entry there"
+    },
+    {
+      "code": "DS1501",
+      "symbol": "go://github.com/cplieger/manade/internal/hostapi#LogTailDefault",
+      "path": "internal/hostapi/types.go",
+      "reason": "staging: the orchestrator (build plan item 7, batch 4) calls the host API through this client and reads its answers; delete this entry there"
+    },
+    {
+      "code": "DS1501",
+      "symbol": "go://github.com/cplieger/manade/internal/hostapi#LogTailMax",
+      "path": "internal/hostapi/types.go",
+      "reason": "staging: the orchestrator (build plan item 7, batch 4) calls the host API through this client and reads its answers; delete this entry there"
+    },
+    {
+      "code": "DS1002",
+      "symbol": "go://github.com/cplieger/manade/internal/hostapi#answerLimit",
+      "path": "internal/hostapi/types.go",
+      "reason": "staging: the orchestrator (build plan item 7, batch 4) calls the host API through this client and reads its answers; delete this entry there"
+    },
+    {
+      "code": "DS1002",
+      "symbol": "go://github.com/cplieger/manade/internal/hostapi#eventLimit",
+      "path": "internal/hostapi/types.go",
+      "reason": "staging: the orchestrator (build plan item 7, batch 4) calls the host API through this client and reads its answers; delete this entry there"
+    },
+    {
+      "code": "DS1501",
+      "symbol": "go://github.com/cplieger/manade/internal/hostapi#RunnerAnswer",
+      "path": "internal/hostapi/types.go",
+      "reason": "staging: the orchestrator (build plan item 7, batch 4) calls the host API through this client and reads its answers; delete this entry there"
+    },
+    {
+      "code": "DS1501",
+      "symbol": "go://github.com/cplieger/manade/internal/hostapi#RunnerList",
+      "path": "internal/hostapi/types.go",
+      "reason": "staging: the orchestrator (build plan item 7, batch 4) calls the host API through this client and reads its answers; delete this entry there"
+    },
+    {
+      "code": "DS1501",
+      "symbol": "go://github.com/cplieger/manade/internal/hostapi#EventRunner",
+      "path": "internal/hostapi/types.go",
+      "reason": "staging: the orchestrator (build plan item 7, batch 4) calls the host API through this client and reads its answers; delete this entry there"
+    },
+    {
+      "code": "DS1501",
+      "symbol": "go://github.com/cplieger/manade/internal/hostapi#EventHeartbeat",
+      "path": "internal/hostapi/types.go",
+      "reason": "staging: the orchestrator (build plan item 7, batch 4) calls the host API through this client and reads its answers; delete this entry there"
+    },
+    {
+      "code": "DS1501",
+      "symbol": "go://github.com/cplieger/manade/internal/hostapi#Event",
+      "path": "internal/hostapi/types.go",
+      "reason": "staging: the orchestrator (build plan item 7, batch 4) calls the host API through this client and reads its answers; delete this entry there"
+    },
+    {
+      "code": "DS1501",
+      "symbol": "go://github.com/cplieger/manade/internal/config#Secret.Reveal",
+      "path": "internal/config/config.go",
+      "reason": "staging: the orchestrator (build plan items 7 and 8, batch 4) reads the orchestrator role, its scopes and its GitHub credentials; delete this entry there"
+    },
+    {
+      "code": "DS1501",
+      "symbol": "go://github.com/cplieger/manade/internal/config#Profile.Allowed",
+      "path": "internal/config/profile.go",
+      "reason": "staging: the orchestrator (build plan items 7 and 8, batch 4) reads the orchestrator role, its scopes and its GitHub credentials; delete this entry there"
+    },
+    {
+      "code": "DS1501",
+      "symbol": "go://github.com/cplieger/manade/internal/hostapi#APIError",
+      "path": "internal/hostapi/client.go",
+      "reason": "staging: the orchestrator (build plan item 7, batch 4) calls the host API through this client and reads its answers; delete this entry there"
+    },
+    {
+      "code": "DS1102",
+      "symbol": "go://github.com/cplieger/manade/internal/hostapi#Client.CloseIdleConnections",
+      "path": "internal/hostapi/client.go",
+      "reason": "staging: the orchestrator (build plan item 7, batch 4) calls the host API through this client and reads its answers; delete this entry there"
+    },
+    {
+      "code": "DS1102",
+      "symbol": "go://github.com/cplieger/manade/internal/hostapi#Client.Status",
+      "path": "internal/hostapi/client.go",
+      "reason": "staging: the orchestrator (build plan item 7, batch 4) calls the host API through this client and reads its answers; delete this entry there"
+    },
+    {
+      "code": "DS1102",
+      "symbol": "go://github.com/cplieger/manade/internal/hostapi#Client.CreateRunner",
+      "path": "internal/hostapi/client.go",
+      "reason": "staging: the orchestrator (build plan item 7, batch 4) calls the host API through this client and reads its answers; delete this entry there"
+    },
+    {
+      "code": "DS1102",
+      "symbol": "go://github.com/cplieger/manade/internal/hostapi#Client.Runners",
+      "path": "internal/hostapi/client.go",
+      "reason": "staging: the orchestrator (build plan item 7, batch 4) calls the host API through this client and reads its answers; delete this entry there"
+    },
+    {
+      "code": "DS1102",
+      "symbol": "go://github.com/cplieger/manade/internal/hostapi#Client.DeleteRunner",
+      "path": "internal/hostapi/client.go",
+      "reason": "staging: the orchestrator (build plan item 7, batch 4) calls the host API through this client and reads its answers; delete this entry there"
+    },
+    {
+      "code": "DS1102",
+      "symbol": "go://github.com/cplieger/manade/internal/hostapi#Client.Logs",
+      "path": "internal/hostapi/client.go",
+      "reason": "staging: the orchestrator (build plan item 7, batch 4) calls the host API through this client and reads its answers; delete this entry there"
+    },
+    {
+      "code": "DS1102",
+      "symbol": "go://github.com/cplieger/manade/internal/hostapi#Client.Diag",
+      "path": "internal/hostapi/client.go",
+      "reason": "staging: the orchestrator (build plan item 7, batch 4) calls the host API through this client and reads its answers; delete this entry there"
+    },
+    {
+      "code": "DS1102",
+      "symbol": "go://github.com/cplieger/manade/internal/hostapi#Client.Probe",
+      "path": "internal/hostapi/client.go",
+      "reason": "staging: the orchestrator (build plan item 7, batch 4) calls the host API through this client and reads its answers; delete this entry there"
+    },
+    {
+      "code": "DS1102",
+      "symbol": "go://github.com/cplieger/manade/internal/hostapi#Client.Events",
+      "path": "internal/hostapi/client.go",
+      "reason": "staging: the orchestrator (build plan item 7, batch 4) calls the host API through this client and reads its answers; delete this entry there"
+    },
+    {
+      "code": "DS1002",
+      "symbol": "go://github.com/cplieger/manade/internal/hostapi#Client.callJSON",
+      "path": "internal/hostapi/client.go",
+      "reason": "staging: the orchestrator (build plan item 7, batch 4) calls the host API through this client and reads its answers; delete this entry there"
+    },
+    {
+      "code": "DS1002",
+      "symbol": "go://github.com/cplieger/manade/internal/hostapi#Client.callBytes",
+      "path": "internal/hostapi/client.go",
+      "reason": "staging: the orchestrator (build plan item 7, batch 4) calls the host API through this client and reads its answers; delete this entry there"
+    },
+    {
+      "code": "DS1002",
+      "symbol": "go://github.com/cplieger/manade/internal/hostapi#Client.send",
+      "path": "internal/hostapi/client.go",
+      "reason": "staging: the orchestrator (build plan item 7, batch 4) calls the host API through this client and reads its answers; delete this entry there"
+    },
+    {
+      "code": "DS1501",
+      "symbol": "go://github.com/cplieger/manade/internal/hostapi#Client.CreateRunner",
+      "path": "internal/hostapi/client.go",
+      "reason": "staging: the orchestrator (build plan item 7, batch 4) calls the host API through this client and reads its answers; delete this entry there"
+    },
+    {
+      "code": "DS1501",
+      "symbol": "go://github.com/cplieger/manade/internal/hostapi#Client.Runners",
+      "path": "internal/hostapi/client.go",
+      "reason": "staging: the orchestrator (build plan item 7, batch 4) calls the host API through this client and reads its answers; delete this entry there"
+    },
+    {
+      "code": "DS1501",
+      "symbol": "go://github.com/cplieger/manade/internal/hostapi#Client.DeleteRunner",
+      "path": "internal/hostapi/client.go",
+      "reason": "staging: the orchestrator (build plan item 7, batch 4) calls the host API through this client and reads its answers; delete this entry there"
+    },
+    {
+      "code": "DS1501",
+      "symbol": "go://github.com/cplieger/manade/internal/hostapi#Client.Logs",
+      "path": "internal/hostapi/client.go",
+      "reason": "staging: the orchestrator (build plan item 7, batch 4) calls the host API through this client and reads its answers; delete this entry there"
+    },
+    {
+      "code": "DS1501",
+      "symbol": "go://github.com/cplieger/manade/internal/hostapi#Client.Diag",
+      "path": "internal/hostapi/client.go",
+      "reason": "staging: the orchestrator (build plan item 7, batch 4) calls the host API through this client and reads its answers; delete this entry there"
+    },
+    {
+      "code": "DS1501",
+      "symbol": "go://github.com/cplieger/manade/internal/hostapi#Client.Probe",
+      "path": "internal/hostapi/client.go",
+      "reason": "staging: the orchestrator (build plan item 7, batch 4) calls the host API through this client and reads its answers; delete this entry there"
+    },
+    {
+      "code": "DS1501",
+      "symbol": "go://github.com/cplieger/manade/internal/hostapi#Client.Events",
+      "path": "internal/hostapi/client.go",
+      "reason": "staging: the orchestrator (build plan item 7, batch 4) calls the host API through this client and reads its answers; delete this entry there"
     }
   ]
 }
