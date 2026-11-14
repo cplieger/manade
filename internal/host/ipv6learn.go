@@ -126,7 +126,7 @@ func (n *hostNet) learnOnce(ctx context.Context, p *posture) error {
 	n.log.Info("Learned the machine's IPv6 /64", "prefix", got, "was", old.prefix)
 	err = p.guard.refresh(ctx, func() { p.self64.Store(&learned64{prefix: got}) })
 	if ctx.Err() != nil {
-		// A change or a stop cancelled the load; the next posture loads its own.
+		// A change or a stop ended the posture mid-load: a change loads the next posture's rules, a stop takes the daemon down.
 		return nil
 	}
 	return err
