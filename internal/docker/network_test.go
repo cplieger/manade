@@ -109,12 +109,13 @@ func TestEnsureNetworkChecksAnExistingOne(t *testing.T) {
 			n := networkAnswer(tc.ipv6)
 			tc.edit(n)
 			d, c := networkDaemon(t, n)
+			d.handle("DELETE /networks/{name}", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
 			err := c.EnsureNetwork(t.Context(), jobSpec(tc.ipv6))
 			if !errors.Is(err, errNetworkMismatch) || !strings.Contains(err.Error(), tc.want) {
 				t.Errorf("EnsureNetwork = %v, want a mismatch naming %q", err, tc.want)
 			}
-			if len(d.seen(http.MethodPost, "/networks/create")) != 0 {
-				t.Error("a mismatched network was created over")
+			if len(d.seen(http.MethodPost, "/networks/create")) != 0 || len(d.seen(http.MethodDelete, "/networks/manade")) != 0 {
+				t.Error("a mismatched network without the managed label was removed or created over")
 			}
 		})
 	}
@@ -126,4 +127,40 @@ func TestEnsureNetworkPassesOtherErrors(t *testing.T) {
 	if err := d.dial(t).EnsureNetwork(t.Context(), jobSpec(false)); err == nil || errors.Is(err, errNetworkMismatch) {
 		t.Errorf("EnsureNetwork = %v, want the daemon's error", err)
 	}
+}
+
+func TestEnsureNetworkReplacesAManagedOneOfAnotherShape(t *testing.T) {
+	moved := func() map[string]any {
+		n := networkAnswer(false)
+		n["IPAM"] = map[string]any{"Config": []map[string]string{{"Subnet": "172.17.0.0/16"}}}
+		n["Labels"] = map[string]string{LabelManaged: "true"}
+		return n
+	}
+	t.Run("removed and created on the spec", func(t *testing.T) {
+		d, c := networkDaemon(t, moved())
+		d.handle("DELETE /networks/{name}", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
+		if err := c.EnsureNetwork(t.Context(), jobSpec(false)); err != nil {
+			t.Fatalf("EnsureNetwork: %v", err)
+		}
+		if n := len(d.seen(http.MethodDelete, "/networks/manade")); n != 1 {
+			t.Errorf("DELETE /networks/manade sent %d times, want once", n)
+		}
+		created := d.seen(http.MethodPost, "/networks/create")
+		if len(created) != 1 || !strings.Contains(string(created[0].body), `"172.18.0.0/16"`) {
+			t.Errorf("creates = %+v, want one on 172.18.0.0/16", created)
+		}
+	})
+	t.Run("a refused removal names the mismatch and the refusal", func(t *testing.T) {
+		d, c := networkDaemon(t, moved())
+		d.handle("DELETE /networks/{name}", func(w http.ResponseWriter, _ *http.Request) {
+			writeError(w, http.StatusForbidden, "error while removing network: network manade has active endpoints")
+		})
+		err := c.EnsureNetwork(t.Context(), jobSpec(false))
+		if !errors.Is(err, errNetworkMismatch) || !strings.Contains(err.Error(), "active endpoints") {
+			t.Errorf("EnsureNetwork = %v, want the mismatch and the daemon's refusal", err)
+		}
+		if len(d.seen(http.MethodPost, "/networks/create")) != 0 {
+			t.Error("created a network while the old one stayed")
+		}
+	})
 }

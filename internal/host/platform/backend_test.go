@@ -16,13 +16,13 @@ type fakeKernel struct {
 	ran []string
 }
 
-func (f *fakeKernel) run(_ context.Context, name string, args ...string) error {
+func (f *fakeKernel) run(_ context.Context, _ []byte, name string, args ...string) ([]byte, error) {
 	line := name + " " + strings.Join(args, " ")
 	f.ran = append(f.ran, line)
 	if f.ok[line] {
-		return nil
+		return nil, nil
 	}
-	return errors.New("refused: " + line)
+	return nil, errors.New("refused: " + line)
 }
 
 const (
@@ -78,14 +78,19 @@ func TestKernelBinary(t *testing.T) {
 	}
 }
 
-func TestExecNamesTheOutput(t *testing.T) {
-	err := Exec(t.Context(), "sh", "-c", "echo boom >&2; exit 3")
-	if err == nil || !strings.Contains(err.Error(), "boom") {
-		t.Errorf("err = %v, want the program's output", err)
-	}
-	if err := Exec(t.Context(), "true"); err != nil {
-		t.Errorf("true: %v", err)
-	}
+func TestExec(t *testing.T) {
+	t.Run("a failure names its standard error", func(t *testing.T) {
+		_, err := Exec(t.Context(), nil, "sh", "-c", "echo boom >&2; exit 3")
+		if err == nil || !strings.Contains(err.Error(), "boom") {
+			t.Errorf("err = %v, want the program's standard error", err)
+		}
+	})
+	t.Run("stdin in, standard output out", func(t *testing.T) {
+		out, err := Exec(t.Context(), []byte("payload"), "sh", "-c", "cat; echo noise >&2")
+		if err != nil || string(out) != "payload" {
+			t.Errorf("Exec = %q, %v, want the stdin echoed and no stderr", out, err)
+		}
+	})
 }
 
 func TestBridgeNF(t *testing.T) {

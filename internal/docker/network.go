@@ -46,9 +46,12 @@ type ipamConfig struct{ Subnet string }
 
 // EnsureNetwork creates the network when it is missing, and otherwise checks
 // that it has the spec's driver, subnets, bridge name and inter-container
-// traffic off; a difference fails with errNetworkMismatch, since a job on a
-// bridge of another name, or with IPv6 the rules do not expect, would pass
-// every rule that matches the bridge.
+// traffic off. A network of another shape that carries LabelManaged is
+// removed and created again, so a host whose job subnet moved starts on the
+// new one; the daemon refuses the removal while a container is attached. One
+// without the label fails with errNetworkMismatch, since a job on a bridge of
+// another name, or with IPv6 the rules do not expect, would pass every rule
+// that matches the bridge.
 func (c *Client) EnsureNetwork(ctx context.Context, spec *NetworkSpec) error {
 	var got networkWire
 	err := c.call(ctx, "network", http.MethodGet, "/networks/"+url.PathEscape(spec.Name), nil, nil, &got, jsonLimit)
@@ -58,7 +61,14 @@ func (c *Client) EnsureNetwork(ctx context.Context, spec *NetworkSpec) error {
 	if err != nil {
 		return err
 	}
-	return checkNetwork(&got, spec)
+	mismatch := checkNetwork(&got, spec)
+	if mismatch == nil || got.Labels[LabelManaged] != managedValue {
+		return mismatch
+	}
+	if err := c.call(ctx, "network", http.MethodDelete, "/networks/"+url.PathEscape(spec.Name), nil, nil, nil, 0); err != nil && !errors.Is(err, errNotFound) {
+		return fmt.Errorf("%w; removing it: %w", mismatch, err)
+	}
+	return c.createNetwork(ctx, spec)
 }
 
 func (c *Client) createNetwork(ctx context.Context, spec *NetworkSpec) error {

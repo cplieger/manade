@@ -21,19 +21,21 @@ const LegacyDir = "/usr/local/sbin/.iptables-legacy"
 // ErrNoBackend is a kernel with neither nf_tables nor ip_tables.
 var ErrNoBackend = errors.New("platform: the kernel offers no rule backend")
 
-// Command runs one program to completion; its error carries the program's
-// output.
-type Command func(ctx context.Context, name string, args ...string) error
+// Command runs one program to completion with stdin, which may be nil, and
+// answers its standard output; its error carries the tail of the program's
+// standard error.
+type Command func(ctx context.Context, stdin []byte, name string, args ...string) ([]byte, error)
 
 // Exec is the Command that runs the real program.
-func Exec(ctx context.Context, name string, args ...string) error {
-	var out bytes.Buffer
+func Exec(ctx context.Context, stdin []byte, name string, args ...string) ([]byte, error) {
+	var out, errOut bytes.Buffer
 	cmd := exec.CommandContext(ctx, name, args...)
-	cmd.Stdout, cmd.Stderr = &out, &out
+	cmd.Stdin = bytes.NewReader(stdin)
+	cmd.Stdout, cmd.Stderr = &out, &errOut
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, tail(out.String()))
+		return out.Bytes(), fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, tail(errOut.String()))
 	}
-	return nil
+	return out.Bytes(), nil
 }
 
 // tail answers the last 512 bytes of s, trimmed.
@@ -68,18 +70,22 @@ func (k *Kernel) Binary(name string) string {
 // the raw and IPv6 nat tables through that backend's binaries.
 func ProbeKernel(ctx context.Context, run Command) (*Kernel, error) {
 	k := &Kernel{}
-	nftErr := run(ctx, "nft", "list", "tables")
+	ok := func(name string, args ...string) error {
+		_, err := run(ctx, nil, name, args...)
+		return err
+	}
+	nftErr := ok("nft", "list", "tables")
 	if nftErr == nil {
 		k.Backend = egress.NFTables
 	} else {
 		legacy := &Kernel{Backend: egress.IPTables}
-		if err := run(ctx, legacy.Binary("iptables"), "-w", "-t", "filter", "-n", "-L"); err != nil {
+		if err := ok(legacy.Binary("iptables"), "-w", "-t", "filter", "-n", "-L"); err != nil {
 			return nil, fmt.Errorf("%w: nftables: %w; legacy iptables: %w", ErrNoBackend, nftErr, err)
 		}
 		k.Backend = egress.IPTables
 	}
-	k.RawOff = run(ctx, k.Binary("iptables"), "-w", "-t", "raw", "-n", "-L") != nil
-	k.IPv6NAT = run(ctx, k.Binary("ip6tables"), "-w", "-t", "nat", "-n", "-L") == nil
+	k.RawOff = ok(k.Binary("iptables"), "-w", "-t", "raw", "-n", "-L") != nil
+	k.IPv6NAT = ok(k.Binary("ip6tables"), "-w", "-t", "nat", "-n", "-L") == nil
 	return k, nil
 }
 
