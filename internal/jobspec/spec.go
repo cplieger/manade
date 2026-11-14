@@ -16,8 +16,8 @@ import (
 	"github.com/cplieger/manade/internal/docker"
 )
 
-// The labels a runner's or a probe's container carries. LabelRunner also
-// names a docker-image runner's /var/lib/docker volume.
+// The labels a runner's, a probe's or an image check's container carries.
+// LabelRunner also names a docker-image runner's /var/lib/docker volume.
 const (
 	LabelRunner   = "manade.runner"
 	LabelRunnerID = "manade.runner-id"
@@ -25,6 +25,8 @@ const (
 	LabelProfile  = "manade.profile"
 	// LabelProbe is the probe run a probe or listener container belongs to.
 	LabelProbe = "manade.probe"
+	// LabelImageCheck is the image ID an image check's container reads.
+	LabelImageCheck = "manade.image-check"
 )
 
 // jitConfigEnv is the variable GitHub's runner reads its one-time config from.
@@ -274,5 +276,21 @@ func (h *Host) Probe(pr *Probe) *docker.CreateRequest {
 		OpenStdin:   pr.Stdin,
 		StdinOnce:   pr.Stdin,
 		AttachStdin: pr.Stdin, AttachStdout: pr.Stdin, AttachStderr: pr.Stdin,
+	}
+}
+
+// imageCheckEntrypoint names no file an image is expected to hold, so a
+// container started by mistake exits at once.
+const imageCheckEntrypoint = "/manade-image-check"
+
+// ImageCheck is the create request of the container the user check reads
+// imageID's passwd and group files from. It is never started: it has no
+// network and no command an image could run.
+func ImageCheck(imageID string) *docker.CreateRequest {
+	return &docker.CreateRequest{
+		Image:      imageID,
+		Entrypoint: []string{imageCheckEntrypoint},
+		Labels:     map[string]string{LabelImageCheck: imageID},
+		HostConfig: docker.HostConfig{NetworkMode: "none"},
 	}
 }

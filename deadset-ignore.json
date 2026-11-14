@@ -33,18 +33,6 @@
     },
     {
       "code": "DS1101",
-      "symbol": "go://github.com/cplieger/manade/internal/hostapi#ReasonPulling",
-      "path": "internal/hostapi/types.go",
-      "reason": "staging: the supervisor (build plan item 5) image manager reports a profile still pulling; delete this entry there"
-    },
-    {
-      "code": "DS1501",
-      "symbol": "go://github.com/cplieger/manade/internal/hostapi#ReasonRefused",
-      "path": "internal/hostapi/types.go",
-      "reason": "staging: the supervisor (build plan item 5) image manager reports a registry refused outside allow; delete this entry there"
-    },
-    {
-      "code": "DS1101",
       "symbol": "go://github.com/cplieger/manade/internal/hostapi#LatencyBuckets",
       "path": "internal/hostapi/types.go",
       "reason": "staging: the supervisor (build plan item 5) records its create and start latency over LatencyBuckets; delete this entry there"
@@ -78,18 +66,6 @@
       "symbol": "go://github.com/cplieger/manade/internal/hostapi#ProbeCheck",
       "path": "internal/hostapi/types.go",
       "reason": "staging: the supervisor (build plan item 5) fills this part of the status and the orchestrator (item 7) reads it; delete this entry there"
-    },
-    {
-      "code": "DS1501",
-      "symbol": "go://github.com/cplieger/manade/internal/docker#ErrConflict",
-      "path": "internal/docker/client.go",
-      "reason": "staging: the supervisor (build plan item 5) retries a removal answered 409; delete this entry there"
-    },
-    {
-      "code": "DS1501",
-      "symbol": "go://github.com/cplieger/manade/internal/docker#ErrImageMissing",
-      "path": "internal/docker/client.go",
-      "reason": "staging: the supervisor (build plan item 5) takes an image out of service on a create refused for it; delete this entry there"
     },
     {
       "code": "DS1501",

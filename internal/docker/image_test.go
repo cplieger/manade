@@ -125,62 +125,70 @@ func TestNameOnly(t *testing.T) {
 	}
 }
 
-func TestRemoveOwnedImage(t *testing.T) {
+func TestListImages(t *testing.T) {
 	d := newDaemon(t, "1.51")
-	images := map[string]map[string]any{
-		"shipped":  {"Id": "sha256:aaa", "Config": map[string]any{"Labels": map[string]string{LabelRunnerImage: "base"}}},
-		"tagged":   {"Id": "sha256:bbb", "RepoTags": []string{"mine:1"}, "Config": map[string]any{"Labels": map[string]string{LabelRunnerImage: "base"}}},
-		"foreign":  {"Id": "sha256:ccc", "Config": map[string]any{"Labels": map[string]string{"other": "x"}}},
-		"inuse":    {"Id": "sha256:ddd", "Config": map[string]any{"Labels": map[string]string{LabelRunnerImage: "build"}}},
-		"vanished": {"Id": "sha256:eee", "Config": map[string]any{"Labels": map[string]string{LabelRunnerImage: "build"}}},
-	}
-	d.handle("GET /images/{ref}/json", func(w http.ResponseWriter, r *http.Request) {
-		if img, ok := images[r.PathValue("ref")]; ok {
-			writeJSON(w, http.StatusOK, img)
-			return
-		}
-		writeError(w, http.StatusNotFound, "No such image")
+	d.handle("GET /images/json", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, []map[string]any{{
+			"Id": imageID, "RepoTags": []string{"ghcr.io/cplieger/manade-runner:base-v1"},
+			"RepoDigests": []string{"ghcr.io/cplieger/manade-runner@sha256:759a"},
+			"Labels":      map[string]string{LabelRunnerImage: "base"},
+		}})
 	})
-	d.handle("DELETE /images/{id}", func(w http.ResponseWriter, r *http.Request) {
-		switch r.PathValue("id") {
+	got, err := d.dial(t).ListImages(t.Context())
+	if err != nil || len(got) != 1 {
+		t.Fatalf("ListImages = %+v, %v", got, err)
+	}
+	if got[0].ID != imageID || got[0].Labels[LabelRunnerImage] != "base" ||
+		!slices.Equal(got[0].RepoTags, []string{"ghcr.io/cplieger/manade-runner:base-v1"}) ||
+		!slices.Equal(got[0].RepoDigests, []string{"ghcr.io/cplieger/manade-runner@sha256:759a"}) {
+		t.Errorf("ListImages = %+v", got[0])
+	}
+	if q := d.seen(http.MethodGet, "/images/json")[0].query; q["all"] != nil {
+		t.Errorf("query = %v, want intermediate layers left out", q)
+	}
+}
+
+func TestRemoveImage(t *testing.T) {
+	d := newDaemon(t, "1.51")
+	d.handle("DELETE /images/{ref...}", func(w http.ResponseWriter, r *http.Request) {
+		switch r.PathValue("ref") {
 		case "sha256:ddd":
-			writeError(w, http.StatusConflict, "image is being used by running container")
-		case "sha256:eee":
-			writeError(w, http.StatusNotFound, "No such image")
+			writeError(w, http.StatusConflict, "image is being used by stopped container 1a2b")
+		case "sha256:eee", "gone:1":
+			writeError(w, http.StatusNotFound, "No such image: "+r.PathValue("ref"))
+		case "sha256:fff":
+			writeError(w, http.StatusInternalServerError, "driver failed")
 		default:
-			writeJSON(w, http.StatusOK, []map[string]string{{"Deleted": r.PathValue("id")}})
+			writeJSON(w, http.StatusOK, []map[string]string{{"Untagged": r.PathValue("ref")}})
 		}
 	})
 	c := d.dial(t)
-	t.Run("removesTheInspectedIDWithoutForce", func(t *testing.T) {
-		if err := c.RemoveOwnedImage(t.Context(), "shipped"); err != nil {
-			t.Fatalf("RemoveOwnedImage: %v", err)
-		}
-		del := d.seen(http.MethodDelete, "/images/sha256:aaa")
-		if len(del) != 1 || del[0].query["force"] != nil {
-			t.Errorf("deletes = %+v, want one by ID without force", del)
+	t.Run("removesWithoutForce", func(t *testing.T) {
+		for _, ref := range []string{"sha256:aaa", "ghcr.io/cplieger/manade-runner:base-v1"} {
+			if err := c.RemoveImage(t.Context(), ref); err != nil {
+				t.Errorf("RemoveImage(%s): %v", ref, err)
+			}
+			del := d.seen(http.MethodDelete, "/images/"+ref)
+			if len(del) != 1 || del[0].query["force"] != nil {
+				t.Errorf("deletes of %s = %+v, want one without force", ref, del)
+			}
 		}
 	})
-	for _, name := range []string{"tagged", "foreign"} {
-		t.Run("refuses"+name, func(t *testing.T) {
-			if err := c.RemoveOwnedImage(t.Context(), name); !errors.Is(err, ErrNotOwned) {
-				t.Errorf("RemoveOwnedImage = %v, want ErrNotOwned", err)
-			}
-			if del := d.seen(http.MethodDelete, "/images/"+images[name]["Id"].(string)); len(del) != 0 {
-				t.Errorf("a refused image was deleted: %+v", del)
-			}
-		})
-	}
 	t.Run("anImageInUseIsAConflict", func(t *testing.T) {
-		if err := c.RemoveOwnedImage(t.Context(), "inuse"); !errors.Is(err, ErrConflict) {
-			t.Errorf("RemoveOwnedImage = %v, want ErrConflict", err)
+		if err := c.RemoveImage(t.Context(), "sha256:ddd"); !errors.Is(err, ErrConflict) {
+			t.Errorf("RemoveImage = %v, want ErrConflict", err)
 		}
 	})
 	t.Run("anImageAlreadyGoneIsNoError", func(t *testing.T) {
-		for _, ref := range []string{"absent", "vanished"} {
-			if err := c.RemoveOwnedImage(t.Context(), ref); err != nil {
-				t.Errorf("RemoveOwnedImage(%s) = %v, want nil", ref, err)
+		for _, ref := range []string{"sha256:eee", "gone:1"} {
+			if err := c.RemoveImage(t.Context(), ref); err != nil {
+				t.Errorf("RemoveImage(%s) = %v, want nil", ref, err)
 			}
+		}
+	})
+	t.Run("anotherFailureIsAnError", func(t *testing.T) {
+		if err := c.RemoveImage(t.Context(), "sha256:fff"); err == nil || errors.Is(err, ErrConflict) {
+			t.Errorf("RemoveImage = %v, want the daemon's failure", err)
 		}
 	})
 }

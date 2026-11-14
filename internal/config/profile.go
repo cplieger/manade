@@ -262,7 +262,7 @@ func (fp *fileProfile) image(pr *Profile, at func(string) string, p *problems) {
 	case fp.Image != "":
 		if len(fp.Image) > 512 || !imageRefRe.MatchString(fp.Image) {
 			p.add(at("image"), invalid("want an image reference", fp.Image))
-		} else if _, port := registry(fp.Image); port == 0 {
+		} else if _, port := Registry(fp.Image); port == 0 {
 			p.add(at("image"), invalid("want a registry port from 1 to 65535", fp.Image))
 		}
 		pr.Image = fp.Image

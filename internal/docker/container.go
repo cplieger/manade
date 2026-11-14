@@ -14,13 +14,15 @@ import (
 	"github.com/cplieger/go/textsafe"
 )
 
-// The labels this package owns. LabelManaged marks every object the host
-// created, and only such objects are removed; LabelRunnerImage is baked into
-// each shipped runner image at build.
+// The labels this package owns. LabelManaged marks every container and
+// volume the host created, and only those are removed; LabelRunnerImage is baked into
+// each shipped runner image at build, and LabelProbeImage into the probe
+// image the host builds.
 const (
 	LabelManaged     = "manade.managed"
 	LabelCreated     = "manade.created"
 	LabelRunnerImage = "manade.runner-image"
+	LabelProbeImage  = "manade.probe-image"
 
 	managedValue = "true"
 )

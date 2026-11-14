@@ -585,3 +585,17 @@ func TestProbe(t *testing.T) {
 		}
 	})
 }
+
+func TestImageCheck(t *testing.T) {
+	const id = "sha256:b3492d593e717af76e71e25dff4bb82d4fb35be4269f377cc2f4f40bd29b7c73"
+	req := ImageCheck(id)
+	if req.Image != id || req.Labels[LabelImageCheck] != id {
+		t.Errorf("image, labels = %q, %v; want the checked ID and its label", req.Image, req.Labels)
+	}
+	if req.HostConfig.NetworkMode != "none" {
+		t.Errorf("NetworkMode = %q, want none", req.HostConfig.NetworkMode)
+	}
+	if len(req.Entrypoint) != 1 || req.Cmd != nil || req.Env != nil || req.User != "" || req.HostConfig.Mounts != nil {
+		t.Errorf("request = %+v; want one fixed entrypoint and nothing else", req)
+	}
+}

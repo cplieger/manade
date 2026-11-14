@@ -6,8 +6,9 @@
 // slow daemon is waited out and a call that passes its timeout is answered
 // for what it is. Create and Start follow a timed-out call with an inspect
 // and never judge a container that may still be starting as failed. The
-// package stamps LabelManaged on every object it creates, and its removals
-// refuse an object without it. Every answer is read through a size cap.
+// package stamps LabelManaged on every container and volume it creates, and
+// their removals refuse one without it. Every answer is read through a size
+// cap.
 package docker
 
 import (

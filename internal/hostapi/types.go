@@ -228,9 +228,11 @@ type ProfileStatus struct {
 	Image   string `json:"image"`
 	Digest  string `json:"digest,omitempty"`
 	ImageID string `json:"image_id,omitempty"`
-	// Failure is the last failed pull or check.
-	Failure string `json:"failure,omitempty"`
-	Ready   bool   `json:"ready"`
+	// Failure is the last failed pull or check; Failures counts them since
+	// the host started.
+	Failure  string `json:"failure,omitempty"`
+	Failures uint64 `json:"failures"`
+	Ready    bool   `json:"ready"`
 }
 
 // IPv6Status is the machine's /64 the host learned.

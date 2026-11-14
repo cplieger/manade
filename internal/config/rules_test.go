@@ -252,8 +252,8 @@ func TestRegistry(t *testing.T) {
 	} {
 		t.Run(tc.ref, func(t *testing.T) {
 			t.Parallel()
-			if name, port := registry(tc.ref); name != tc.name || port != tc.port {
-				t.Errorf("registry(%q) = %q, %d; want %q, %d", tc.ref, name, port, tc.name, tc.port)
+			if name, port := Registry(tc.ref); name != tc.name || port != tc.port {
+				t.Errorf("Registry(%q) = %q, %d; want %q, %d", tc.ref, name, port, tc.name, tc.port)
 			}
 		})
 	}
