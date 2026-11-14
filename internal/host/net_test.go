@@ -301,45 +301,55 @@ func TestReload(t *testing.T) {
 		"egress.ipv6 turned on": {
 			edit: func(h *config.Host) { h.Egress.IPv6 = true }, want: []string{"hosts.lan.egress.ipv6", "restart"},
 		},
+		"the resolvers changed": {
+			edit: func(h *config.Host) { h.DNS = []netip.Addr{netip.MustParseAddr("9.9.9.9")} }, want: []string{"hosts.lan.dns", "restart"},
+		},
 	}
 	for name, tc := range kept {
 		t.Run(name, func(t *testing.T) {
-			f, n := up(t)
-			before := f.kernel.chain(false, "filter", "MANADE-FWD")
+			_, n := up(t)
 			h := section()
 			tc.edit(h)
-			k, fatal := n.reload(t.Context(), h)
-			if fatal != nil || k == nil {
-				t.Fatalf("Reload = %v, %v, want kept", k, fatal)
+			err := n.applicable(h)
+			if err == nil {
+				t.Fatal("Applicable = nil, want the section refused")
 			}
 			for _, w := range tc.want {
-				if !strings.Contains(k.Error(), w) {
-					t.Errorf("kept = %v, want it to name %q", k, w)
+				if !strings.Contains(err.Error(), w) {
+					t.Errorf("Applicable = %v, want it to name %q", err, w)
 				}
-			}
-			if !slices.Equal(f.kernel.chain(false, "filter", "MANADE-FWD"), before) {
-				t.Error("a kept section changed the loaded rules")
 			}
 		})
 	}
-	t.Run("a valid section is swapped in after a kept one", func(t *testing.T) {
+	t.Run("new allow entries swap the rules and keep resolv.conf", func(t *testing.T) {
 		f, n := up(t)
-		if k, _ := n.reload(t.Context(), section("172.18.3.4/32")); k == nil {
-			t.Fatal("setup: want kept")
-		}
 		h := section("10.0.0.50/32")
-		h.DNS = []netip.Addr{netip.MustParseAddr("9.9.9.9")}
-		if k, fatal := n.reload(t.Context(), h); k != nil || fatal != nil {
-			t.Fatalf("Reload = %v, %v", k, fatal)
+		if n.applicable(h) != nil || n.postureChanged(h) {
+			t.Fatal("setup: an allow entry is a posture change or refused")
+		}
+		if k, fatal := n.swap(t.Context(), h); k != nil || fatal != nil {
+			t.Fatalf("Swap = %v, %v", k, fatal)
 		}
 		if readAt(t, f.root, "/etc/resolv.conf") != resolvRendered {
 			t.Errorf("resolv.conf = %q, want the host's resolver kept", readAt(t, f.root, "/etc/resolv.conf"))
 		}
-		if got := n.upstreams(); !slices.Equal(got, []netip.AddrPort{netip.MustParseAddrPort("9.9.9.9:53")}) {
-			t.Errorf("upstreams = %v, want the new section's resolver", got)
+		if !slices.ContainsFunc(f.kernel.chain(false, "filter", "MANADE-FWD"), func(r string) bool { return strings.Contains(r, "10.0.0.50/32") }) {
+			t.Error("the new allow entry was not loaded")
 		}
-		if !slices.ContainsFunc(f.kernel.chain(false, "filter", "MANADE-OUT"), func(r string) bool { return strings.Contains(r, "9.9.9.9/32") }) {
-			t.Error("the new resolver has no port 53 accept")
+		if n.section() != h {
+			t.Error("the posture does not hold the swapped section")
+		}
+	})
+	t.Run("a swap that fails to load keeps the old rules", func(t *testing.T) {
+		f, n := up(t)
+		before := f.kernel.chain(false, "filter", "MANADE-FWD")
+		f.kernel.failOnce[platform.LegacyDir+"/iptables-restore"] = errors.New("refused")
+		k, fatal := n.swap(t.Context(), section("10.0.0.50/32"))
+		if k == nil || fatal != nil {
+			t.Fatalf("Swap = %v, %v, want kept", k, fatal)
+		}
+		if !slices.Equal(f.kernel.chain(false, "filter", "MANADE-FWD"), before) || len(n.section().Egress.Allow) != 0 {
+			t.Error("a failed swap changed the rules or the section")
 		}
 	})
 }
@@ -375,117 +385,157 @@ func TestHold(t *testing.T) {
 	})
 }
 
-func TestReloadAppliesTheEgressKeys(t *testing.T) {
-	t.Run("open to closed swaps the rules and turns IPv6 off", func(t *testing.T) {
-		f := newUpFixture(t)
-		open := section()
-		open.Egress.Open = true
-		n := upNet(t, f, open)
-		before := f.kernel.chain(false, "filter", "MANADE-FWD")
-		if readAt(t, f.root, disableAll) != "0\n" {
-			t.Fatal("setup: an open host turned IPv6 off")
+// kernelState is what a host's rules leave in the fake kernel, the
+// daemon's own jump to DOCKER-USER aside: both families' tables, the ipsets
+// and the files the namespace settings write.
+func kernelState(t *testing.T, f *upFixture, v6Off bool) string {
+	t.Helper()
+	sets, _ := f.kernel.ipset(nil, []string{"list", "-n"})
+	st := strings.ReplaceAll(string(f.kernel.save(false)), "-A FORWARD -j DOCKER-USER\n", "") + string(f.kernel.save(true)) +
+		"sets: " + string(sets) + "\nresolv.conf: " + readAt(t, f.root, "/etc/resolv.conf")
+	if v6Off {
+		st += "\ndisable_ipv6: " + readAt(t, f.root, disableAll) + readAt(t, f.root, disableDefault)
+	}
+	return st
+}
+
+func openSection() *config.Host {
+	h := section()
+	h.Egress.Open = true
+	return h
+}
+
+// A change of open or internet rebuilds the posture as a boot builds one:
+// the rules, the namespace settings, the resolver's learning and the status
+// equal a fresh boot's of the new section.
+func TestAChangeEqualsAFreshBoot(t *testing.T) {
+	postures := map[string]func() *config.Host{"open": openSection, "internet": func() *config.Host { return section() }, "internet off": closedSection}
+	for from, mkFrom := range postures {
+		for to, mkTo := range postures {
+			if from == to {
+				continue
+			}
+			t.Run(from+" to "+to, func(t *testing.T) {
+				synctest.Test(t, func(t *testing.T) {
+					fresh := newUpFixture(t)
+					boot := upNet(t, fresh, mkTo())
+					f := newUpFixture(t)
+					n := upNet(t, f, mkFrom())
+					stop := holding(t, n)
+					if failed, fatal := n.change(t.Context(), mkTo()); failed != nil || fatal != nil {
+						t.Fatalf("Change = %v, %v", failed, fatal)
+					}
+					v6Off := !mkTo().Egress.Open
+					if got, want := kernelState(t, f, v6Off), kernelState(t, fresh, v6Off); got != want {
+						t.Errorf("after the change:\n%s\nwant a fresh boot's:\n%s", got, want)
+					}
+					if (n.gitHubStatus() == nil) != (boot.gitHubStatus() == nil) || (n.learning() == nil) != (boot.learning() == nil) {
+						t.Errorf("learning %v, want a fresh boot's %v", n.gitHubStatus(), boot.gitHubStatus())
+					}
+					if f.dnsUDP.isClosed() || strings.Count(strings.Join(f.events, " "), "daemon") != 1 {
+						t.Errorf("the change stopped the resolver or started a daemon: events %q", f.events)
+					}
+					if err := stop(); err != nil {
+						t.Errorf("Hold = %v", err)
+					}
+				})
+			})
 		}
-		if k, fatal := n.reload(t.Context(), section()); k != nil || fatal != nil {
-			t.Fatalf("Reload = %v, %v, want the swap", k, fatal)
-		}
-		if slices.Equal(f.kernel.chain(false, "filter", "MANADE-FWD"), before) {
-			t.Error("the closed section's rules were not loaded")
-		}
-		if readAt(t, f.root, disableAll) != "1\n" || readAt(t, f.root, disableDefault) != "1\n" {
-			t.Error("IPv6 left on after the host stopped being open")
-		}
-		if n.host.Egress.Open {
-			t.Error("the host still holds the open section")
-		}
-	})
-	t.Run("internet on to off turns learning on and keeps resolv.conf", func(t *testing.T) {
+	}
+}
+
+func TestAChangeThatFailsBringsTheOldPostureBack(t *testing.T) {
+	t.Run("a domain list that cannot be read", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			f := newUpFixture(t)
 			n := upNet(t, f, section())
-			if k, fatal := n.reload(t.Context(), closedSection()); k != nil || fatal != nil {
-				t.Fatalf("Reload = %v, %v, want the swap", k, fatal)
-			}
-			if readAt(t, f.root, "/etc/resolv.conf") != resolvRendered || n.gitHubStatus() == nil || n.learning() == nil || f.dnsUDP.isClosed() {
-				t.Errorf("resolv.conf %q, status %+v, resolver closed %v", readAt(t, f.root, "/etc/resolv.conf"), n.gitHubStatus(), f.dnsUDP.isClosed())
-			}
-			if i, j := slices.Index(f.events, "rules"), slices.Index(f.events, "domains"); len(slices.DeleteFunc(slices.Clone(f.events), func(e string) bool { return e != "resolver" })) != 1 || j < i {
-				t.Errorf("events %q, want the one resolver kept and the list read after the swap", f.events)
-			}
-			if _, ipset := f.kernel.payloads(); !slices.ContainsFunc(ipset, func(p string) bool { return strings.Contains(p, "create manade-gh4") }) {
-				t.Errorf("ipset payloads %q, want the learned sets created", ipset)
-			}
-		})
-	})
-	t.Run("internet off to on turns learning off and keeps the resolver serving", func(t *testing.T) {
-		synctest.Test(t, func(t *testing.T) {
-			f := newUpFixture(t)
-			n := upNet(t, f, closedSection())
-			if k, fatal := n.reload(t.Context(), section()); k != nil || fatal != nil {
-				t.Fatalf("Reload = %v, %v, want the swap", k, fatal)
-			}
-			if readAt(t, f.root, "/etc/resolv.conf") != resolvRendered || n.gitHubStatus() != nil || n.learning() != nil || f.dnsUDP.isClosed() {
-				t.Errorf("resolv.conf %q, status %+v, resolver closed %v", readAt(t, f.root, "/etc/resolv.conf"), n.gitHubStatus(), f.dnsUDP.isClosed())
-			}
-		})
-	})
-	t.Run("a domain list that cannot be read keeps the internet rules", func(t *testing.T) {
-		synctest.Test(t, func(t *testing.T) {
-			f := newUpFixture(t)
-			n := upNet(t, f, section())
-			before := f.kernel.chain(false, "filter", "MANADE-OUT")
+			stop := holding(t, n)
+			before := kernelState(t, f, true)
 			f.fetchErr = errors.New("403 rate limit exceeded")
-			k, fatal := n.reload(t.Context(), closedSection())
-			if fatal != nil || k == nil || !strings.Contains(k.Error(), "domain list") {
-				t.Fatalf("Reload = %v, %v, want kept naming the list", k, fatal)
+			failed, fatal := n.change(t.Context(), closedSection())
+			if fatal != nil || failed == nil || !strings.Contains(failed.Error(), "domain list") {
+				t.Fatalf("Change = %v, %v, want failed naming the list", failed, fatal)
 			}
-			if !slices.Equal(f.kernel.chain(false, "filter", "MANADE-OUT"), before) || readAt(t, f.root, "/etc/resolv.conf") != resolvRendered {
-				t.Error("the internet rules or resolv.conf were not restored")
+			if got := kernelState(t, f, true); got != before {
+				t.Errorf("after the failed change:\n%s\nwant the old posture's:\n%s", got, before)
 			}
-			if n.gitHubStatus() != nil || n.learning() != nil || f.dnsUDP.isClosed() || !n.host.Egress.Internet {
-				t.Errorf("status %+v, resolver closed %v, want learning off and the resolver serving", n.gitHubStatus(), f.dnsUDP.isClosed())
+			if n.gitHubStatus() != nil || n.learning() != nil || f.dnsUDP.isClosed() || !n.section().Egress.Internet {
+				t.Errorf("status %+v, resolver closed %v, want the internet posture with the resolver serving", n.gitHubStatus(), f.dnsUDP.isClosed())
+			}
+			f.fetchErr = nil
+			if failed, fatal := n.change(t.Context(), closedSection()); failed != nil || fatal != nil {
+				t.Errorf("a retried Change = %v, %v", failed, fatal)
+			}
+			if err := stop(); err != nil {
+				t.Errorf("Hold = %v", err)
 			}
 		})
 	})
-	t.Run("old rules that fail to load again after the list failed stop the host", func(t *testing.T) {
+	t.Run("an old posture that fails to come back ends the hold", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			f := newUpFixture(t)
 			n := upNet(t, f, section())
+			done := make(chan error, 1)
+			go func() { done <- n.hold(t.Context()) }()
 			n.seams.FetchDomains = func(context.Context) ([]byte, error) {
 				f.kernel.mu.Lock()
-				f.kernel.failOnce[platform.LegacyDir+"/iptables-restore"] = errors.New("refused")
+				f.kernel.fail[platform.LegacyDir+"/iptables-restore"] = errors.New("refused")
 				f.kernel.mu.Unlock()
 				return nil, errors.New("403 rate limit exceeded")
 			}
-			k, fatal := n.reload(t.Context(), closedSection())
-			if k == nil || !strings.Contains(k.Error(), "domain list") {
-				t.Errorf("kept = %v, want it naming the list", k)
+			failed, fatal := n.change(t.Context(), closedSection())
+			if failed == nil || !strings.Contains(failed.Error(), "domain list") {
+				t.Errorf("failed = %v, want it naming the list", failed)
 			}
-			if fatal == nil || !strings.Contains(fatal.Error(), "restoring the internet rules") || !strings.Contains(fatal.Error(), "refused") {
-				t.Errorf("fatal = %v, want the failed restore of the internet rules", fatal)
+			if fatal == nil || !strings.Contains(fatal.Error(), "old egress posture") || !strings.Contains(fatal.Error(), "refused") {
+				t.Errorf("fatal = %v, want the failed return to the old posture", fatal)
+			}
+			if err := <-done; err == nil || f.proc.stopped != 1 {
+				t.Errorf("Hold = %v, stopped %d, want it ended with the daemon stopped", err, f.proc.stopped)
 			}
 		})
 	})
-	t.Run("a reload that turns internet on leaves the hold running", func(t *testing.T) {
-		synctest.Test(t, func(t *testing.T) {
-			f := newUpFixture(t)
-			n := upNet(t, f, closedSection())
-			ctx, cancel := context.WithCancel(t.Context())
-			done := make(chan error, 1)
-			go func() { done <- n.hold(ctx) }()
-			synctest.Wait()
-			if k, fatal := n.reload(t.Context(), section()); k != nil || fatal != nil {
-				t.Fatalf("Reload = %v, %v", k, fatal)
-			}
-			synctest.Wait()
-			select {
-			case err := <-done:
-				t.Fatalf("Hold = %v after a reload turned learning off", err)
-			default:
-			}
-			cancel()
-			if err := <-done; err != nil {
-				t.Errorf("Hold = %v, want nil once its context ends", err)
-			}
-		})
+}
+
+// Status reads the posture and never waits on a change's I/O: a change
+// whose domain list read blocks leaves status and the /64 answering.
+func TestStatusAnswersDuringAChange(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := v6Fixture(t, &echoes{replies: []func() ([]byte, error){answer("2a01:e0a:1259:2710::7008")}})
+		n := upNet(t, f, v6Section())
+		stop := holding(t, n)
+		synctest.Wait()
+		reading, release := make(chan struct{}), make(chan struct{})
+		n.seams.FetchDomains = func(context.Context) ([]byte, error) {
+			close(reading)
+			<-release
+			return []byte(metaBody), nil
+		}
+		changed := make(chan error, 1)
+		go func() {
+			failed, fatal := n.change(t.Context(), closedV6Section())
+			changed <- errors.Join(failed, fatal)
+		}()
+		<-reading
+		answered := make(chan struct{})
+		go func() {
+			_ = n.iPv6Status()
+			_ = n.gitHubStatus()
+			_ = n.section()
+			close(answered)
+		}()
+		synctest.Wait()
+		select {
+		case <-answered:
+		default:
+			t.Error("status waited on the change's domain list read")
+		}
+		close(release)
+		if err := <-changed; err != nil {
+			t.Errorf("Change = %v", err)
+		}
+		if err := stop(); err != nil {
+			t.Errorf("Hold = %v", err)
+		}
 	})
 }

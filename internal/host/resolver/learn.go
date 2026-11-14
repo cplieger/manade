@@ -3,6 +3,7 @@ package resolver
 import (
 	"context"
 	"log/slog"
+	"maps"
 	"net/netip"
 	"sync"
 	"sync/atomic"
@@ -25,30 +26,19 @@ const learnTimeout = 2 * time.Second
 // timeout of any already there.
 type SetWriter func(ctx context.Context, ls []egress.Learned) error
 
-// Family indexes a per-family count.
-type Family int
-
-// The families; familyCount is how many there are.
-const (
-	IPv4 Family = iota
-	IPv6
-	familyCount
-)
-
 // Counts are a Learner's figures for status and metrics.
 type Counts struct {
-	Held    [familyCount]int
-	Refused [familyCount]uint64
+	Held    int
+	Refused uint64
 }
 
 // Learner holds the addresses learned for GitHub's names with their
-// expiries, as the kernel's sets hold them, at most egress.LearnedMax per
-// family. Its methods are safe for concurrent use.
+// expiries, as the kernel's set holds them, at most egress.LearnedMax, each
+// one egress.Learnable passes. Its methods are safe for concurrent use.
 type Learner struct {
-	write   SetWriter
-	log     *slog.Logger
-	allowed atomic.Pointer[func(netip.Addr) bool]
-	held    map[netip.Addr]time.Time
+	write SetWriter
+	log   *slog.Logger
+	held  map[netip.Addr]time.Time
 	// queued is the batch the next write takes; while it is set, draining
 	// is too, so one drain covers every queued batch.
 	queued *batch
@@ -57,10 +47,10 @@ type Learner struct {
 	// an address is in the loaded set or written after it.
 	load    loadLock
 	warned  time.Time
-	refused [familyCount]atomic.Uint64
-	// n counts held's addresses per family, expired ones until pruned.
-	n        [familyCount]int
-	mu       sync.Mutex
+	refused atomic.Uint64
+	mu      sync.Mutex
+	// retired drops every batch a drain takes from now on unwritten.
+	retired  bool
 	draining bool
 }
 
@@ -88,18 +78,21 @@ func (k loadLock) lock(ctx context.Context) error {
 	}
 }
 
-// NewLearner answers a Learner writing through write and learning only
-// addresses allowed passes.
-func NewLearner(write SetWriter, allowed func(netip.Addr) bool, log *slog.Logger) *Learner {
-	l := &Learner{write: write, log: log, held: map[netip.Addr]time.Time{}, load: make(loadLock, 1)}
-	l.allowed.Store(&allowed)
-	return l
+// NewLearner answers a Learner writing through write.
+func NewLearner(write SetWriter, log *slog.Logger) *Learner {
+	return &Learner{write: write, log: log, held: map[netip.Addr]time.Time{}, load: make(loadLock, 1)}
 }
 
-// SetAllowed replaces the test an address must pass, for a changed policy.
-// Addresses already held stay until their timeouts; a rule set generated
-// from Held filters them again.
-func (l *Learner) SetAllowed(allowed func(netip.Addr) bool) { l.allowed.Store(&allowed) }
+// Retire waits for a kernel write in flight and makes the learner write
+// nothing more, for a rule set it learned into that is being replaced: a
+// batch queued meanwhile is dropped, its written channel closed.
+func (l *Learner) Retire() {
+	l.load.Lock()
+	defer l.load.Unlock()
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.retired = true
+}
 
 // Loading is held across a rule set's generation from Held and its load.
 func (l *Learner) Loading() sync.Locker { return l.load }
@@ -110,15 +103,14 @@ func (l *Learner) Loading() sync.Locker { return l.load }
 // none is in flight, else nil. The drain records each address for its TTL
 // plus learnPad under the load lock and writes each batch once within
 // learnTimeout; adds made meanwhile join the next batch, so a rule load waits
-// behind at most one write. A new address past a family's bound is refused,
+// behind at most one write. A new address past the bound is refused,
 // counted and logged at most once a minute; a held one is renewed.
 func (l *Learner) Learn(recs []Record) (written <-chan struct{}, drain func(context.Context)) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	allowed := *l.allowed.Load()
 	var keep []Record
 	for _, r := range recs {
-		if allowed(r.Addr.Unmap()) {
+		if egress.Learnable(r.Addr) {
 			keep = append(keep, r)
 		}
 	}
@@ -159,7 +151,10 @@ func (l *Learner) drain(ctx context.Context) {
 		}
 		l.mu.Lock()
 		b := l.take()
-		ls := l.record(b.recs, time.Now())
+		var ls []egress.Learned
+		if !l.retired {
+			ls = l.record(b.recs, time.Now())
+		}
 		l.mu.Unlock()
 		err := l.writeBounded(ctx, ls)
 		l.load.Unlock()
@@ -184,22 +179,15 @@ func (l *Learner) take() *batch {
 	return b
 }
 
-// record holds each allowed address of recs, answering what to write;
-// l.mu is held.
+// record holds each address of recs, which Learn filtered, answering what
+// to write; l.mu is held.
 func (l *Learner) record(recs []Record, now time.Time) []egress.Learned {
-	allowed := *l.allowed.Load()
 	var ls []egress.Learned
 	for _, r := range recs {
 		a := r.Addr.Unmap()
-		if !allowed(a) {
+		if _, ok := l.held[a]; !ok && l.full(now) {
+			l.refuse(a, now)
 			continue
-		}
-		if _, ok := l.held[a]; !ok && l.full(familyOf(a), now) {
-			l.refuse(familyOf(a), a, now)
-			continue
-		}
-		if _, ok := l.held[a]; !ok {
-			l.n[familyOf(a)]++
 		}
 		left := r.TTL + learnPad
 		l.held[a] = now.Add(left)
@@ -217,28 +205,23 @@ func (l *Learner) writeBounded(ctx context.Context, ls []egress.Learned) error {
 	return l.write(ctx, ls)
 }
 
-// full reports whether family f holds egress.LearnedMax live addresses,
-// dropping expired ones first. l.mu is held.
-func (l *Learner) full(f Family, now time.Time) bool {
-	if l.n[f] < egress.LearnedMax {
+// full reports whether egress.LearnedMax live addresses are held, dropping
+// expired ones first. l.mu is held.
+func (l *Learner) full(now time.Time) bool {
+	if len(l.held) < egress.LearnedMax {
 		return false
 	}
 	l.prune(now)
-	return l.n[f] >= egress.LearnedMax
+	return len(l.held) >= egress.LearnedMax
 }
 
 func (l *Learner) prune(now time.Time) {
-	for a, exp := range l.held {
-		if !exp.After(now) {
-			delete(l.held, a)
-			l.n[familyOf(a)]--
-		}
-	}
+	maps.DeleteFunc(l.held, func(_ netip.Addr, exp time.Time) bool { return !exp.After(now) })
 }
 
 // refuse counts a refused add; l.mu is held.
-func (l *Learner) refuse(f Family, a netip.Addr, now time.Time) {
-	n := l.refused[f].Add(1)
+func (l *Learner) refuse(a netip.Addr, now time.Time) {
+	n := l.refused.Add(1)
 	if now.Sub(l.warned) < refusedLogEvery {
 		return
 	}
@@ -260,21 +243,10 @@ func (l *Learner) Held() []egress.Learned {
 	return out
 }
 
-// Counts answers the live addresses held and the adds refused, per family.
+// Counts answers the live addresses held and the adds refused.
 func (l *Learner) Counts() Counts {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.prune(time.Now())
-	c := Counts{Held: l.n}
-	for f := range familyCount {
-		c.Refused[f] = l.refused[f].Load()
-	}
-	return c
-}
-
-func familyOf(a netip.Addr) Family {
-	if a.Is4() {
-		return IPv4
-	}
-	return IPv6
+	return Counts{Held: len(l.held), Refused: l.refused.Load()}
 }

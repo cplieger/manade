@@ -102,13 +102,56 @@ type Runner struct {
 	cfg  Config
 	slot chan struct{}
 	runs map[string]time.Time
-	cur  string
-	mu   sync.Mutex
+	// pausing closes when a pause begins; paused holds until it ends.
+	pausing chan struct{}
+	cur     string
+	mu      sync.Mutex
+	paused  bool
 }
 
 // NewRunner answers a Runner for cfg.
 func NewRunner(cfg *Config) *Runner {
-	return &Runner{cfg: *cfg, slot: make(chan struct{}, 1), runs: map[string]time.Time{}}
+	return &Runner{cfg: *cfg, slot: make(chan struct{}, 1), runs: map[string]time.Time{}, pausing: make(chan struct{})}
+}
+
+// errPaused is the Unproven of a run asked for while a pause holds.
+const errPaused = "the host is changing its egress; probe it again once its profiles are ready"
+
+// Pause waits for a run in flight and starts none until resume is called:
+// a run asked for meanwhile answers at once, unproven. A ctx that ends
+// first answers its error and leaves no pause. One pause at a time.
+func (r *Runner) Pause(ctx context.Context) (resume func(), err error) {
+	r.mu.Lock()
+	r.paused = true
+	close(r.pausing)
+	r.mu.Unlock()
+	unpause := func() {
+		r.mu.Lock()
+		r.paused, r.pausing = false, make(chan struct{})
+		r.mu.Unlock()
+	}
+	select {
+	case r.slot <- struct{}{}:
+	case <-ctx.Done():
+		unpause()
+		return nil, ctx.Err()
+	}
+	return func() {
+		unpause()
+		<-r.slot
+	}, nil
+}
+
+// pause answers whether a pause holds and the channel a pause closes.
+func (r *Runner) pause() (paused bool, pausing <-chan struct{}) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.paused, r.pausing
+}
+
+func pausedReport() hostapi.ProbeReport {
+	now := time.Now()
+	return hostapi.ProbeReport{StartedAt: now, EndedAt: now, Unproven: errPaused}
 }
 
 // Deadline bounds a probe request: two runs of the host's current plan.
@@ -145,18 +188,28 @@ func (r *Runner) Leftover(run string) bool {
 }
 
 // Run runs the probe once any run in progress ends. A request whose ctx
-// ends while it waits starts no run; a run once started finishes and
-// empties its sets whatever ctx does.
+// ends while it waits starts no run, and one made while a pause holds
+// answers at once, unproven; a run once started finishes and empties its
+// sets whatever ctx does.
 func (r *Runner) Run(ctx context.Context) (hostapi.ProbeReport, error) {
+	paused, pausing := r.pause()
+	if paused {
+		return pausedReport(), nil
+	}
 	select {
 	case r.slot <- struct{}{}:
+	case <-pausing:
+		return pausedReport(), nil
 	case <-ctx.Done():
 		return hostapi.ProbeReport{}, ctx.Err()
 	}
 	defer func() { <-r.slot }()
-	// A select with both cases ready picks one at random.
+	// A select with several cases ready picks one at random.
 	if err := ctx.Err(); err != nil {
 		return hostapi.ProbeReport{}, err
+	}
+	if paused, _ := r.pause(); paused {
+		return pausedReport(), nil
 	}
 	h := r.cfg.Host()
 	plan := egress.PlanProbe(placeholder(&h.Input))

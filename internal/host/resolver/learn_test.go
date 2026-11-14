@@ -9,11 +9,11 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
 
-	"github.com/cplieger/manade/internal/config"
 	"github.com/cplieger/manade/internal/egress"
 )
 
@@ -37,21 +37,10 @@ func (k *kernelSets) all() [][]egress.Learned {
 	return slices.Clone(k.writes)
 }
 
-// closedHost is an internet: false host with ipv6 and one block6 prefix.
-func closedHost() *config.Host {
-	return &config.Host{Name: "closed", DNS: config.DefaultDNS, Egress: config.Egress{
-		IPv6: true, Block6: []netip.Prefix{netip.MustParsePrefix("2a01:e0a::/32")},
-	}}
-}
-
-func learnable() func(netip.Addr) bool {
-	return (&egress.Input{Host: closedHost()}).Learnable()
-}
-
 func newTestLearner(log *bytes.Buffer) (*Learner, *kernelSets) {
 	k := &kernelSets{}
 	h := slog.New(slog.NewTextHandler(log, nil))
-	return NewLearner(k.write, learnable(), h), k
+	return NewLearner(k.write, h), k
 }
 
 func addr(s string) netip.Addr { return netip.MustParseAddr(s) }
@@ -71,11 +60,11 @@ func TestLearnAddsWithTheTTLPlusTenMinutes(t *testing.T) {
 		l, k := newTestLearner(&bytes.Buffer{})
 		learn(t.Context(), l, []Record{
 			{Addr: addr("140.82.121.10"), TTL: time.Minute},
-			{Addr: addr("2606:50c0:8000::154"), TTL: 5 * time.Minute},
+			{Addr: addr("140.82.121.11"), TTL: 5 * time.Minute},
 		})
 		want := []egress.Learned{
 			{Addr: addr("140.82.121.10"), Left: 11 * time.Minute},
-			{Addr: addr("2606:50c0:8000::154"), Left: 15 * time.Minute},
+			{Addr: addr("140.82.121.11"), Left: 15 * time.Minute},
 		}
 		if w := k.all(); len(w) != 1 || !slices.Equal(w[0], want) {
 			t.Errorf("writes = %v, want one write of %v", w, want)
@@ -85,7 +74,7 @@ func TestLearnAddsWithTheTTLPlusTenMinutes(t *testing.T) {
 		slices.SortFunc(held, func(a, b egress.Learned) int { return a.Addr.Compare(b.Addr) })
 		wantHeld := []egress.Learned{
 			{Addr: addr("140.82.121.10"), Left: 9 * time.Minute},
-			{Addr: addr("2606:50c0:8000::154"), Left: 13 * time.Minute},
+			{Addr: addr("140.82.121.11"), Left: 13 * time.Minute},
 		}
 		if !slices.Equal(held, wantHeld) {
 			t.Errorf("Held after 2m = %v, want each with its remaining time %v", held, wantHeld)
@@ -122,20 +111,52 @@ func TestLearnSkipsWhatTheDropsTake(t *testing.T) {
 		{Addr: addr("100.64.0.1"), TTL: time.Minute},
 		{Addr: addr("127.0.0.1"), TTL: time.Minute},
 		{Addr: addr("fd00::1"), TTL: time.Minute},
-		{Addr: addr("2a01:e0a:1:2::3"), TTL: time.Minute},
 		{Addr: addr("2001:db8::1"), TTL: time.Minute},
+		{Addr: addr("2606:50c0:8000::154"), TTL: time.Minute},
 	})
 	if len(k.all()) != 0 || len(l.Held()) != 0 {
-		t.Errorf("writes %v, held %v, want nothing learned", k.all(), l.Held())
+		t.Errorf("writes %v, held %v, want nothing learned: no private address and no IPv6 one", k.all(), l.Held())
 	}
-	t.Run("IPv6 on a host without ipv6", func(t *testing.T) {
-		h := closedHost()
-		h.Egress.IPv6 = false
-		k := &kernelSets{}
-		l := NewLearner(k.write, (&egress.Input{Host: h}).Learnable(), slog.New(slog.DiscardHandler))
-		learn(t.Context(), l, []Record{{Addr: addr("2606:50c0:8000::154"), TTL: time.Minute}})
-		if len(k.all()) != 0 {
-			t.Errorf("writes = %v, want none: the host has no IPv6 set", k.all())
+}
+
+// A retired learner waits for the write in flight, then writes nothing:
+// the rule set it learned into is being replaced.
+func TestRetire(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		release := make(chan struct{})
+		var writes atomic.Int32
+		l := NewLearner(func(context.Context, []egress.Learned) error {
+			if writes.Add(1) == 1 {
+				<-release
+			}
+			return nil
+		}, slog.New(slog.DiscardHandler))
+		first, drain := l.Learn([]Record{{Addr: addr("140.82.121.10"), TTL: time.Minute}})
+		go drain(t.Context())
+		synctest.Wait()
+		queued, more := l.Learn([]Record{{Addr: addr("140.82.121.11"), TTL: time.Minute}})
+		if more != nil {
+			t.Fatal("a second drain started while one runs")
+		}
+		retired := make(chan struct{})
+		go func() { l.Retire(); close(retired) }()
+		synctest.Wait()
+		select {
+		case <-retired:
+			t.Error("Retire returned while a write was in flight")
+		default:
+		}
+		close(release)
+		<-retired
+		<-first
+		<-queued
+		late, drain := l.Learn([]Record{{Addr: addr("140.82.121.12"), TTL: time.Minute}})
+		if drain != nil {
+			drain(t.Context())
+		}
+		<-late
+		if n := writes.Load(); n != 1 {
+			t.Errorf("writes = %d, want only the one in flight at the retire", n)
 		}
 	})
 }
@@ -174,8 +195,8 @@ func TestBound(t *testing.T) {
 		learn(t.Context(), l, []Record{{Addr: addr("140.82.121.10"), TTL: time.Minute}})
 		learn(t.Context(), l, []Record{{Addr: addr("140.82.121.11"), TTL: time.Minute}})
 		c := l.Counts()
-		if c.Held[IPv4] != egress.LearnedMax || c.Refused[IPv4] != 2 || c.Refused[IPv6] != 0 {
-			t.Errorf("Counts = %+v, want %d held and 2 refused IPv4", c, egress.LearnedMax)
+		if c.Held != egress.LearnedMax || c.Refused != 2 {
+			t.Errorf("Counts = %+v, want %d held and 2 refused", c, egress.LearnedMax)
 		}
 		if len(k.all()) != writes {
 			t.Error("a refused address was written to the kernel")
@@ -183,13 +204,9 @@ func TestBound(t *testing.T) {
 		if n := strings.Count(log.String(), "level=WARN"); n != 1 {
 			t.Errorf("%d WARN lines, want 1 within the minute:\n%s", n, log.String())
 		}
-		learn(t.Context(), l, []Record{{Addr: addr("2606:50c0:8000::154"), TTL: time.Minute}})
-		if c := l.Counts(); c.Held[IPv6] != 1 {
-			t.Errorf("Counts = %+v, want the IPv6 family's own bound", c)
-		}
 		learn(t.Context(), l, []Record{{Addr: addr("11.0.0.5"), TTL: time.Hour}})
-		if w := k.all(); len(w) != writes+2 {
-			t.Errorf("a held address was refused at the bound; writes %d, want %d", len(w), writes+2)
+		if w := k.all(); len(w) != writes+1 {
+			t.Errorf("a held address was refused at the bound; writes %d, want %d", len(w), writes+1)
 		}
 		time.Sleep(time.Minute)
 		learn(t.Context(), l, []Record{{Addr: addr("140.82.121.12"), TTL: time.Minute}})
@@ -198,7 +215,7 @@ func TestBound(t *testing.T) {
 		}
 		time.Sleep(time.Hour + learnPad)
 		learn(t.Context(), l, []Record{{Addr: addr("140.82.121.13"), TTL: time.Minute}})
-		if c := l.Counts(); c.Held[IPv4] != 1 || c.Refused[IPv4] != 3 {
+		if c := l.Counts(); c.Held != 1 || c.Refused != 3 {
 			t.Errorf("Counts = %+v, want the expired set emptied and the add taken", c)
 		}
 	})
@@ -210,7 +227,7 @@ func TestTheWriteHoldsLoading(t *testing.T) {
 		close(inWrite)
 		<-release
 		return nil
-	}, learnable(), slog.New(slog.DiscardHandler))
+	}, slog.New(slog.DiscardHandler))
 	done := make(chan struct{})
 	go func() {
 		learn(context.Background(), l, []Record{{Addr: addr("140.82.121.10"), TTL: time.Minute}})
@@ -307,7 +324,7 @@ func TestAddsDuringAWriteJoinTheNextOne(t *testing.T) {
 		inWrite <- struct{}{}
 		<-release
 		return k.write(ctx, ls)
-	}, learnable(), slog.New(slog.DiscardHandler))
+	}, slog.New(slog.DiscardHandler))
 	first, drain := l.Learn([]Record{{Addr: addr("140.82.121.10"), TTL: time.Minute}})
 	if drain == nil {
 		t.Fatal("the first add started no drain")
@@ -371,7 +388,7 @@ func TestAStuckWriterKeepsOneDrainAndLetsALoadIn(t *testing.T) {
 			mu.Unlock()
 			<-ctx.Done()
 			return ctx.Err()
-		}, learnable(), slog.New(slog.DiscardHandler))
+		}, slog.New(slog.DiscardHandler))
 		var running, most int
 		var wg sync.WaitGroup
 		waited := make(chan time.Duration, 1)
@@ -428,7 +445,7 @@ func TestLearnBoundsTheWrite(t *testing.T) {
 			left = time.Until(dl)
 		}
 		return nil
-	}, learnable(), slog.New(slog.DiscardHandler))
+	}, slog.New(slog.DiscardHandler))
 	learn(t.Context(), l, []Record{{Addr: addr("140.82.121.10"), TTL: time.Minute}})
 	if left <= 0 || left > 2*time.Second {
 		t.Errorf("the write's time left = %v, want within the design's 2s", left)

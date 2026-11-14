@@ -11,9 +11,6 @@ create manade-gh4 hash:ip family inet timeout 600 maxelem 65536
 flush manade-gh4
 add manade-gh4 140.82.112.3 timeout 3600
 add manade-gh4 140.82.112.4 timeout 1801
-create manade-gh6 hash:ip family inet6 timeout 600 maxelem 65536
-flush manade-gh6
-add manade-gh6 2606:50c0:8000::153 timeout 1200
 # iptables-restore --noflush
 *filter
 :MANADE-FWD - [0:0]
@@ -75,7 +72,6 @@ COMMIT
 -A MANADE-FWD -i manade+ -o manade+ -j DROP
 -A MANADE-FWD -m conntrack --ctstate RELATED,ESTABLISHED -j RETURN
 -A MANADE-FWD -d fd00::5/128 -i manade+ -p udp -m udp --dport 53 -j RETURN
--A MANADE-FWD -i manade+ -m set --match-set manade-gh6 dst -j RETURN
 -A MANADE-FWD -d ::ffff:0.0.0.0/96 -i manade+ -m set --match-set manade-probe6 src -m set --match-set manade-target6 dst
 -A MANADE-FWD -d 64:ff9b::/96 -i manade+ -m set --match-set manade-probe6 src -m set --match-set manade-target6 dst
 -A MANADE-FWD -d 64:ff9b:1::/48 -i manade+ -m set --match-set manade-probe6 src -m set --match-set manade-target6 dst
@@ -84,7 +80,6 @@ COMMIT
 -A MANADE-FWD -d 2001:db8::/32 -i manade+ -m set --match-set manade-probe6 src -m set --match-set manade-target6 dst
 -A MANADE-FWD -d 2002::/16 -i manade+ -m set --match-set manade-probe6 src -m set --match-set manade-target6 dst
 -A MANADE-FWD -d 2a01:e0a:1::/48 -i manade+ -m set --match-set manade-probe6 src -m set --match-set manade-target6 dst
--A MANADE-FWD -d 2a01:e0a:1259:2710::/64 -i manade+ -m set --match-set manade-probe6 src -m set --match-set manade-target6 dst
 -A MANADE-FWD -d 2a01:e0a:1259:2711::/64 -i manade+ -m set --match-set manade-probe6 src -m set --match-set manade-target6 dst
 -A MANADE-FWD -d fc00::/7 -i manade+ -m set --match-set manade-probe6 src -m set --match-set manade-target6 dst
 -A MANADE-FWD -d fe80::/10 -i manade+ -m set --match-set manade-probe6 src -m set --match-set manade-target6 dst
@@ -97,7 +92,6 @@ COMMIT
 -A MANADE-FWD -d 2001:db8::/32 -i manade+ -j DROP
 -A MANADE-FWD -d 2002::/16 -i manade+ -j DROP
 -A MANADE-FWD -d 2a01:e0a:1::/48 -i manade+ -j DROP
--A MANADE-FWD -d 2a01:e0a:1259:2710::/64 -i manade+ -j DROP
 -A MANADE-FWD -d 2a01:e0a:1259:2711::/64 -i manade+ -j DROP
 -A MANADE-FWD -d fc00::/7 -i manade+ -j DROP
 -A MANADE-FWD -d fe80::/10 -i manade+ -j DROP
@@ -114,7 +108,6 @@ COMMIT
 -A MANADE-OUT -d 2606:4700:4700::1111/128 -p tcp -m tcp --dport 53 -j RETURN
 -A MANADE-OUT -d 2606:4700:4700::1111/128 -p udp -m udp --dport 53 -j RETURN
 -A MANADE-OUT -d fd00::5/128 -p udp -m udp --dport 53 -j RETURN
--A MANADE-OUT -m set --match-set manade-gh6 dst -j RETURN
 -A MANADE-OUT -d ::ffff:0.0.0.0/96 ! -o manade+ -m set --match-set manade-probe6 src -m set --match-set manade-target6 dst
 -A MANADE-OUT -d 64:ff9b::/96 ! -o manade+ -m set --match-set manade-probe6 src -m set --match-set manade-target6 dst
 -A MANADE-OUT -d 64:ff9b:1::/48 ! -o manade+ -m set --match-set manade-probe6 src -m set --match-set manade-target6 dst
@@ -123,7 +116,6 @@ COMMIT
 -A MANADE-OUT -d 2001:db8::/32 ! -o manade+ -m set --match-set manade-probe6 src -m set --match-set manade-target6 dst
 -A MANADE-OUT -d 2002::/16 ! -o manade+ -m set --match-set manade-probe6 src -m set --match-set manade-target6 dst
 -A MANADE-OUT -d 2a01:e0a:1::/48 ! -o manade+ -m set --match-set manade-probe6 src -m set --match-set manade-target6 dst
--A MANADE-OUT -d 2a01:e0a:1259:2710::/64 ! -o manade+ -m set --match-set manade-probe6 src -m set --match-set manade-target6 dst
 -A MANADE-OUT -d 2a01:e0a:1259:2711::/64 ! -o manade+ -m set --match-set manade-probe6 src -m set --match-set manade-target6 dst
 -A MANADE-OUT -d fc00::/7 ! -o manade+ -m set --match-set manade-probe6 src -m set --match-set manade-target6 dst
 -A MANADE-OUT -d fe80::/10 ! -o manade+ -m set --match-set manade-probe6 src -m set --match-set manade-target6 dst
@@ -136,7 +128,6 @@ COMMIT
 -A MANADE-OUT -d 2001:db8::/32 ! -o manade+ -j DROP
 -A MANADE-OUT -d 2002::/16 ! -o manade+ -j DROP
 -A MANADE-OUT -d 2a01:e0a:1::/48 ! -o manade+ -j DROP
--A MANADE-OUT -d 2a01:e0a:1259:2710::/64 ! -o manade+ -j DROP
 -A MANADE-OUT -d 2a01:e0a:1259:2711::/64 ! -o manade+ -j DROP
 -A MANADE-OUT -d fc00::/7 ! -o manade+ -j DROP
 -A MANADE-OUT -d fe80::/10 ! -o manade+ -j DROP
@@ -165,4 +156,5 @@ ip6 filter OUTPUT -j MANADE-OUT
 ip6 filter INPUT -j MANADE-IN
 ip6 nat POSTROUTING -j MANADE-NAT
 # ip6tables-restore --noflush, where a nat table lists
-# stale jumps, where a nat table lists
+# stale jumps, the nat one where a nat table lists
+# stale ipsets, destroyed where the kernel holds them

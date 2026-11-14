@@ -141,9 +141,9 @@ func readLabels(msg []byte, off int) (labels []string, next, ptr int, err error)
 	}
 }
 
-// failure answers a response to query q with rcode and no records: the
+// noRecords answers a response to query q with rcode and no records: the
 // query's header and question, its RD bit kept.
-func failure(query []byte, q question, rc rcode) []byte {
+func noRecords(query []byte, q question, rc rcode) []byte {
 	resp := make([]byte, q.end)
 	copy(resp, query[:q.end])
 	flags := binary.BigEndian.Uint16(query[2:])&0x7900 | flagQR | 0x0080 | uint16(rc)

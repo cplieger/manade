@@ -1560,18 +1560,39 @@ func TestAFailedCreateFreesItsCPUsAtOnce(t *testing.T) {
 	}
 }
 
-// openServed is testServed with host nas open.
-func openServed() *served {
-	sv := testServed(false)
-	sv.Config.Hosts[0].Egress.Open = true
-	return sv
+// egressHeld reports every profile not ready with reason, the detail
+// naming each of names.
+func egressHeld(t *testing.T, rt *runnersTest, reason hostapi.Reason, names ...string) {
+	t.Helper()
+	for _, p := range rt.r.profileStatus() {
+		if p.Ready || p.Reason != reason {
+			t.Errorf("status %+v, want not ready for %s", p, reason)
+		}
+		for _, n := range names {
+			if !strings.Contains(p.Detail, n) {
+				t.Errorf("status detail %q, want it naming %s", p.Detail, n)
+			}
+		}
+	}
+	_, err := rt.r.accept(t.Context(), request("held", "small"))
+	if nr, ok := errors.AsType[*hostapi.NotReadyError](err); !ok || nr.Reason != reason {
+		t.Errorf("POST while held = %v, want not ready for %s", err, reason)
+	}
 }
 
-func TestAReloadThatClosesTheHostDrainsIt(t *testing.T) {
-	setup := func(t *testing.T) *runnersTest {
+func closed(ch <-chan struct{}) bool {
+	select {
+	case <-ch:
+		return true
+	default:
+		return false
+	}
+}
+
+func TestAnEgressHoldWaitsForTheRunnersThenHolds(t *testing.T) {
+	setup := func(t *testing.T) (*runnersTest, <-chan struct{}) {
 		t.Helper()
 		rt := newRunnersTest(t, nil, nil)
-		rt.r.setServed(openServed())
 		for _, name := range []string{"done", "r1"} {
 			if _, err := rt.r.accept(t.Context(), request(name, "small")); err != nil {
 				t.Fatal(err)
@@ -1580,58 +1601,62 @@ func TestAReloadThatClosesTheHostDrainsIt(t *testing.T) {
 		}
 		rt.d.exit("done", 0, false)
 		rt.waitState(t, "done", hostapi.StateExited)
-		rt.r.setServed(testServed(false))
-		return rt
+		return rt, rt.r.holdEgress("open false, internet true")
 	}
-	t.Run("holds starts until the runners started while open have ended", func(t *testing.T) {
-		rt := setup(t)
-		for _, p := range rt.r.profileStatus() {
-			if p.Ready || p.Reason != hostapi.ReasonOpenDraining || !strings.Contains(p.Detail, "r1") || strings.Contains(p.Detail, "done") {
-				t.Errorf("status %+v, want every profile not ready naming r1 alone", p)
-			}
-		}
-		_, err := rt.r.accept(t.Context(), request("r2", "small"))
-		if nr, ok := errors.AsType[*hostapi.NotReadyError](err); !ok || nr.Reason != hostapi.ReasonOpenDraining {
-			t.Errorf("POST while draining = %v, want not ready", err)
+	t.Run("holds starts until the runners busy at its start have ended, and on after", func(t *testing.T) {
+		rt, idle := setup(t)
+		egressHeld(t, rt, hostapi.ReasonEgressChangePending, "r1")
+		if closed(idle) || rt.r.egressDrained() {
+			t.Error("the hold is idle while r1 runs")
 		}
 		rt.d.exit("r1", 0, false)
-		waitFor(t, "the drain over", func() bool {
-			rt.r.mu.Lock()
-			defer rt.r.mu.Unlock()
-			return len(rt.r.draining) == 0
-		})
+		waitFor(t, "the hold idle", func() bool { return closed(idle) })
+		if !rt.r.egressDrained() {
+			t.Error("egressDrained false once r1 ended")
+		}
+		egressHeld(t, rt, hostapi.ReasonEgressChangePending)
+		rt.r.releaseEgress()
 		if st := rt.r.profileStatus(); !st[0].Ready {
-			t.Errorf("status %+v after the drain, want ready", st[0])
+			t.Errorf("status %+v after the release, want ready", st[0])
 		}
 		if _, err := rt.r.accept(t.Context(), request("r3", "small")); err != nil {
-			t.Errorf("POST after the drain = %v", err)
+			t.Errorf("POST after the release = %v", err)
 		}
 	})
 	t.Run("a removal ends a runner's part in it", func(t *testing.T) {
-		rt := setup(t)
+		rt, idle := setup(t)
 		if _, err := rt.r.remove(t.Context(), "r1", false); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := rt.r.accept(t.Context(), request("r2", "small")); err != nil {
-			t.Errorf("POST after the removal = %v", err)
-		}
+		waitFor(t, "the hold idle", func() bool { return closed(idle) })
 	})
-	t.Run("opening the host again ends it", func(t *testing.T) {
-		rt := setup(t)
-		rt.r.setServed(openServed())
-		if _, err := rt.r.accept(t.Context(), request("r2", "small")); err != nil {
-			t.Errorf("POST once open again = %v", err)
+	t.Run("a second hold while one is pending keeps its runners", func(t *testing.T) {
+		rt, idle := setup(t)
+		if again := rt.r.holdEgress("open true"); again != idle {
+			t.Error("a second hold made a new wait")
 		}
+		egressHeld(t, rt, hostapi.ReasonEgressChangePending, "open true", "r1")
 	})
-	t.Run("a closed host's own runners hold nothing", func(t *testing.T) {
+	t.Run("a failed change keeps the hold, and a new one waits again", func(t *testing.T) {
+		rt, _ := setup(t)
+		rt.r.failEgress("the change failed: no list")
+		egressHeld(t, rt, hostapi.ReasonEgressChangeFailed, "no list")
+		if rt.r.egressIdle() != nil || rt.r.egressDrained() {
+			t.Error("a failed hold waits for something")
+		}
+		if idle := rt.r.holdEgress("retry"); closed(idle) {
+			t.Error("a new hold after a failure did not wait for r1")
+		}
+		egressHeld(t, rt, hostapi.ReasonEgressChangePending, "retry", "r1")
+	})
+	t.Run("a hold with no runner busy is idle at once", func(t *testing.T) {
 		rt := newRunnersTest(t, nil, nil)
-		if _, err := rt.r.accept(t.Context(), request("r1", "small")); err != nil {
-			t.Fatal(err)
+		if !closed(rt.r.holdEgress("x")) {
+			t.Error("an idle host's hold waits")
 		}
-		rt.waitState(t, "r1", hostapi.StateRunning)
-		rt.r.setServed(testServed(false))
-		if _, err := rt.r.accept(t.Context(), request("r2", "small")); err != nil {
-			t.Errorf("POST after a reload that kept the host closed = %v", err)
+		rt.r.releaseEgress()
+		if rt.r.egressIdle() != nil {
+			t.Error("the hold outlived its release")
 		}
 	})
 }

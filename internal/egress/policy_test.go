@@ -55,8 +55,7 @@ func scenarios() []scenario {
 		}
 	}
 	offState := State{GitHub: learnedGitHub}
-	off6State := learned
-	off6State.GitHub = learnedGitHub
+	off6State := State{Own64: learned.Own64, GitHub: learnedGitHub}
 	return []scenario{
 		{name: "internet", in: Input{Host: &config.Host{
 			Name: "default",
@@ -95,8 +94,12 @@ func iptGolden(rs *Ruleset) []byte {
 	b.WriteString("# jumps\n")
 	writeJumps(rs.Jumps)
 	b.WriteString("# ip6tables-restore --noflush, where a nat table lists\n" + rs.IPv6NATReset)
-	b.WriteString("# stale jumps, where a nat table lists\n")
+	b.WriteString("# stale jumps, the nat one where a nat table lists\n")
 	writeJumps(rs.StaleJumps)
+	b.WriteString("# stale ipsets, destroyed where the kernel holds them\n")
+	for _, s := range rs.StaleSets {
+		b.WriteString(s + "\n")
+	}
 	return []byte(b.String())
 }
 
@@ -183,7 +186,8 @@ func TestGenerateLearnedTimeoutCeiling(t *testing.T) {
 }
 
 // A GitHub name has no private answer, and the learned set's accept comes
-// before the private and IPv6 drops, so such an answer must not open them.
+// before the private and IPv6 drops, so such an answer must not open them;
+// no IPv6 address enters, the machine's /64 being unknown on such a host.
 func TestGenerateLearnedLeavesBlockedOut(t *testing.T) {
 	t.Parallel()
 	const hour = time.Hour
@@ -194,8 +198,9 @@ func TestGenerateLearnedLeavesBlockedOut(t *testing.T) {
 		Job6:  pfx("fdc6:6d61:6e61:6465::/64"),
 		State: State{Own64: pfx("2a01:e0a:1259:2711::/64")},
 	}
-	kept := []string{"140.82.112.3", "2606:50c0:8000::153"}
+	kept := []string{"140.82.112.3"}
 	left := []string{
+		"2606:50c0:8000::153", "2a01:e0a:1259:2710::9",
 		"10.1.2.3", "192.168.0.9", "172.16.5.5", "100.64.0.1", "169.254.169.254",
 		"224.0.0.251", "239.255.255.250", "255.255.255.255", "127.0.0.1", "0.0.0.0",
 		"fc00::1", "fd12::5", "fe80::1", "2001:db8::1", "64:ff9b::a01:203",

@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -74,23 +75,19 @@ type seams struct {
 // hostNet is a host whose namespace, rules and daemon are up.
 type hostNet struct {
 	Daemon process
-	Guard  *guard
 	rules  *ruleLoader
-	host   *config.Host
 	log    *slog.Logger
 	echo   echoFunc
 	seams  *seams
-	// resolver serves for the host's life; gh is what it learns into on an
-	// internet: false host, nil on any other, and ghMoved wakes
-	// followGitHub when a reload turns learning on or off.
+	hooks  guardHooks
+	// resolver serves for the host's life.
 	resolver *dnsServer
-	gh       atomic.Pointer[gitHub]
-	ghMoved  chan struct{}
-	// self64 is the machine's /64 as last learned; wake64 wakes learn64
-	// when a reload turns internet on.
-	self64  atomic.Pointer[learned64]
-	wake64  chan struct{}
-	dns     atomic.Pointer[[]netip.AddrPort]
+	// posture is what the section's open and internet keys decide; a change
+	// of either replaces it whole through hold.
+	posture  atomic.Pointer[posture]
+	rebuilds chan *rebuild
+	// dns are the configured resolvers the host's resolver asks.
+	dns     []netip.AddrPort
 	Kernel  *platform.Kernel
 	Storage platform.StoragePick
 	Subnet  netip.Prefix
@@ -102,24 +99,21 @@ type hostNet struct {
 	Gateway6   netip.Addr
 	Addr6      netip.Addr
 	Original   egress.Resolvers
-	mu         sync.Mutex
 	NoBridgeNF bool
 }
 
 // bringUp brings host h up: it checks the cgroup namespace and picks the storage
-// driver and the rule backend, writes resolv.conf, sets the namespace's
-// IPv6, picks the job subnets, loads and compares the rules, starts the
-// host's resolver, reads an internet: false host's domain list, resolves
-// GitHub's API name, and only then starts the daemon and creates the job
-// network. Any failure before the daemon starts leaves no daemon and no
-// resolver; one after stops both.
+// driver and the rule backend, writes resolv.conf, reads the routes, picks
+// the job subnets, brings h's posture up (its rules loaded and compared),
+// starts the host's resolver, reads an internet: false host's domain list,
+// resolves GitHub's API name, and only then starts the daemon and creates
+// the job network. Any failure before the daemon starts leaves no daemon
+// and no resolver; one after stops both.
 func bringUp(ctx context.Context, h *config.Host, p *seams, hooks guardHooks) (*hostNet, error) {
 	if err := platform.CheckPrivateNamespace(p.Root); err != nil {
 		return nil, err
 	}
-	n := &hostNet{host: h, log: p.Log, echo: p.Echo, seams: p, ghMoved: make(chan struct{}, 1), wake64: make(chan struct{}, 1)}
-	n.self64.Store(unasked64())
-	n.setUpstreams(h)
+	n := &hostNet{log: p.Log, echo: p.Echo, seams: p, hooks: hooks, rebuilds: make(chan *rebuild), dns: p.Upstreams(h.DNS)}
 	var err error
 	if n.Storage, err = p.PickStorage(dataRoot); err != nil {
 		return nil, err
@@ -128,67 +122,39 @@ func bringUp(ctx context.Context, h *config.Host, p *seams, hooks guardHooks) (*
 	if n.Kernel, err = platform.ProbeKernel(ctx, run); err != nil {
 		return nil, err
 	}
-	if err := n.up(ctx, p, run, hooks); err != nil {
+	n.rules = &ruleLoader{Run: run, Kernel: n.Kernel, Root: p.Root}
+	if err := n.namespace(ctx, h); err != nil {
 		return nil, err
+	}
+	pst := n.newPosture(h)
+	n.posture.Store(pst)
+	if err := pst.guard.bring(ctx); err != nil {
+		return nil, err
+	}
+	if err := n.serveDNS(ctx); err != nil {
+		return nil, err
+	}
+	if err := n.checkAndStart(ctx, pst); err != nil {
+		return nil, errors.Join(err, n.resolver.shutdown())
 	}
 	return n, nil
 }
 
-func (n *hostNet) up(ctx context.Context, p *seams, run platform.Command, hooks guardHooks) error {
-	h := n.host
-	n.rules = &ruleLoader{Run: run, Kernel: n.Kernel, Root: p.Root}
-	if err := n.namespace(ctx, p); err != nil {
+// checkAndStart makes posture p ready, then starts the daemon.
+func (n *hostNet) checkAndStart(ctx context.Context, p *posture) error {
+	if err := n.ready(ctx, p); err != nil {
 		return err
 	}
-	var g *gitHub
-	if !h.Egress.Internet {
-		g = n.newGitHub(h)
-	}
-	want := n.want(h, g)
-	rs, err := want.Generate()
-	if err != nil {
-		return err
-	}
-	err = n.rules.load(ctx, rs)
-	if err != nil {
-		return err
-	}
-	if err := n.serveDNS(ctx); err != nil {
-		return err
-	}
-	if err := n.checkAndStart(ctx, p, want, g); err != nil {
-		return errors.Join(err, n.resolver.shutdown())
-	}
-	n.Guard = newGuard(n.rules, want, p.Log, hooks)
-	return nil
-}
-
-// checkAndStart reads an internet: false host's domain list, learning from
-// the resolver as it does, then resolves GitHub's API name and starts the
-// daemon.
-func (n *hostNet) checkAndStart(ctx context.Context, p *seams, want wanted, g *gitHub) error {
-	h := n.host
-	if g != nil {
-		n.gh.Store(g)
-		if err := g.source.Start(ctx); err != nil {
-			return err
-		}
-	}
-	err := netsetup.CheckName(ctx, h, p.Lookup)
-	if err != nil {
-		return err
-	}
-	if want.BridgeNF6 {
-		err = netsetup.SetBridgeNF6(p.Root)
-		if err != nil {
+	if p.guard.want.BridgeNF6 {
+		if err := netsetup.SetBridgeNF6(n.rules.Root); err != nil {
 			return fmt.Errorf("egress.ipv6 needs %s at 1 in the host's namespace: %w", platform.BridgeNFCall6, err)
 		}
 	}
-	return n.startDaemon(ctx, p)
+	return n.startDaemon(ctx, n.seams)
 }
 
-func (n *hostNet) namespace(ctx context.Context, p *seams) error {
-	h := n.host
+func (n *hostNet) namespace(ctx context.Context, h *config.Host) error {
+	p := n.seams
 	var err error
 	if n.Original, err = netsetup.ReadOriginal(p.Root); err != nil {
 		return err
@@ -202,14 +168,11 @@ func (n *hostNet) namespace(ctx context.Context, p *seams) error {
 		return err
 	}
 	n.Gateway4, n.Gateway6 = routes.Gateway4, routes.Gateway6
-	switch {
-	case h.Egress.IPv6:
+	if h.Egress.IPv6 {
 		err = n.ipv6(ctx, p, routes)
-	case !h.Egress.Open:
-		err = netsetup.TurnIPv6Off(p.Root)
-	}
-	if err != nil {
-		return err
+		if err != nil {
+			return err
+		}
 	}
 	if h.Subnet.IsValid() {
 		n.Subnet = h.Subnet
@@ -234,31 +197,6 @@ func (n *hostNet) ipv6(ctx context.Context, p *seams, routes netsetup.Routes) er
 	}
 	n.Job6, err = netsetup.JobPrefix6(ctx, p.Root.Path(stateDir+"/job-ipv6"), routes.OnLink, p.Random)
 	return err
-}
-
-// want is what the guard holds for host h, with g its resolver or nil.
-func (n *hostNet) want(h *config.Host, g *gitHub) wanted {
-	_, bridge6 := platform.BridgeNF(n.rules.Root)
-	w := wanted{
-		Generate: func() (*egress.Ruleset, error) {
-			st := egress.State{Own64: n.Own64}
-			// moved64 forgets the /64 only after the swap that turns
-			// internet off, so the closed rules must not read it.
-			if h.Egress.Internet {
-				st.Self64 = n.self64.Load().prefix
-			}
-			if g != nil {
-				st.GitHub = g.learner.Held()
-			}
-			return egress.Generate(&egress.Input{Host: h, Job6: n.Job6, State: st}, n.Kernel.Backend)
-		},
-		IPv6Off:   !h.Egress.Open && !h.Egress.IPv6,
-		BridgeNF6: h.Egress.IPv6 && bridge6,
-	}
-	if g != nil {
-		w.Loading = g.learner.Loading()
-	}
-	return w
 }
 
 func (n *hostNet) startDaemon(ctx context.Context, p *seams) error {
@@ -292,12 +230,13 @@ func (n *hostNet) startDaemon(ctx context.Context, p *seams) error {
 	return nil
 }
 
-// hold runs the guard, an internet: false host's domain list refresh and an
-// ipv6 host's /64 learner until ctx ends, answering nil, or until a restore
-// or a new /64's load fails, the resolver stops or the daemon exits,
-// answering why; on any failure but the daemon's exit it stops the daemon
-// first, since jobs may no longer run under the host's policy. It waits for
-// what it started.
+// hold holds the host's posture, its guard, an internet: false posture's
+// domain list refresh and an ipv6 posture's /64 learner, applying each
+// change sent through change in between, until ctx ends, answering nil, or
+// until a part fails, the resolver stops or the daemon exits, answering
+// why; on any failure but the daemon's exit it stops the daemon first,
+// since jobs may no longer run under the host's policy. It waits for what
+// it started.
 func (n *hostNet) hold(ctx context.Context) error {
 	hctx, cancel := context.WithCancelCause(ctx)
 	var wg sync.WaitGroup
@@ -317,18 +256,7 @@ func (n *hostNet) hold(ctx context.Context) error {
 		case <-hctx.Done():
 		}
 	})
-	wg.Go(func() { n.followGitHub(hctx) })
-	n.mu.Lock()
-	v6 := n.host.Egress.IPv6
-	n.mu.Unlock()
-	if v6 {
-		wg.Go(func() {
-			if err := n.learn64(hctx, n.echo); err != nil {
-				cancel(err)
-			}
-		})
-	}
-	err := n.Guard.run(hctx)
+	err := n.holdPostures(hctx)
 	select {
 	case <-n.Daemon.Done():
 		return fmt.Errorf("dockerd exited: %w", errors.Join(err, n.Daemon.Err()))
@@ -349,85 +277,15 @@ func (n *hostNet) stop() error {
 	return errors.Join(n.Daemon.Stop(), n.resolver.shutdown())
 }
 
-// reload swaps the host's rules for section h, read again on SIGHUP, and
-// turns the resolver's learning and an ipv6 host's /64 learner on or off
-// with egress.internet. A section that changes what only a restart applies,
-// or whose resolvers or allow entries overlap the job subnet in use, keeps
-// the old rules and answers why as kept, as does a failed swap, or a domain
-// list unread once internet is turned off, which loads the old rules again.
-// fatal is a failure the guard would answer, the old rules not loading
-// again among them, and the caller stops the host.
-func (n *hostNet) reload(ctx context.Context, h *config.Host) (kept, fatal error) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	kept = restartOnly(n.host, h)
-	if c := netsetup.Conflicts(n.Subnet, h); len(c) > 0 {
-		kept = errors.Join(kept, fmt.Errorf("the job subnet in use %s", strings.Join(c, "; ")))
-	}
-	if kept != nil {
-		return kept, nil
-	}
-	old, g := n.host, n.gh.Load()
-	next := g
-	switch {
-	case h.Egress.Internet:
-		next = nil
-	case g == nil:
-		next = n.newGitHub(h)
-	}
-	n.setUpstreams(h)
-	// Learning is armed before the swap, so an address the resolver
-	// answers during it is in the loaded set or written after it; turning
-	// internet on takes learning off only once the swap has loaded.
-	if next != nil {
-		next.learner.SetAllowed(n.learnable(h))
-		n.gh.Store(next)
-	}
-	kept, fatal = n.Guard.swap(ctx, n.want(h, next))
-	if kept == nil && fatal == nil && next != nil && g == nil {
-		kept, fatal = n.startList(ctx, next, old)
-	}
-	if kept != nil || fatal != nil {
-		if g != nil {
-			g.learner.SetAllowed(n.learnable(old))
-		}
-		n.gh.Store(g)
-		n.setUpstreams(old)
-		return kept, fatal
-	}
-	if next != g {
-		n.setGitHub(next)
-	}
-	n.host = h
-	n.moved64(old, h)
-	return nil, nil
-}
-
-// startList reads the domain list a reload that turned internet off learns
-// from; when it cannot be read it loads section old's rules again, and a
-// failure of that load is fatal, as a failed restore is.
-func (n *hostNet) startList(ctx context.Context, g *gitHub, old *config.Host) (kept, fatal error) {
-	err := g.source.Start(ctx)
-	if err == nil {
-		return nil, nil
-	}
-	back, fatal := n.Guard.swap(ctx, n.want(old, nil))
-	if back != nil && fatal == nil {
-		fatal = fmt.Errorf("restoring the internet rules after the domain list failed: %w", back)
-	}
-	return err, fatal
-}
-
-func (n *hostNet) setUpstreams(h *config.Host) {
-	ups := n.seams.Upstreams(h.DNS)
-	n.dns.Store(&ups)
-}
-
 // restartOnly names the keys whose change the running host cannot apply:
-// they decide the job network's shape, which runners are attached to.
+// the job network's shape, which runners are attached to, and the
+// resolvers every running job's lookups go to.
 func restartOnly(old, h *config.Host) error {
 	var keys []string
 	at := "hosts." + h.Name + "."
+	if !slices.Equal(old.DNS, h.DNS) {
+		keys = append(keys, at+"dns")
+	}
 	if old.Egress.IPv6 != h.Egress.IPv6 {
 		keys = append(keys, at+"egress.ipv6")
 	}

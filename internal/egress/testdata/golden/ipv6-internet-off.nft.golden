@@ -21,12 +21,6 @@ table inet manade {
 		size 65536
 		elements = { 140.82.112.3 timeout 3600s, 140.82.112.4 timeout 1801s }
 	}
-	set manade-gh6 {
-		type ipv6_addr
-		flags timeout
-		size 65536
-		elements = { 2606:50c0:8000::153 timeout 1200s }
-	}
 	chain forward {
 		type filter hook forward priority filter - 10; policy accept;
 		iifname "manade*" oifname "manade*" ip saddr @manade-probe4 ip daddr @manade-target4 counter
@@ -36,11 +30,10 @@ table inet manade {
 		iifname "manade*" ip daddr 10.0.0.50 tcp dport 5432 accept
 		iifname "manade*" ip6 daddr fd00::5 udp dport 53 accept
 		iifname "manade*" ip daddr @manade-gh4 accept
-		iifname "manade*" ip6 daddr @manade-gh6 accept
 		iifname "manade*" ip daddr { 10.0.0.0/8, 100.64.0.0/10, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16 } ip saddr @manade-probe4 ip daddr @manade-target4 counter
 		iifname "manade*" ip daddr { 10.0.0.0/8, 100.64.0.0/10, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16 } drop
-		iifname "manade*" ip6 daddr { ::ffff:0.0.0.0/96, 64:ff9b::/96, 64:ff9b:1::/48, 100::/64, 2001::/32, 2001:db8::/32, 2002::/16, 2a01:e0a:1::/48, 2a01:e0a:1259:2710::/64, 2a01:e0a:1259:2711::/64, fc00::/7, fe80::/10, ff00::/8 } ip6 saddr @manade-probe6 ip6 daddr @manade-target6 counter
-		iifname "manade*" ip6 daddr { ::ffff:0.0.0.0/96, 64:ff9b::/96, 64:ff9b:1::/48, 100::/64, 2001::/32, 2001:db8::/32, 2002::/16, 2a01:e0a:1::/48, 2a01:e0a:1259:2710::/64, 2a01:e0a:1259:2711::/64, fc00::/7, fe80::/10, ff00::/8 } drop
+		iifname "manade*" ip6 daddr { ::ffff:0.0.0.0/96, 64:ff9b::/96, 64:ff9b:1::/48, 100::/64, 2001::/32, 2001:db8::/32, 2002::/16, 2a01:e0a:1::/48, 2a01:e0a:1259:2711::/64, fc00::/7, fe80::/10, ff00::/8 } ip6 saddr @manade-probe6 ip6 daddr @manade-target6 counter
+		iifname "manade*" ip6 daddr { ::ffff:0.0.0.0/96, 64:ff9b::/96, 64:ff9b:1::/48, 100::/64, 2001::/32, 2001:db8::/32, 2002::/16, 2a01:e0a:1::/48, 2a01:e0a:1259:2711::/64, fc00::/7, fe80::/10, ff00::/8 } drop
 		iifname "manade*" ip6 saddr @manade-probe6 ip6 daddr @manade-target6 counter
 		iifname "manade*" meta nfproto ipv6 drop
 		iifname "manade*" ip saddr @manade-probe4 ip daddr @manade-target4 counter
@@ -61,11 +54,10 @@ table inet manade {
 		ip daddr 10.0.0.50 tcp dport 5432 accept
 		ip6 daddr fd00::5 udp dport 53 accept
 		ip daddr @manade-gh4 accept
-		ip6 daddr @manade-gh6 accept
 		oifname != "manade*" ip daddr { 10.0.0.0/8, 100.64.0.0/10, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16 } ip saddr @manade-probe4 ip daddr @manade-target4 counter
 		oifname != "manade*" ip daddr { 10.0.0.0/8, 100.64.0.0/10, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16 } drop
-		oifname != "manade*" ip6 daddr { ::ffff:0.0.0.0/96, 64:ff9b::/96, 64:ff9b:1::/48, 100::/64, 2001::/32, 2001:db8::/32, 2002::/16, 2a01:e0a:1::/48, 2a01:e0a:1259:2710::/64, 2a01:e0a:1259:2711::/64, fc00::/7, fe80::/10, ff00::/8 } ip6 saddr @manade-probe6 ip6 daddr @manade-target6 counter
-		oifname != "manade*" ip6 daddr { ::ffff:0.0.0.0/96, 64:ff9b::/96, 64:ff9b:1::/48, 100::/64, 2001::/32, 2001:db8::/32, 2002::/16, 2a01:e0a:1::/48, 2a01:e0a:1259:2710::/64, 2a01:e0a:1259:2711::/64, fc00::/7, fe80::/10, ff00::/8 } drop
+		oifname != "manade*" ip6 daddr { ::ffff:0.0.0.0/96, 64:ff9b::/96, 64:ff9b:1::/48, 100::/64, 2001::/32, 2001:db8::/32, 2002::/16, 2a01:e0a:1::/48, 2a01:e0a:1259:2711::/64, fc00::/7, fe80::/10, ff00::/8 } ip6 saddr @manade-probe6 ip6 daddr @manade-target6 counter
+		oifname != "manade*" ip6 daddr { ::ffff:0.0.0.0/96, 64:ff9b::/96, 64:ff9b:1::/48, 100::/64, 2001::/32, 2001:db8::/32, 2002::/16, 2a01:e0a:1::/48, 2a01:e0a:1259:2711::/64, fc00::/7, fe80::/10, ff00::/8 } drop
 		oifname != "manade*" ip6 saddr @manade-probe6 ip6 daddr @manade-target6 counter
 		oifname != "manade*" meta nfproto ipv6 drop
 		oifname != "manade*" ip saddr @manade-probe4 ip daddr @manade-target4 counter

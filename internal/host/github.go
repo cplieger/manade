@@ -5,10 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
-	"sync"
 
-	"github.com/cplieger/manade/internal/config"
-	"github.com/cplieger/manade/internal/egress"
 	"github.com/cplieger/manade/internal/host/netsetup"
 	"github.com/cplieger/manade/internal/host/resolver"
 	"github.com/cplieger/manade/internal/hostapi"
@@ -32,38 +29,32 @@ type dnsServer struct {
 	done chan struct{}
 }
 
-// gitHub is an internet: false host's domain list and learned addresses,
-// which the host's resolver learns into while it is the host's.
+// gitHub is an internet: false posture's domain list and learned addresses,
+// which the host's resolver learns into while the posture runs.
 type gitHub struct {
 	learner *resolver.Learner
 	source  *resolver.Source
 }
 
-// upstreams answers the resolvers the host's section names now, with no
-// lock, so a query never waits on a reload.
-func (n *hostNet) upstreams() []netip.AddrPort { return *n.dns.Load() }
+// upstreams answers the configured resolvers.
+func (n *hostNet) upstreams() []netip.AddrPort { return n.dns }
 
-// learning answers what the resolver learns now: an internet: false host's
-// list and learner, nil on any other host.
+// learning answers what the resolver learns now: an internet: false
+// posture's list and learner, nil on any other.
 func (n *hostNet) learning() *resolver.Learning {
-	g := n.gh.Load()
+	g := n.posture.Load().gh
 	if g == nil {
 		return nil
 	}
 	return &resolver.Learning{Match: g.source.Matcher(), Learner: g.learner}
 }
 
-// learnable answers the test a learned address passes on host h.
-func (n *hostNet) learnable(h *config.Host) func(netip.Addr) bool {
-	return (&egress.Input{Host: h, State: egress.State{Own64: n.Own64}}).Learnable()
-}
-
-// newGitHub answers host h's learner and domain list; the list is the
-// bootstrap one until its Source starts.
-func (n *hostNet) newGitHub(h *config.Host) *gitHub {
+// newGitHub answers a learner and a domain list; the list is the bootstrap
+// one until its Source starts.
+func (n *hostNet) newGitHub() *gitHub {
 	p := n.seams
 	return &gitHub{
-		learner: resolver.NewLearner(n.rules.addLearned, n.learnable(h), p.Log),
+		learner: resolver.NewLearner(n.rules.addLearned, p.Log),
 		source:  resolver.NewSource(p.FetchDomains, p.Root.Path(domainsFile), p.Log),
 	}
 }
@@ -99,53 +90,20 @@ func (d *dnsServer) failure() error {
 	return fmt.Errorf("the host's DNS resolver stopped: %w", d.err)
 }
 
-// setGitHub makes g what the resolver learns into, nil for nothing, and
-// wakes followGitHub.
-func (n *hostNet) setGitHub(g *gitHub) {
-	n.gh.Store(g)
-	select {
-	case n.ghMoved <- struct{}{}:
-	default:
-	}
-}
-
-// followGitHub refreshes the domain list the host learns from, following a
-// reload that turns learning on or off, until ctx ends.
-func (n *hostNet) followGitHub(ctx context.Context) {
-	for ctx.Err() == nil {
-		g := n.gh.Load()
-		gctx, cancel := context.WithCancel(ctx)
-		var wg sync.WaitGroup
-		if g != nil {
-			wg.Go(func() { g.source.Run(gctx) })
-		}
-		select {
-		case <-ctx.Done():
-		case <-n.ghMoved:
-		}
-		cancel()
-		wg.Wait()
-	}
-}
-
-// gitHubStatus answers an internet: false host's domain list and learned
-// addresses; nil on any other host.
+// gitHubStatus answers an internet: false posture's domain list and learned
+// addresses; nil on any other.
 func (n *hostNet) gitHubStatus() *hostapi.GitHubStatus {
-	g := n.gh.Load()
+	g := n.posture.Load().gh
 	if g == nil {
 		return nil
 	}
 	l, c := g.source.List(), g.learner.Counts()
-	return &hostapi.GitHubStatus{
-		DomainsAt: l.At, Source: l.Source,
-		Addresses4: c.Held[resolver.IPv4], Addresses6: c.Held[resolver.IPv6],
-		Refused4: c.Refused[resolver.IPv4], Refused6: c.Refused[resolver.IPv6],
-	}
+	return &hostapi.GitHubStatus{DomainsAt: l.At, Source: l.Source, Addresses: c.Held, Refused: c.Refused}
 }
 
-// gitHubName reports a name an internet: false host reaches by name: one of
-// GitHub's domain list; false on any other host.
+// gitHubName reports a name an internet: false posture reaches by name: one
+// of GitHub's domain list; false on any other.
 func (n *hostNet) gitHubName(name string) bool {
-	g := n.gh.Load()
+	g := n.posture.Load().gh
 	return g != nil && g.source.Matcher().Match(name)
 }

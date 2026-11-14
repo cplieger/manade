@@ -28,12 +28,28 @@ type echoes struct {
 	mu      sync.Mutex
 }
 
-func (e *echoes) echo(_ context.Context, url string) ([]byte, error) {
+// echo answers the next reply, or ctx's error once ctx ends, as an HTTP
+// client does.
+func (e *echoes) echo(ctx context.Context, url string) ([]byte, error) {
 	e.mu.Lock()
-	defer e.mu.Unlock()
 	e.urls = append(e.urls, url)
 	r := e.replies[min(len(e.urls), len(e.replies))-1]
-	return r()
+	e.mu.Unlock()
+	type got struct {
+		err  error
+		body []byte
+	}
+	ch := make(chan got, 1)
+	go func() {
+		b, err := r()
+		ch <- got{body: b, err: err}
+	}()
+	select {
+	case g := <-ch:
+		return g.body, g.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 func answer(addr string) func() ([]byte, error) {
@@ -77,10 +93,7 @@ func TestEchoOverIPv6(t *testing.T) {
 		_, _ = w.Write(trace(r.RemoteAddr))
 	}))
 	defer srv.Close()
-	echo, err := echoOverIPv6()
-	if err != nil {
-		t.Fatal(err)
-	}
+	echo := echoOverIPv6()
 	if _, err := echo(t.Context(), srv.URL); err == nil {
 		t.Errorf("an IPv4 server at %s answered an IPv6-only echo", srv.URL)
 	}
@@ -241,7 +254,7 @@ func holding(t *testing.T, n *hostNet) (stop func() error) {
 	}
 }
 
-func TestReloadFollowsInternetIn64(t *testing.T) {
+func TestAChangeOfInternetRebuildsThe64(t *testing.T) {
 	t.Run("turning internet on asks at once and lets job IPv6 out", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			e := &echoes{replies: []func() ([]byte, error){answer("2a01:e0a:1259:2710::7008")}}
@@ -254,12 +267,12 @@ func TestReloadFollowsInternetIn64(t *testing.T) {
 				t.Errorf("an internet: false host asked its ipv6_echo %d times", got)
 			}
 			at := time.Now()
-			if k, fatal := n.reload(t.Context(), v6Section()); k != nil || fatal != nil {
-				t.Fatalf("Reload = %v, %v", k, fatal)
+			if failed, fatal := n.change(t.Context(), v6Section()); failed != nil || fatal != nil {
+				t.Fatalf("Change = %v, %v", failed, fatal)
 			}
 			synctest.Wait()
 			if got := e.asked(); got != 1 || time.Since(at) != 0 {
-				t.Errorf("asked %d times %v after the reload, want once at once", got, time.Since(at))
+				t.Errorf("asked %d times %v after the change, want once at once", got, time.Since(at))
 			}
 			if st := n.iPv6Status(); st == nil || st.Prefix != pfx("2a01:e0a:1259:2710::/64") {
 				t.Errorf("IPv6Status = %+v, want the learned /64", st)
@@ -272,7 +285,7 @@ func TestReloadFollowsInternetIn64(t *testing.T) {
 			}
 		})
 	})
-	t.Run("turning internet off stops asking and forgets the /64", func(t *testing.T) {
+	t.Run("turning internet off stops asking, and on again starts unasked", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			e := &echoes{replies: []func() ([]byte, error){
 				answer("2a01:e0a:1259:2710::7008"),
@@ -285,11 +298,14 @@ func TestReloadFollowsInternetIn64(t *testing.T) {
 			if st := n.iPv6Status(); st == nil || !st.Prefix.IsValid() {
 				t.Fatalf("setup: IPv6Status = %+v, want a learned /64", st)
 			}
-			if k, fatal := n.reload(t.Context(), closedV6Section()); k != nil || fatal != nil {
-				t.Fatalf("Reload = %v, %v", k, fatal)
+			if failed, fatal := n.change(t.Context(), closedV6Section()); failed != nil || fatal != nil {
+				t.Fatalf("Change = %v, %v", failed, fatal)
 			}
 			if st := n.iPv6Status(); st != nil {
 				t.Errorf("IPv6Status = %+v on an internet: false host, want none", st)
+			}
+			if dropsPrefix(fwd6(f), "2a01:e0a:1259:2710::/64") {
+				t.Error("the internet: false rules carry the /64 learned before the change")
 			}
 			loads := restores(f)
 			time.Sleep(2*echoInterval + time.Second)
@@ -298,10 +314,10 @@ func TestReloadFollowsInternetIn64(t *testing.T) {
 				t.Errorf("asked %d times, want no ask after internet was turned off", got)
 			}
 			if got := restores(f); got != loads {
-				t.Errorf("the closed rules were restored %d times after the swap, want them held as loaded", got-loads)
+				t.Errorf("the closed rules were restored %d times after the change, want them held as loaded", got-loads)
 			}
-			if k, fatal := n.reload(t.Context(), v6Section()); k != nil || fatal != nil {
-				t.Fatalf("Reload = %v, %v", k, fatal)
+			if failed, fatal := n.change(t.Context(), v6Section()); failed != nil || fatal != nil {
+				t.Fatalf("Change = %v, %v", failed, fatal)
 			}
 			synctest.Wait()
 			if st := n.iPv6Status(); st == nil || st.Prefix.IsValid() || !strings.Contains(st.Reason, "unreachable") {
@@ -315,7 +331,7 @@ func TestReloadFollowsInternetIn64(t *testing.T) {
 			}
 		})
 	})
-	t.Run("an ask answered after internet was turned off is forgotten", func(t *testing.T) {
+	t.Run("an ask in flight at the change is dropped", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			release := make(chan struct{})
 			e := &echoes{replies: []func() ([]byte, error){
@@ -329,21 +345,55 @@ func TestReloadFollowsInternetIn64(t *testing.T) {
 			n := upNet(t, f, v6Section())
 			stop := holding(t, n)
 			synctest.Wait()
-			if k, fatal := n.reload(t.Context(), closedV6Section()); k != nil || fatal != nil {
-				t.Fatalf("Reload = %v, %v", k, fatal)
+			if failed, fatal := n.change(t.Context(), closedV6Section()); failed != nil || fatal != nil {
+				t.Fatalf("Change = %v, %v", failed, fatal)
 			}
 			close(release)
-			synctest.Wait()
-			if k, fatal := n.reload(t.Context(), v6Section()); k != nil || fatal != nil {
-				t.Fatalf("Reload = %v, %v", k, fatal)
+			if failed, fatal := n.change(t.Context(), v6Section()); failed != nil || fatal != nil {
+				t.Fatalf("Change = %v, %v", failed, fatal)
 			}
 			synctest.Wait()
 			if st := n.iPv6Status(); st == nil || st.Prefix.IsValid() || !strings.Contains(st.Reason, "unreachable") {
-				t.Errorf("IPv6Status = %+v, want the failed ask, not the answer that came after internet was off", st)
+				t.Errorf("IPv6Status = %+v, want the failed ask, not the answer that came after the change", st)
 			}
 			if err := stop(); err != nil {
 				t.Errorf("Hold = %v", err)
 			}
 		})
 	})
+}
+
+// The host's own /64 change is loaded under the guard's lock, so a check
+// that runs while it is made finds the new rules loaded and restores
+// nothing.
+func TestALearned64IsNoRestore(t *testing.T) {
+	var restored []string
+	f := v6Fixture(t, &echoes{replies: []func() ([]byte, error){answer("2a01:e0a:1259:2710::7008")}})
+	p := f.platform()
+	n, err := bringUp(t.Context(), v6Section(), p, guardHooks{Restored: func(w string) { restored = append(restored, w) }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = n.stop() })
+	g := n.rulesGuard()
+	checked := make(chan error, 1)
+	err = g.refresh(t.Context(), func() {
+		n.posture.Load().self64.Store(&learned64{prefix: pfx("2a01:e0a:1259:2710::/64")})
+		go func() { checked <- g.check(t.Context()) }()
+		// The window a check would need to load the new /64 itself and
+		// count it restored, were apply run outside the guard's lock.
+		time.Sleep(50 * time.Millisecond)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := <-checked; err != nil {
+		t.Fatal(err)
+	}
+	if len(restored) != 0 {
+		t.Errorf("restored %q, want the host's own /64 load counted as none", restored)
+	}
+	if !dropsPrefix(fwd6(f), "2a01:e0a:1259:2710::/64") {
+		t.Error("the learned /64 was not loaded")
+	}
 }

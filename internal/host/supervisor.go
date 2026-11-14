@@ -65,6 +65,10 @@ type supervisor struct {
 	oom       *platform.OOMTotal
 	net       *hostNet
 	configErr atomic.Pointer[string]
+	// pending is the change of egress posture waiting for the host's
+	// runners to end; changed wakes changes when a reload sets it.
+	pending *pendingChange
+	changed chan struct{}
 	// ping asks the daemon for the health verdict: dk.Ping.
 	ping     func(ctx context.Context) error
 	opts     *Options
@@ -72,9 +76,17 @@ type supervisor struct {
 	instance string
 	plat     jobspec.Platform
 	restored atomic.Uint64
+	// reloadMu serialises reloads and the changes they leave pending.
 	reloadMu sync.Mutex
 	serving  atomic.Bool
 	apiPort  uint16
+}
+
+// pendingChange is a reloaded config whose host section changes the
+// running posture's open or internet key.
+type pendingChange struct {
+	cfg *config.Config
+	h   *config.Host
 }
 
 // Run brings host cfg.Self up, serves its API until ctx ends and then stops
@@ -86,7 +98,7 @@ func Run(ctx context.Context, cfg *config.Config, opts *Options) error {
 	if !ok {
 		return fmt.Errorf("MANADE_HOST %q names no hosts entry", cfg.Self.Name)
 	}
-	s := &supervisor{log: opts.Log, opts: opts, lat: newLatencies(), instance: newInstanceID()}
+	s := &supervisor{log: opts.Log, opts: opts, lat: newLatencies(), instance: newInstanceID(), changed: make(chan struct{}, 1)}
 	ms, err := platform.Mountinfo(platform.System)
 	if err != nil {
 		return err
@@ -197,7 +209,7 @@ func (s *supervisor) build(ctx context.Context, h *config.Host, sv *served, cg *
 	}
 	s.prober = probe.NewRunner(&probe.Config{
 		Daemon: s.dk, Attach: func(ctx context.Context, id string) (probe.Stream, error) { return s.dk.Attach(ctx, id) },
-		Sets: &probeSets{guard: s.net.Guard, ipv6: h.Egress.IPv6}, Image: s.images,
+		Sets: &probeSets{rules: s.net.rules, guard: s.net.rulesGuard, ipv6: h.Egress.IPv6}, Image: s.images,
 		Spec: func() *jobspec.Host { return s.served.Load().Spec }, Host: s.probeHost,
 		Log: s.log, Network: jobNetwork, Started: time.Now(),
 	})
@@ -219,6 +231,7 @@ func (s *supervisor) run(rctx context.Context, cancel context.CancelCauseFunc, l
 	wg.Go(func() { s.images.Run(rctx) })
 	wg.Go(func() { s.runners.run(rctx) })
 	wg.Go(func() { s.hangups(rctx, cancel) })
+	wg.Go(func() { s.changes(rctx, cancel) })
 	srv := hostapi.NewServer(&backend{s: s}, s.instance, s.log)
 	s.serving.Store(true)
 	s.log.Info("The runner host serves its API", "host", s.served.Load().Host, "instance", s.instance, "version", s.opts.Version)
@@ -257,9 +270,12 @@ func (s *supervisor) hangups(ctx context.Context, cancel context.CancelCauseFunc
 	}
 }
 
-// reload reads the config again and swaps the host's rules and what it
-// serves. A config or section that does not validate keeps all of it, and
-// status says why; only a failure a restore would answer is returned.
+// reload reads the config again and applies it. A config or section that
+// does not validate, or that the running host cannot take, keeps all of it,
+// and status says why. A section that changes the posture's open or internet
+// key is left pending, every start held, for changes to apply once the
+// runners have ended; any other is swapped in at once, which also drops a
+// change left pending. Only a failure a restore would answer is returned.
 func (s *supervisor) reload(ctx context.Context) error {
 	s.reloadMu.Lock()
 	defer s.reloadMu.Unlock()
@@ -274,7 +290,29 @@ func (s *supervisor) reload(ctx context.Context) error {
 		return nil
 	}
 	h, _ := cfg.Host(s.served.Load().Host)
-	kept, fatal := s.net.reload(ctx, h)
+	if err := s.net.applicable(h); err != nil {
+		s.keep(err)
+		return nil
+	}
+	s.configErr.Store(nil)
+	if s.net.postureChanged(h) {
+		s.pending = &pendingChange{cfg: cfg, h: h}
+		s.runners.holdEgress(fmt.Sprintf("the host applies a change of egress (open %t, internet %t) once every runner on it has exited or been removed",
+			h.Egress.Open, h.Egress.Internet))
+		s.log.Warn("The host takes no start until its runners have ended, then rebuilds its egress for the new section", "host", h.Name,
+			"open", h.Egress.Open, "internet", h.Egress.Internet)
+		select {
+		case s.changed <- struct{}{}:
+		default:
+		}
+		return nil
+	}
+	if s.pending != nil {
+		s.log.Info("The reloaded section keeps the running egress, so the change left pending is dropped", "host", h.Name)
+	}
+	s.pending = nil
+	s.runners.releaseEgress()
+	kept, fatal := s.net.swap(ctx, h)
 	if fatal != nil {
 		return fatal
 	}
@@ -282,12 +320,81 @@ func (s *supervisor) reload(ctx context.Context) error {
 		s.keep(kept)
 		return nil
 	}
+	s.apply(cfg, h)
+	s.log.Info("The host reloaded its config", "host", h.Name)
+	return nil
+}
+
+// apply makes cfg what the host serves.
+func (s *supervisor) apply(cfg *config.Config, h *config.Host) {
 	sv := s.newServed(cfg, h)
 	s.served.Store(sv)
 	s.runners.setServed(sv)
 	s.images.Reload(h, sv.Profiles)
-	s.configErr.Store(nil)
-	s.log.Info("The host reloaded its config", "host", h.Name)
+}
+
+// changes applies each change of egress posture a reload leaves pending
+// once the host's runners have ended, until ctx ends; a change the host
+// cannot survive cancels ctx with why.
+func (s *supervisor) changes(ctx context.Context, cancel context.CancelCauseFunc) {
+	for {
+		idle := s.runners.egressIdle()
+		if idle == nil {
+			select {
+			case <-ctx.Done():
+				return
+			case <-s.changed:
+			}
+			continue
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-s.changed:
+			continue
+		case <-idle:
+		}
+		if err := s.applyChange(ctx); err != nil {
+			cancel(err)
+			return
+		}
+	}
+}
+
+// applyChange rebuilds the host's egress for the pending change, with no
+// probe running, once no runner holds it up. Success serves the new config
+// and takes starts again; a failure leaves the old posture up, every start
+// held and the failure in status until a later SIGHUP or a restart. Only a
+// failure to bring the old posture back is returned.
+func (s *supervisor) applyChange(ctx context.Context) error {
+	s.reloadMu.Lock()
+	defer s.reloadMu.Unlock()
+	c := s.pending
+	if c == nil || !s.runners.egressDrained() {
+		return nil
+	}
+	resume, err := s.prober.Pause(ctx)
+	if err != nil {
+		return nil
+	}
+	s.pending = nil
+	failed, fatal := s.net.change(ctx, c.h)
+	resume()
+	if fatal != nil {
+		return fatal
+	}
+	if failed != nil {
+		if ctx.Err() != nil {
+			return nil
+		}
+		s.runners.failEgress("the change of egress failed, so the host went back to its old egress and takes no start until a SIGHUP or a restart applies the section again: " + failed.Error())
+		s.keep(fmt.Errorf("the change of egress (open %t, internet %t) failed; the host takes no start: %w", c.h.Egress.Open, c.h.Egress.Internet, failed))
+		return nil
+	}
+	s.apply(c.cfg, c.h)
+	s.runners.releaseEgress()
+	s.log.Info("The host rebuilt its egress for the reloaded section and takes starts again", "host", c.h.Name,
+		"open", c.h.Egress.Open, "internet", c.h.Egress.Internet)
 	return nil
 }
 
@@ -386,10 +493,6 @@ func (s *supervisor) outwardAddrs() hostapi.Outward {
 
 // platform is the real kernel and daemon.
 func (s *supervisor) platform() *seams {
-	echo, err := echoOverIPv6()
-	if err != nil {
-		s.log.Warn("The IPv6 echo client was not built; an ipv6 host learns no /64", "error", err)
-	}
 	return &seams{
 		Run: platform.Exec, Lookup: netsetup.LookupVia, Random: rand.Reader,
 		PickStorage: func(dir string) (platform.StoragePick, error) {
@@ -405,7 +508,7 @@ func (s *supervisor) platform() *seams {
 			}
 			return c, nil
 		},
-		ListenDNS: listenDNS, FetchDomains: resolver.FetchMeta(httpclient.New(metaTimeout)), Upstreams: resolver.Upstreams, Echo: echo,
+		ListenDNS: listenDNS, FetchDomains: resolver.FetchMeta(httpclient.New(metaTimeout)), Upstreams: resolver.Upstreams, Echo: echoOverIPv6(),
 		Log: s.log, Root: platform.System,
 	}
 }

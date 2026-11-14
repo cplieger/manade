@@ -117,7 +117,7 @@ func serve(t *testing.T, f *Forwarder) netip.AddrPort {
 }
 
 func newForwarder(ups []netip.AddrPort, k *kernelSets) *Forwarder {
-	l := NewLearner(k.write, learnable(), slog.New(slog.DiscardHandler))
+	l := NewLearner(k.write, slog.New(slog.DiscardHandler))
 	m := newMatcher(meta)
 	return NewForwarder(func() []netip.AddrPort { return ups }, learns(m, l), slog.New(slog.DiscardHandler))
 }
@@ -183,7 +183,7 @@ func TestForwardWritesBeforeItAnswers(t *testing.T) {
 		close(inWrite)
 		<-release
 		return nil
-	}, learnable(), slog.New(slog.DiscardHandler))
+	}, slog.New(slog.DiscardHandler))
 	m := newMatcher(meta)
 	up := upstream(t, answering(0, aRR("140.82.121.10", 60)))
 	at := serve(t, NewForwarder(func() []netip.AddrPort { return []netip.AddrPort{up} }, learns(m, l), slog.New(slog.DiscardHandler)))
@@ -231,7 +231,7 @@ func TestForwardAnswersInsideTheEmbeddedWaitWhileItLearns(t *testing.T) {
 		l := NewLearner(func(ctx context.Context, ls []egress.Learned) error {
 			time.Sleep(2 * time.Second)
 			return k.write(ctx, ls)
-		}, learnable(), slog.New(slog.DiscardHandler))
+		}, slog.New(slog.DiscardHandler))
 		up := upstream(t, func(q []byte) [][]byte {
 			time.Sleep(3 * time.Second)
 			return answering(0, aRR("140.82.121.10", 60))(q)
@@ -249,7 +249,7 @@ func TestForwardAnswersInsideTheEmbeddedWaitWhileItLearns(t *testing.T) {
 	})
 	t.Run("a rule load holding the lock", func(t *testing.T) {
 		k := &kernelSets{}
-		l := NewLearner(k.write, learnable(), slog.New(slog.DiscardHandler))
+		l := NewLearner(k.write, slog.New(slog.DiscardHandler))
 		f := NewForwarder(func() []netip.AddrPort { return []netip.AddrPort{upstream(t, answering(0, aRR("140.82.121.10", 60)))} },
 			learns(newMatcher(meta), l), slog.New(slog.DiscardHandler))
 		f.budget = 300 * time.Millisecond
@@ -270,7 +270,7 @@ func TestServeWaitsForALearnItsQueryLeft(t *testing.T) {
 		close(inWrite)
 		<-release
 		return nil
-	}, learnable(), slog.New(slog.DiscardHandler))
+	}, slog.New(slog.DiscardHandler))
 	f := NewForwarder(func() []netip.AddrPort { return []netip.AddrPort{upstream(t, answering(0, aRR("140.82.121.10", 60)))} },
 		learns(newMatcher(meta), l), slog.New(slog.DiscardHandler))
 	f.budget = 300 * time.Millisecond
@@ -311,7 +311,7 @@ func askUDP(at netip.AddrPort, q []byte) ([]byte, error) {
 
 func TestQueriesDuringARuleLoadAreLearnedInOneWrite(t *testing.T) {
 	k := &kernelSets{}
-	l := NewLearner(k.write, learnable(), slog.New(slog.DiscardHandler))
+	l := NewLearner(k.write, slog.New(slog.DiscardHandler))
 	up := upstream(t, func(q []byte) [][]byte {
 		id := binary.BigEndian.Uint16(q)
 		return answering(0, aRR(fmt.Sprintf("140.82.121.%d", id), 60))(q)
@@ -392,11 +392,68 @@ func TestForwardLearnsNothing(t *testing.T) {
 	}
 }
 
+// An internet: false host learns IPv4 only, so a listed name's AAAA query
+// is answered at once with no records (RFC 2308 §2.2's NODATA), asking no
+// upstream and learning nothing; an unlisted name's is relayed, since an
+// IPv6 allow entry may be reached by name.
+func TestForwardAnswersAListedNamesAAAAWithNoRecords(t *testing.T) {
+	v6 := aRR("2606:50c0:8000::154", 60)
+	for _, tc := range []struct {
+		name   string
+		qname  string
+		learns bool
+		asked  int32
+	}{
+		{"a listed name", "codeload.github.com", true, 0},
+		{"an unlisted name", "registry.example.org", true, 1},
+		{"a listed name with learning off", "codeload.github.com", false, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			k := &kernelSets{}
+			var asked atomic.Int32
+			up := upstream(t, func(q []byte) [][]byte {
+				asked.Add(1)
+				return [][]byte{response(q, 0, v6)}
+			})
+			l := NewLearner(k.write, slog.New(slog.DiscardHandler))
+			learning := func() *Learning { return nil }
+			if tc.learns {
+				learning = learns(newMatcher(meta), l)
+			}
+			at := serve(t, NewForwarder(func() []netip.AddrPort { return []netip.AddrPort{up} }, learning, slog.New(slog.DiscardHandler)))
+			q := query(9, tc.qname, typeAAAA)
+			resp := ask(t, "udp", at, q)
+			rq, err := parseQuestion(resp)
+			if err != nil || !isResponse(resp) || rcodeOf(resp) != rcodeOK || !sameQuestion(rq, mustQuestion(t, q)) {
+				t.Fatalf("answer = %x (%v), want a NOERROR response to the question", resp, err)
+			}
+			if wantAnswers := uint16(tc.asked); rq.answers != wantAnswers {
+				t.Errorf("answer records = %d, want %d", rq.answers, wantAnswers)
+			}
+			if got := asked.Load(); got != tc.asked {
+				t.Errorf("upstream asked %d times, want %d", got, tc.asked)
+			}
+			if w := k.all(); len(w) != 0 {
+				t.Errorf("writes = %v, want nothing learned from an AAAA answer", w)
+			}
+		})
+	}
+}
+
+func mustQuestion(t *testing.T, msg []byte) question {
+	t.Helper()
+	q, err := parseQuestion(msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return q
+}
+
 func TestForwardWithLearningOffRelaysAListedName(t *testing.T) {
 	k := &kernelSets{}
 	var on atomic.Bool
 	on.Store(true)
-	l := NewLearner(k.write, learnable(), slog.New(slog.DiscardHandler))
+	l := NewLearner(k.write, slog.New(slog.DiscardHandler))
 	m := newMatcher(meta)
 	up := upstream(t, answering(0, aRR("140.82.121.10", 60)))
 	at := serve(t, NewForwarder(func() []netip.AddrPort { return []netip.AddrPort{up} }, func() *Learning {
@@ -465,7 +522,7 @@ func TestForwardAnswersSERVFAILWithinItsBudget(t *testing.T) {
 	q := query(77, "github.com", typeA)
 	resp := ask(t, "udp", at, q)
 	pq, _ := parseQuestion(q)
-	if !slices.Equal(resp, failure(q, pq, rcodeFail)) {
+	if !slices.Equal(resp, noRecords(q, pq, rcodeFail)) {
 		t.Errorf("answer = %x, want SERVFAIL to the query", resp)
 	}
 	if egress.ForwarderBudget >= 4*time.Second {
@@ -491,7 +548,7 @@ func TestForwardReadsItsUpstreamsAtEachQuery(t *testing.T) {
 	old, next := []netip.AddrPort{upstream(t, answering(5))}, []netip.AddrPort{upstream(t, answering(0, aRR("140.82.121.10", 60)))}
 	ups.Store(&old)
 	m := newMatcher(meta)
-	l := NewLearner((&kernelSets{}).write, learnable(), slog.New(slog.DiscardHandler))
+	l := NewLearner((&kernelSets{}).write, slog.New(slog.DiscardHandler))
 	at := serve(t, NewForwarder(func() []netip.AddrPort { return *ups.Load() }, learns(m, l), slog.New(slog.DiscardHandler)))
 	if rc := rcodeOf(ask(t, "udp", at, query(5, "github.com", typeA))); rc != 5 {
 		t.Errorf("rcode = %d, want the first upstream's", rc)

@@ -80,13 +80,39 @@ func (l *ruleLoader) loadIPT(ctx context.Context, rs *egress.Ruleset) error {
 		if err := l.restore(ctx, rs, true, rs.IPv6NATReset); err != nil {
 			return err
 		}
-		for _, j := range rs.StaleJumps {
+	}
+	for _, j := range rs.StaleJumps {
+		if j.Table != "nat" || l.Kernel.IPv6NAT {
 			l.deleteJump(ctx, j)
 		}
 	}
 	for _, j := range rs.Jumps {
 		if err := l.ensureFirst(ctx, j); err != nil {
 			return err
+		}
+	}
+	return l.destroyStale(ctx, rs)
+}
+
+// destroyStale destroys each of rs's stale sets the kernel holds, once the
+// restores have dropped every rule matching it: the kernel refuses to
+// destroy a set a rule still references.
+func (l *ruleLoader) destroyStale(ctx context.Context, rs *egress.Ruleset) error {
+	if len(rs.StaleSets) == 0 {
+		return nil
+	}
+	// A kernel without ip_set fails the list and holds no set.
+	out, lerr := l.Run(ctx, nil, "ipset", "list", "-n")
+	var held []string
+	if lerr == nil {
+		held = strings.Fields(string(out))
+	}
+	for _, name := range rs.StaleSets {
+		if !slices.Contains(held, name) {
+			continue
+		}
+		if _, err := l.Run(ctx, nil, "ipset", "destroy", name); err != nil {
+			return fmt.Errorf("destroying the ipset %s the rules no longer use: %w", name, err)
 		}
 	}
 	return nil
@@ -358,16 +384,32 @@ func (g *guard) swap(ctx context.Context, want wanted) (kept, fatal error) {
 	return nil, nil
 }
 
-// refresh loads the rule set generated from what the host holds now, for a
-// change the host made itself, such as a learned /64. A failure is one a
-// restore would answer, and the caller stops the host.
-func (g *guard) refresh(ctx context.Context) error {
+// refresh runs apply, a change the host makes itself to what the rules are
+// generated from, such as a learned /64, then loads the rule set generated
+// after it. apply runs under the guard's lock, so no check generates from
+// the change before it is loaded and counts its own load a restore. A
+// failure is one a restore would answer, and the caller stops the host.
+func (g *guard) refresh(ctx context.Context, apply func()) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	apply()
 	if err := g.load(ctx, g.want); err != nil {
 		return fmt.Errorf("loading the egress rules again: %w", err)
 	}
 	return nil
+}
+
+// bring turns IPv6 off in the namespace where g.want holds it off, then
+// loads g.want's rules: a posture's first load.
+func (g *guard) bring(ctx context.Context) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.want.IPv6Off {
+		if err := netsetup.TurnIPv6Off(g.rules.Root); err != nil {
+			return err
+		}
+	}
+	return g.load(ctx, g.want)
 }
 
 // load generates want's rule set and loads it, holding want.Loading.

@@ -9,7 +9,7 @@ import (
 
 func TestProbeSets(t *testing.T) {
 	k, _, g, _ := guardFixture(t)
-	p := &probeSets{guard: g}
+	p := &probeSets{rules: g.rules, guard: func() *guard { return g }}
 	src := netip.MustParseAddr("172.18.0.2")
 	if err := p.SetSources(t.Context(), []netip.Addr{src}); err != nil {
 		t.Fatal(err)

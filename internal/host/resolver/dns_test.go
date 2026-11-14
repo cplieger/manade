@@ -77,13 +77,13 @@ func TestMalformed(t *testing.T) {
 	})
 }
 
-func TestFailure(t *testing.T) {
+func TestNoRecords(t *testing.T) {
 	q := query(0xbeef, "github.com", typeA)
 	pq, err := parseQuestion(q)
 	if err != nil {
 		t.Fatal(err)
 	}
-	f := failure(q, pq, rcodeFail)
+	f := noRecords(q, pq, rcodeFail)
 	fq, err := parseQuestion(f)
 	if err != nil {
 		t.Fatalf("parseQuestion(failure) = %v", err)

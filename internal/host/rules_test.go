@@ -318,7 +318,7 @@ func TestGuardLoadsUnderLoading(t *testing.T) {
 	if err := g.check(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.refresh(t.Context()); err != nil {
+	if err := g.refresh(t.Context(), func() {}); err != nil {
 		t.Fatal(err)
 	}
 	if kept, fatal := g.swap(t.Context(), want("swap")); kept != nil || fatal != nil {

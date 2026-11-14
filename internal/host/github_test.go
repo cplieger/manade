@@ -3,10 +3,8 @@ package host
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"net"
 	"net/netip"
-	"path/filepath"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -122,7 +120,7 @@ func TestLearnedAddressesInTheRules(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newUpFixture(t)
 		n := upNet(t, f, closedSection())
-		learn(t.Context(), n.gh.Load().learner, []resolver.Record{
+		learn(t.Context(), n.posture.Load().gh.learner, []resolver.Record{
 			{Addr: netip.MustParseAddr("140.82.121.10"), TTL: time.Minute},
 			{Addr: netip.MustParseAddr("192.168.1.10"), TTL: time.Minute},
 		})
@@ -132,36 +130,17 @@ func TestLearnedAddressesInTheRules(t *testing.T) {
 		}
 		time.Sleep(2 * time.Minute)
 		f.kernel.edit(func(tb map[bool]map[string]*xtable) { tb[false]["filter"].chains["MANADE-FWD"] = []string{} })
-		if err := n.Guard.check(t.Context()); err != nil {
+		if err := n.rulesGuard().check(t.Context()); err != nil {
 			t.Fatal(err)
 		}
 		_, ipset = f.kernel.payloads()
 		if last := ipset[len(ipset)-1]; !strings.Contains(last, "add manade-gh4 140.82.121.10 timeout 540\n") || strings.Contains(last, "192.168.1.10") {
 			t.Errorf("restore payload = %q, want the held address with its remaining 540 s", last)
 		}
-		if st := n.gitHubStatus(); st.Addresses4 != 1 || st.Addresses6 != 0 {
+		if st := n.gitHubStatus(); st.Addresses != 1 {
 			t.Errorf("GitHubStatus = %+v, want one address held", st)
 		}
 	})
-}
-
-func TestReloadMovesTheResolversUpstreams(t *testing.T) {
-	f := newUpFixture(t)
-	n := upNet(t, f, closedSection())
-	h := closedSection()
-	h.DNS = []netip.Addr{netip.MustParseAddr("9.9.9.9")}
-	if k, fatal := n.reload(t.Context(), h); k != nil || fatal != nil {
-		t.Fatalf("Reload = %v, %v", k, fatal)
-	}
-	if readAt(t, f.root, "/etc/resolv.conf") != "nameserver 127.0.0.1\n" {
-		t.Error("resolv.conf no longer names the host's resolver")
-	}
-	if !slices.ContainsFunc(f.kernel.chain(false, "filter", "MANADE-OUT"), func(r string) bool { return strings.Contains(r, "9.9.9.9/32") }) {
-		t.Error("the new resolver has no port 53 accept")
-	}
-	if got := n.upstreams(); !slices.Equal(got, []netip.AddrPort{netip.MustParseAddrPort("9.9.9.9:53")}) {
-		t.Errorf("upstreams = %v, want the new section's resolver", got)
-	}
 }
 
 func TestHoldEndsWhenTheResolverStops(t *testing.T) {
@@ -183,7 +162,7 @@ func TestHoldEndsWhenTheResolverStops(t *testing.T) {
 func TestAddLearned(t *testing.T) {
 	ls := []egress.Learned{
 		{Addr: netip.MustParseAddr("140.82.121.10"), Left: 90 * time.Second},
-		{Addr: netip.MustParseAddr("2606:50c0:8000::154"), Left: 10 * time.Minute},
+		{Addr: netip.MustParseAddr("140.82.121.11"), Left: 10 * time.Minute},
 	}
 	t.Run("nftables", func(t *testing.T) {
 		k := newFakeIPT(false)
@@ -196,9 +175,9 @@ func TestAddLearned(t *testing.T) {
 		want := "add element inet manade manade-gh4 { 140.82.121.10 timeout 90s }\n" +
 			"delete element inet manade manade-gh4 { 140.82.121.10 }\n" +
 			"add element inet manade manade-gh4 { 140.82.121.10 timeout 90s }\n" +
-			"add element inet manade manade-gh6 { 2606:50c0:8000::154 timeout 600s }\n" +
-			"delete element inet manade manade-gh6 { 2606:50c0:8000::154 }\n" +
-			"add element inet manade manade-gh6 { 2606:50c0:8000::154 timeout 600s }\n"
+			"add element inet manade manade-gh4 { 140.82.121.11 timeout 600s }\n" +
+			"delete element inet manade manade-gh4 { 140.82.121.11 }\n" +
+			"add element inet manade manade-gh4 { 140.82.121.11 timeout 600s }\n"
 		if len(nft) != 1 || nft[0] != want {
 			t.Errorf("nft payloads = %q, want one transaction %q", nft, want)
 		}
@@ -210,7 +189,7 @@ func TestAddLearned(t *testing.T) {
 			t.Fatal(err)
 		}
 		_, ipset := k.payloads()
-		if want := "add manade-gh4 140.82.121.10 timeout 90\nadd manade-gh6 2606:50c0:8000::154 timeout 600\n"; len(ipset) != 1 || ipset[0] != want {
+		if want := "add manade-gh4 140.82.121.10 timeout 90\nadd manade-gh4 140.82.121.11 timeout 600\n"; len(ipset) != 1 || ipset[0] != want {
 			t.Errorf("ipset payloads = %q, want %q", ipset, want)
 		}
 	})
@@ -224,54 +203,77 @@ func TestAddLearned(t *testing.T) {
 	})
 }
 
-func TestReloadFiltersLearnedAddressesByTheNewSection(t *testing.T) {
-	f := v6Fixture(t, &echoes{replies: []func() ([]byte, error){answer("2a01:e0a:1259:2710::1")}})
-	h := closedSection()
-	h.Egress.IPv6 = true
-	n := upNet(t, f, h)
-	next := closedSection()
-	next.Egress.IPv6 = true
-	next.Egress.Block6 = []netip.Prefix{pfx("2606:50c0::/32")}
-	if k, fatal := n.reload(t.Context(), next); k != nil || fatal != nil {
-		t.Fatalf("Reload = %v, %v", k, fatal)
-	}
-	_, before := f.kernel.payloads()
-	learn(t.Context(), n.gh.Load().learner, []resolver.Record{{Addr: netip.MustParseAddr("2606:50c0:8000::154"), TTL: time.Minute}})
-	if _, after := f.kernel.payloads(); len(after) != len(before) {
-		t.Errorf("an address in the new block6 was written: %q", after[len(before):])
-	}
-}
-
-// followGitHub refreshes the list of whichever learning a reload made the
-// host's, and none once learning is off.
-func TestFollowGitHubFollowsTheLearning(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		log := slog.New(slog.DiscardHandler)
-		var fetches atomic.Int32
-		fetch := func(context.Context) ([]byte, error) { fetches.Add(1); return []byte(metaBody), nil }
-		n := &hostNet{ghMoved: make(chan struct{}, 1)}
-		ctx, cancel := context.WithCancel(t.Context())
-		done := make(chan struct{})
-		go func() { n.followGitHub(ctx); close(done) }()
-		n.setGitHub(&gitHub{source: resolver.NewSource(fetch, filepath.Join(t.TempDir(), "domains.json"), log)})
-		time.Sleep(6*time.Hour + time.Minute)
-		if got := fetches.Load(); got != 1 {
-			t.Errorf("fetches after one refresh period = %d, want 1", got)
+// An internet: false host never learns the machine's /64, so no IPv6
+// address learned for a GitHub name could be checked against it: none is
+// learned, cold or after a change from an internet host that had a /64.
+func TestAnInternetFalseHostLearnsNoIPv6(t *testing.T) {
+	inMachine64 := netip.MustParseAddr("2a01:e0a:1259:2710::153")
+	unlearned := func(t *testing.T, f *upFixture, n *hostNet) {
+		t.Helper()
+		_, before := f.kernel.payloads()
+		learn(t.Context(), n.posture.Load().gh.learner, []resolver.Record{{Addr: inMachine64, TTL: time.Minute}})
+		if _, after := f.kernel.payloads(); len(after) != len(before) {
+			t.Errorf("an IPv6 address was written to the learned set: %q", after[len(before):])
 		}
-		n.setGitHub(nil)
-		time.Sleep(12 * time.Hour)
-		if got := fetches.Load(); got != 1 {
-			t.Errorf("fetches with learning off = %d, want none more", got)
+		if slices.ContainsFunc(fwd6(f), func(r string) bool { return strings.Contains(r, "manade-gh") }) {
+			t.Errorf("MANADE-FWD6 = %q, want no learned set matched under ip6tables", fwd6(f))
 		}
-		cancel()
-		<-done
+	}
+	t.Run("cold", func(t *testing.T) {
+		f := v6Fixture(t, &echoes{replies: []func() ([]byte, error){answer("2a01:e0a:1259:2710::7008")}})
+		unlearned(t, f, upNet(t, f, closedV6Section()))
+	})
+	t.Run("after a change from internet with a /64 learned", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			f := v6Fixture(t, &echoes{replies: []func() ([]byte, error){answer("2a01:e0a:1259:2710::7008")}})
+			n := upNet(t, f, v6Section())
+			stop := holding(t, n)
+			synctest.Wait()
+			if st := n.iPv6Status(); st == nil || !st.Prefix.IsValid() {
+				t.Fatalf("setup: IPv6Status = %+v, want a learned /64", st)
+			}
+			if failed, fatal := n.change(t.Context(), closedV6Section()); failed != nil || fatal != nil {
+				t.Fatalf("Change = %v, %v", failed, fatal)
+			}
+			unlearned(t, f, n)
+			if err := stop(); err != nil {
+				t.Errorf("Hold = %v", err)
+			}
+		})
 	})
 }
 
-// A job started before a reload that flips egress.internet keeps the
-// resolver resolv.conf named at its start: it resolves after each flip, and
-// its GitHub lookup is learned once internet is off.
-func TestARunningJobResolvesAcrossInternetFlips(t *testing.T) {
+// An internet: false posture refreshes its domain list every six hours;
+// one that a change replaced with an internet posture reads it no more.
+func TestTheDomainListRefreshesOnlyOnAnInternetFalsePosture(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := newUpFixture(t)
+		n := upNet(t, f, closedSection())
+		fetches := func() int { return strings.Count(strings.Join(f.events, " "), "domains") }
+		stop := holding(t, n)
+		time.Sleep(6*time.Hour + time.Minute)
+		synctest.Wait()
+		if got := fetches(); got != 2 {
+			t.Errorf("fetches after one refresh period = %d, want the start's and one refresh", got)
+		}
+		if failed, fatal := n.change(t.Context(), section()); failed != nil || fatal != nil {
+			t.Fatalf("Change = %v, %v", failed, fatal)
+		}
+		time.Sleep(6*time.Hour + time.Minute)
+		synctest.Wait()
+		if got := fetches(); got != 2 {
+			t.Errorf("fetches with internet on = %d, want none more", got)
+		}
+		if err := stop(); err != nil {
+			t.Errorf("Hold = %v", err)
+		}
+	})
+}
+
+// A job started before a change of egress.internet keeps the resolver
+// resolv.conf named at its start: it resolves after each change, and its
+// GitHub lookup is learned once internet is off.
+func TestARunningJobResolvesAcrossInternetChanges(t *testing.T) {
 	f := newUpFixture(t)
 	up := fakeUpstream(t, netip.MustParseAddr("140.82.121.10"))
 	udp, err := net.ListenPacket("udp", "127.0.0.1:0")
@@ -289,7 +291,7 @@ func TestARunningJobResolvesAcrossInternetFlips(t *testing.T) {
 	}
 	// The list read resolves api.github.com through the host's resolver, as
 	// the supervisor's HTTP client does, and needs that answer learned.
-	var learnedForTheList bool
+	var learnedForTheList atomic.Bool
 	p := f.platform()
 	p.ListenDNS = func(context.Context) (net.PacketConn, net.Listener, error) { return udp, tcp, nil }
 	p.Upstreams = func([]netip.Addr) []netip.AddrPort { return []netip.AddrPort{up} }
@@ -297,7 +299,7 @@ func TestARunningJobResolvesAcrossInternetFlips(t *testing.T) {
 		if _, err := job.LookupNetIP(ctx, "ip4", "api.github.com"); err != nil {
 			return nil, err
 		}
-		learnedForTheList = learned()
+		learnedForTheList.Store(learned())
 		return []byte(metaBody), nil
 	}
 	n, err := bringUp(t.Context(), section(), p, guardHooks{})
@@ -305,6 +307,7 @@ func TestARunningJobResolvesAcrossInternetFlips(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = n.stop() })
+	stop := holding(t, n)
 	resolvAtStart := readAt(t, f.root, "/etc/resolv.conf")
 	resolves := func(when string) {
 		t.Helper()
@@ -316,22 +319,25 @@ func TestARunningJobResolvesAcrossInternetFlips(t *testing.T) {
 			t.Errorf("%s: resolv.conf = %q, want %q unchanged", when, got, resolvAtStart)
 		}
 	}
-	resolves("before any flip")
+	resolves("before any change")
 	if learned() {
 		t.Error("an internet host learned the job's answer")
 	}
-	if k, fatal := n.reload(t.Context(), closedSection()); k != nil || fatal != nil {
-		t.Fatalf("Reload to internet: false = %v, %v", k, fatal)
+	if failed, fatal := n.change(t.Context(), closedSection()); failed != nil || fatal != nil {
+		t.Fatalf("Change to internet: false = %v, %v", failed, fatal)
 	}
-	if !learnedForTheList {
+	if !learnedForTheList.Load() {
 		t.Error("api.github.com's address was not learned before the domain list was read")
 	}
 	resolves("after internet was turned off")
 	if !learned() {
 		t.Error("the job's GitHub lookup after internet was turned off was not learned")
 	}
-	if k, fatal := n.reload(t.Context(), section()); k != nil || fatal != nil {
-		t.Fatalf("Reload to internet = %v, %v", k, fatal)
+	if failed, fatal := n.change(t.Context(), section()); failed != nil || fatal != nil {
+		t.Fatalf("Change to internet = %v, %v", failed, fatal)
 	}
 	resolves("after internet was turned on again")
+	if err := stop(); err != nil {
+		t.Errorf("Hold = %v", err)
+	}
 }

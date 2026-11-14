@@ -223,9 +223,13 @@ func (f *fakeIPT) save(v6 bool) []byte {
 }
 
 func (f *fakeIPT) ipset(stdin []byte, args []string) ([]byte, error) {
+	if len(args) == 2 && args[0] == "destroy" {
+		delete(f.sets, args[1])
+		return nil, nil
+	}
 	switch strings.Join(args, " ") {
 	case "list -n":
-		return nil, nil
+		return []byte(strings.Join(slices.Sorted(maps.Keys(f.sets)), "\n")), nil
 	case "restore -exist", "restore":
 		f.ipsetFiles = append(f.ipsetFiles, string(stdin))
 		for line := range strings.Lines(string(stdin)) {

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/cplieger/manade/internal/docker"
 	"github.com/cplieger/manade/internal/egress"
 	"github.com/cplieger/manade/internal/host/images"
+	"github.com/cplieger/manade/internal/host/probe"
 	"github.com/cplieger/manade/internal/hostapi"
 )
 
@@ -112,7 +114,8 @@ func reloadSupervisorOf(t *testing.T, h *config.Host, cfg func() (*config.Config
 	}
 	t.Cleanup(func() { _ = n.stop() })
 	log := slog.New(slog.DiscardHandler)
-	s := &supervisor{log: log, net: n, opts: &Options{Log: log, Reload: func(context.Context) (*config.Config, error) { return cfg() }}}
+	s := &supervisor{log: log, net: n, changed: make(chan struct{}, 1), opts: &Options{Log: log, Reload: func(context.Context) (*config.Config, error) { return cfg() }}}
+	s.prober = probe.NewRunner(&probe.Config{Log: log})
 	sv := s.newServed(lanConfig(h, testProfile("small", 1)), h)
 	s.served.Store(sv)
 	s.images = images.New(&images.Config{Host: section(), Log: log, Profiles: sv.Profiles})
@@ -184,9 +187,36 @@ func TestSupervisorReload(t *testing.T) {
 	})
 }
 
-func TestSupervisorReloadSwapsThePolicy(t *testing.T) {
-	open := section()
-	open.Egress.Open = true
+// changing runs s's posture hold and its change loop until the test ends.
+func changing(t *testing.T, s *supervisor) {
+	t.Helper()
+	ctx, cancel := context.WithCancelCause(t.Context())
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		if err := s.net.hold(ctx); err != nil {
+			t.Errorf("Hold = %v", err)
+		}
+	})
+	wg.Go(func() { s.changes(ctx, cancel) })
+	t.Cleanup(func() {
+		cancel(nil)
+		wg.Wait()
+	})
+}
+
+// settled waits until no change is pending and the posture applies h's
+// open and internet keys.
+func settled(t *testing.T, s *supervisor, h *config.Host) {
+	t.Helper()
+	waitFor(t, "the change applied", func() bool {
+		s.reloadMu.Lock()
+		defer s.reloadMu.Unlock()
+		return s.pending == nil && !s.net.postureChanged(h)
+	})
+}
+
+func TestSupervisorReloadChangesThePosture(t *testing.T) {
+	open := openSection()
 	for name, tc := range map[string]struct{ from, to *config.Host }{
 		"open to closed":        {open, section()},
 		"internet on to off":    {section(), closedSection()},
@@ -196,29 +226,33 @@ func TestSupervisorReloadSwapsThePolicy(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			s := reloadSupervisorOf(t, tc.from, func() (*config.Config, error) { return lanConfig(tc.to, testProfile("small", 1)), nil })
+			changing(t, s)
 			before := egress.PolicyHash(s.host())
 			if err := s.reload(t.Context()); err != nil {
 				t.Fatal(err)
 			}
+			settled(t, s, tc.to)
 			if msg := s.configErr.Load(); msg != nil {
 				t.Fatalf("kept: %s", *msg)
 			}
 			if after := egress.PolicyHash(s.host()); after == before || after != egress.PolicyHash(tc.to) {
-				t.Errorf("policy hash %s after the reload, want the new section's %s", after, egress.PolicyHash(tc.to))
+				t.Errorf("policy hash %s after the change, want the new section's %s", after, egress.PolicyHash(tc.to))
 			}
 			if (s.net.gitHubStatus() == nil) != tc.to.Egress.Internet {
 				t.Errorf("learning GitHub's addresses %v, want %v", s.net.gitHubStatus() != nil, !tc.to.Egress.Internet)
+			}
+			if st := s.runners.profileStatus(); len(st) != 1 || !st[0].Ready && st[0].Reason != hostapi.ReasonPulling {
+				t.Errorf("status %+v, want no egress hold once the change is applied", st)
 			}
 		})
 	}
 }
 
-// A SIGHUP that closes an open host holds its starts while a runner started
-// before it still runs.
-func TestSupervisorReloadDrainsAHostItCloses(t *testing.T) {
-	open := section()
-	open.Egress.Open = true
-	s := reloadSupervisorOf(t, open, func() (*config.Config, error) { return lanConfig(section(), testProfile("small", 1)), nil })
+// A SIGHUP that changes open or internet starts nothing while a runner
+// runs, then rebuilds the egress once it has ended.
+func TestSupervisorReloadWaitsForTheRunners(t *testing.T) {
+	s := reloadSupervisorOf(t, openSection(), func() (*config.Config, error) { return lanConfig(section(), testProfile("small", 1)), nil })
+	changing(t, s)
 	s.runners.mu.Lock()
 	s.runners.ctrs["r1"] = &hostapi.Container{Name: "r1", State: docker.StateRunning}
 	s.runners.mu.Unlock()
@@ -226,7 +260,89 @@ func TestSupervisorReloadDrainsAHostItCloses(t *testing.T) {
 		t.Fatal(err)
 	}
 	st := s.runners.profileStatus()
-	if len(st) != 1 || st[0].Ready || st[0].Reason != hostapi.ReasonOpenDraining || !strings.Contains(st[0].Detail, "r1") {
-		t.Errorf("status %+v, want small not ready while r1 drains", st)
+	if len(st) != 1 || st[0].Ready || st[0].Reason != hostapi.ReasonEgressChangePending || !strings.Contains(st[0].Detail, "r1") {
+		t.Errorf("status %+v, want small not ready while r1 runs", st)
 	}
+	if _, err := s.runners.accept(t.Context(), request("r2", "small")); err == nil {
+		t.Error("a POST was taken while the change waits")
+	}
+	time.Sleep(50 * time.Millisecond)
+	if !s.host().Egress.Open {
+		t.Fatal("the egress changed with r1 running")
+	}
+	s.runners.mu.Lock()
+	s.runners.ctrs["r1"].State = docker.StateExited
+	s.runners.changed("r1")
+	s.runners.mu.Unlock()
+	settled(t, s, section())
+	if s.host().Egress.Open || s.net.section().Egress.Open {
+		t.Error("the host is still open once r1 ended")
+	}
+}
+
+func TestSupervisorReloadAfterAPendingChange(t *testing.T) {
+	t.Run("a section back on the running posture drops the change", func(t *testing.T) {
+		next := lanConfig(section(), testProfile("small", 1))
+		s := reloadSupervisorOf(t, openSection(), func() (*config.Config, error) { return next, nil })
+		s.runners.mu.Lock()
+		s.runners.ctrs["r1"] = &hostapi.Container{Name: "r1", State: docker.StateRunning}
+		s.runners.mu.Unlock()
+		if err := s.reload(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		next = lanConfig(openSection(), testProfile("small", 1))
+		if err := s.reload(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		if s.pending != nil || s.runners.egressIdle() != nil {
+			t.Error("the dropped change still holds starts")
+		}
+	})
+	t.Run("a change woken by a dropped hold waits for the new hold's runners", func(t *testing.T) {
+		next := lanConfig(section(), testProfile("small", 1))
+		s := reloadSupervisorOf(t, openSection(), func() (*config.Config, error) { return next, nil })
+		s.runners.mu.Lock()
+		s.runners.ctrs["r1"] = &hostapi.Container{Name: "r1", State: docker.StateRunning}
+		s.runners.mu.Unlock()
+		if err := s.reload(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		old := s.runners.egressIdle()
+		next = lanConfig(openSection(), testProfile("small", 1))
+		if err := s.reload(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		next = lanConfig(section(), testProfile("small", 1))
+		if err := s.reload(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		if !closed(old) {
+			t.Fatal("setup: the dropped hold's channel is open")
+		}
+		if err := s.applyChange(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		if !s.net.section().Egress.Open || s.pending == nil {
+			t.Error("the change was applied with r1 still running under the new hold")
+		}
+	})
+	t.Run("a change that fails holds starts and names why", func(t *testing.T) {
+		s := reloadSupervisorOf(t, section(), func() (*config.Config, error) { return lanConfig(closedSection(), testProfile("small", 1)), nil })
+		s.net.seams.FetchDomains = func(context.Context) ([]byte, error) { return nil, errors.New("403 rate limit exceeded") }
+		changing(t, s)
+		if err := s.reload(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		waitFor(t, "the change failed", func() bool { return s.configErr.Load() != nil })
+		if msg := *s.configErr.Load(); !strings.Contains(msg, "rate limit") {
+			t.Errorf("configErr = %q, want the failure", msg)
+		}
+		st := s.runners.profileStatus()
+		if len(st) != 1 || st[0].Reason != hostapi.ReasonEgressChangeFailed || !strings.Contains(st[0].Detail, "rate limit") {
+			t.Errorf("status %+v, want small held naming the failure", st)
+		}
+		if !s.host().Egress.Internet || !s.net.section().Egress.Internet {
+			t.Error("a failed change left the new section served")
+		}
+	})
 }

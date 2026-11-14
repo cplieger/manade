@@ -54,7 +54,8 @@ func Listen(ctx context.Context, addr netip.AddrPort) (net.PacketConn, net.Liste
 
 // Learning is what a forwarder learns: the answers for a name Match lists
 // have their addresses added by Learner before they are answered, or after
-// once the query's budget has passed.
+// once the query's budget has passed, and their AAAA queries are answered
+// with no records, since only IPv4 addresses are learned.
 type Learning struct {
 	Match   *Matcher
 	Learner *Learner
@@ -199,13 +200,20 @@ func (f *Forwarder) answer(ctx context.Context, network string, query []byte) []
 	if isResponse(query) {
 		return nil
 	}
+	l := f.learning()
+	listed := l != nil && l.Match.Match(q.name)
+	// A job's client then goes straight to the A answer, with no fallback
+	// wait on an IPv6 address the rules would drop.
+	if listed && q.qtype == typeAAAA {
+		return noRecords(query, q, rcodeOK)
+	}
 	qctx, cancel := context.WithTimeout(ctx, f.budget)
 	defer cancel()
 	resp := f.ask(qctx, network, query, q)
 	if resp == nil {
-		return failure(query, q, rcodeFail)
+		return noRecords(query, q, rcodeFail)
 	}
-	if l := f.learning(); l != nil && rcodeOf(resp) == rcodeOK && l.Match.Match(q.name) {
+	if listed && rcodeOf(resp) == rcodeOK {
 		f.learn(ctx, qctx, l.Learner, resp)
 	}
 	return resp

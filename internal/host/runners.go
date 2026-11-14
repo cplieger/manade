@@ -115,15 +115,13 @@ type runnerSet struct {
 	reading map[uint64]int
 	// space holds starts after a refusal for space, nil when they are not.
 	space *spaceHold
-	// draining are the runners started while the host was open, which hold
-	// starts once a reload has closed it, until each has ended.
-	draining map[string]struct{}
-	// closedAt is when the reload that began the drain closed the host.
-	closedAt time.Time
-	log      *slog.Logger
-	work     sync.WaitGroup
-	gen      uint64
-	mu       sync.Mutex
+	// egress holds starts for a change of egress posture, nil when none is
+	// held for a change pending or failed.
+	egress *egressHold
+	log    *slog.Logger
+	work   sync.WaitGroup
+	gen    uint64
+	mu     sync.Mutex
 	// refreshMu serialises refreshes, so a swap's view of wrote is its own.
 	refreshMu sync.Mutex
 }
@@ -149,6 +147,17 @@ const (
 	// pass with no runner running lifts it.
 	baselineUnread
 )
+
+// egressHold is starts held for a change of egress posture: first until
+// each runner busy when it began has ended, then while the change is
+// applied, and on after a failed one.
+type egressHold struct {
+	waiting map[string]struct{}
+	// idle closes once waiting is empty, or the hold ends.
+	idle   chan struct{}
+	detail string
+	failed bool
+}
 
 // record is one accepted runner: its request, how far the host has taken
 // it, and the work in flight for it.
@@ -184,7 +193,7 @@ func newRunners(ctx context.Context, cfg *runnersConfig) *runnerSet {
 		daemon: cfg.Daemon, images: cfg.Images, served: cfg.Served, log: cfg.Log, dataFree: cfg.DataFree,
 		records: map[string]*record{}, ctrs: map[string]*hostapi.Container{},
 		last: map[string]hostapi.Runner{}, subs: map[chan hostapi.Runner]struct{}{},
-		wrote: map[string]uint64{}, reading: map[uint64]int{}, draining: map[string]struct{}{}, base: ctx,
+		wrote: map[string]uint64{}, reading: map[uint64]int{}, base: ctx,
 	}
 	if cfg.CPUs != nil {
 		r.pins = newPins(cfg.CPUs)
@@ -193,34 +202,77 @@ func newRunners(ctx context.Context, cfg *runnersConfig) *runnerSet {
 }
 
 // setServed swaps what the host serves; runners already accepted keep the
-// profile they were accepted with. A swap that closes an open host drains
-// it: every runner then busy holds its starts until each has ended, since
-// it may run with the open host's grants. A swap that opens it ends the
-// drain.
+// profile they were accepted with.
 func (r *runnerSet) setServed(s *served) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	was := r.served.open()
 	r.served = s
-	switch {
-	case s.open():
-		clear(r.draining)
-	case was:
-		r.closedAt = time.Now()
-		for _, name := range r.names() {
-			if r.busy(name) {
-				r.draining[name] = struct{}{}
-			}
+}
+
+// holdEgress takes no start, every profile not ready with detail, until
+// releaseEgress, and answers a channel closed once every runner busy at the
+// call has exited or been removed. A hold still pending keeps its runners
+// and takes the new detail; a failed one is held again from the start.
+func (r *runnerSet) holdEgress(detail string) <-chan struct{} {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if h := r.egress; h != nil && !h.failed {
+		h.detail = detail
+		return h.idle
+	}
+	h := &egressHold{waiting: map[string]struct{}{}, idle: make(chan struct{}), detail: detail}
+	for _, name := range r.names() {
+		if r.busy(name) {
+			h.waiting[name] = struct{}{}
 		}
-		if len(r.draining) > 0 {
-			r.log.Warn("The host is no longer open; it takes no start until the runners started while it was open have ended", "runners", r.drainNames())
-		}
+	}
+	r.egress = h
+	if len(h.waiting) == 0 {
+		close(h.idle)
+	}
+	return h.idle
+}
+
+// egressIdle answers the pending hold's idle channel, nil with no hold or a
+// failed one, which waits for nothing.
+func (r *runnerSet) egressIdle() <-chan struct{} {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if h := r.egress; h != nil && !h.failed {
+		return h.idle
+	}
+	return nil
+}
+
+// egressDrained reports a pending hold no runner holds up any more.
+func (r *runnerSet) egressDrained() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	h := r.egress
+	return h != nil && !h.failed && len(h.waiting) == 0
+}
+
+// failEgress keeps the hold, with detail, once its change failed.
+func (r *runnerSet) failEgress(detail string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if h := r.egress; h != nil {
+		h.failed, h.detail = true, detail
 	}
 }
 
-func (s *served) open() bool {
-	h, ok := s.Config.Host(s.Host)
-	return ok && h.Egress.Open
+// releaseEgress ends the hold, if any, and takes starts again.
+func (r *runnerSet) releaseEgress() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	h := r.egress
+	if h == nil {
+		return
+	}
+	r.egress = nil
+	if len(h.waiting) > 0 {
+		close(h.idle)
+	}
 }
 
 // names answers every runner the host records or has a container of;
@@ -236,14 +288,13 @@ func (r *runnerSet) names() []string {
 	return names
 }
 
-func (r *runnerSet) drainNames() string {
-	return strings.Join(slices.Sorted(maps.Keys(r.draining)), ", ")
-}
-
-// drainDetail says what the drain waits for; r.mu is held.
-func (r *runnerSet) drainDetail() string {
-	return fmt.Sprintf("the host stopped being open at %s; starts go on once the runners started while it was open have exited or been removed: %s",
-		r.closedAt.UTC().Format(time.RFC3339), r.drainNames())
+// egressDetail says what the egress hold waits for; r.mu is held.
+func (r *runnerSet) egressDetail() string {
+	h := r.egress
+	if len(h.waiting) == 0 {
+		return h.detail
+	}
+	return h.detail + "; waiting for: " + strings.Join(slices.Sorted(maps.Keys(h.waiting)), ", ")
 }
 
 // load reads the daemon's labelled runner containers, so a supervisor
@@ -653,13 +704,16 @@ func (r *runnerSet) anyRunning() bool {
 	return false
 }
 
-// held answers why the host takes no start now, "" for none: a drain after
-// the host was closed, starts held for space, or both; r.mu is held.
+// held answers why the host takes no start now, "" for none: a change of
+// egress posture, starts held for space, or both; r.mu is held.
 func (r *runnerSet) held() (reason hostapi.Reason, detail string) {
 	var why []string
-	if len(r.draining) > 0 {
-		reason = hostapi.ReasonOpenDraining
-		why = append(why, r.drainDetail())
+	if h := r.egress; h != nil {
+		reason = hostapi.ReasonEgressChangePending
+		if h.failed {
+			reason = hostapi.ReasonEgressChangeFailed
+		}
+		why = append(why, r.egressDetail())
 	}
 	if r.space != nil {
 		if reason == "" {
@@ -710,8 +764,8 @@ func (r *runnerSet) listed(name string) (hostapi.Runner, bool) {
 }
 
 // changed publishes runner name when its listed state moved since the last
-// publish, and releases its CPUs and its part in a drain once it is no
-// longer busy; r.mu is held.
+// publish, and releases its CPUs and its part in an egress hold once it is
+// no longer busy; r.mu is held.
 func (r *runnerSet) changed(name string) {
 	run, ok := r.listed(name)
 	if !r.busy(name) {
@@ -757,15 +811,19 @@ func (r *runnerSet) busy(name string) bool {
 	return c != nil && holdsCPUs(c.State)
 }
 
-// drained takes runner name, no longer busy, out of the drain, ending it
-// with the last; r.mu is held.
+// drained takes runner name, no longer busy, out of the egress hold's
+// wait, closing its idle channel with the last; r.mu is held.
 func (r *runnerSet) drained(name string) {
-	if _, ok := r.draining[name]; !ok {
+	h := r.egress
+	if h == nil {
 		return
 	}
-	delete(r.draining, name)
-	if len(r.draining) == 0 {
-		r.log.Info("The runners started while the host was open have ended; it takes starts again")
+	if _, ok := h.waiting[name]; !ok {
+		return
+	}
+	delete(h.waiting, name)
+	if len(h.waiting) == 0 {
+		close(h.idle)
 	}
 }
 

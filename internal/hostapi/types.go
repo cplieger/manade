@@ -218,9 +218,15 @@ const (
 	// ReasonDataFull is every profile while a start the daemon refused for
 	// want of space holds the host's starts; Detail says when it lifts.
 	ReasonDataFull Reason = "data_full"
-	// ReasonOpenDraining is every profile while runners started before a
-	// reload closed an open host still run; Detail names them.
-	ReasonOpenDraining Reason = "open_draining"
+	// ReasonEgressChangePending is every profile while the host applies a
+	// change of its open or internet key: until each runner on it has
+	// exited or been removed, then while it rebuilds its egress; Detail
+	// names the runners.
+	ReasonEgressChangePending Reason = "egress_change_pending"
+	// ReasonEgressChangeFailed is every profile once such a rebuild failed
+	// and the host went back to its old egress; Detail is the failure, which
+	// a later SIGHUP or a restart retries.
+	ReasonEgressChangeFailed Reason = "egress_change_failed"
 )
 
 // ProfileStatus is one profile's readiness and image on a host.
@@ -259,12 +265,10 @@ type GitHubStatus struct {
 	// Source is "read" for a list read from GitHub, "saved" for the copy
 	// on the data volume.
 	Source string `json:"source"`
-	// Addresses4 and Addresses6 are the learned addresses held; Refused4
-	// and Refused6 count adds a full set refused.
-	Addresses4 int    `json:"addresses4"`
-	Addresses6 int    `json:"addresses6"`
-	Refused4   uint64 `json:"refused4"`
-	Refused6   uint64 `json:"refused6"`
+	// Addresses are the learned IPv4 addresses held, the only family an
+	// internet: false host learns; Refused counts adds a full set refused.
+	Addresses int    `json:"addresses"`
+	Refused   uint64 `json:"refused"`
 }
 
 // LatencyBuckets are the upper bounds, in seconds, of a CallLatency's
