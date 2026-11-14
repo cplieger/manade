@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/cplieger/manade/internal/docker"
 )
 
 func TestState(t *testing.T) {
@@ -32,25 +34,25 @@ func TestState(t *testing.T) {
 		"": {
 			"creating":       {state: StateCreating, listed: true},
 			"starting":       {state: StateStarting, listed: true},
-			"started":        {state: StateFailed, reason: ReasonRemovedOutside, listed: true},
+			"started":        {state: StateFailed, reason: reasonRemovedOutside, listed: true},
 			"failed":         failed,
 			"startedRemoved": {state: StateExited, listed: true},
 			"failedRemoved":  failed,
 			"none":           {},
 		},
-		DockerCreated: {
+		docker.StateCreated: {
 			"creating": {state: StateCreating, listed: true},
 			"starting": {state: StateStarting, listed: true},
-			"started":  {state: StateFailed, reason: ReasonResetOutside, listed: true},
+			"started":  {state: StateFailed, reason: reasonResetOutside, listed: true},
 			"failed":   orphaned,
 			"none":     {state: StateFailed, reason: ReasonHostRestarted, listed: true},
 		},
 	}
 
-	for _, s := range []string{DockerRunning, DockerPaused, DockerRestarting} {
+	for _, s := range []string{docker.StateRunning, docker.StatePaused, docker.StateRestarting} {
 		cases[s] = map[string]want{"creating": running, "starting": running, "started": running, "failed": orphaned, "none": running}
 	}
-	for _, s := range []string{DockerExited, DockerDead, DockerRemoving} {
+	for _, s := range []string{docker.StateExited, docker.StateDead, docker.StateRemoving} {
 		cases[s] = map[string]want{"creating": exited, "starting": exited, "started": exited, "failed": orphaned, "none": exited}
 	}
 	finished := time.Date(2026, 11, 13, 10, 0, 0, 0, time.UTC)
@@ -101,10 +103,10 @@ func TestStateUnknownDockerState(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			c := &Container{ID: "c1", Name: "r1", State: word, ExitCode: 0}
 			got, listed := State(c, &Record{State: RecordStarted, Request: RunnerRequest{RunnerName: "r1"}})
-			if !listed || got.State != StateFailed || got.ExitCode != nil || !strings.HasPrefix(got.Reason, ReasonUnknownState+` "`) || strings.ContainsAny(got.Reason, "\n\r") {
+			if !listed || got.State != StateFailed || got.ExitCode != nil || !strings.HasPrefix(got.Reason, reasonUnknownState+` "`) || strings.ContainsAny(got.Reason, "\n\r") {
 				t.Errorf("runner = %+v, want failed naming the state word on one line, no exit code", got)
 			}
-			if name == "unknown" && got.Reason != ReasonUnknownState+` "hibernating"` {
+			if name == "unknown" && got.Reason != reasonUnknownState+` "hibernating"` {
 				t.Errorf("reason = %q", got.Reason)
 			}
 		})
@@ -118,19 +120,19 @@ func TestStateLimitsAndLabels(t *testing.T) {
 	started := time.Date(2026, 11, 13, 9, 0, 0, 0, time.UTC)
 
 	t.Run("creating shows the recorded limits", func(t *testing.T) {
-		got, _ := State(&Container{Name: "r1", State: DockerCreated, Limits: built}, &Record{Request: req, Limits: recorded, State: RecordCreating})
+		got, _ := State(&Container{Name: "r1", State: docker.StateCreated, Limits: built}, &Record{Request: req, Limits: recorded, State: RecordCreating})
 		if got.Limits != recorded {
 			t.Errorf("limits = %+v, want %+v", got.Limits, recorded)
 		}
 	})
 	t.Run("a container's built limits win once created", func(t *testing.T) {
-		got, _ := State(&Container{Name: "r1", State: DockerRunning, Limits: built, StartedAt: started}, &Record{Request: req, Limits: recorded, State: RecordStarted})
+		got, _ := State(&Container{Name: "r1", State: docker.StateRunning, Limits: built, StartedAt: started}, &Record{Request: req, Limits: recorded, State: RecordStarted})
 		if got.Limits != built || !got.StartedAt.Equal(started) {
 			t.Errorf("limits = %+v started %v, want %+v at %v", got.Limits, got.StartedAt, built, started)
 		}
 	})
 	t.Run("no record reads the container's labels", func(t *testing.T) {
-		got, _ := State(&Container{Name: "r2", Profile: "big", Scope: "acme/web", RunnerID: 9, State: DockerRunning, Limits: built}, nil)
+		got, _ := State(&Container{Name: "r2", Profile: "big", Scope: "acme/web", RunnerID: 9, State: docker.StateRunning, Limits: built}, nil)
 		if got.Name != "r2" || got.Profile != "big" || got.Scope != "acme/web" || got.RunnerID != 9 || got.Limits != built {
 			t.Errorf("runner = %+v", got)
 		}
@@ -142,7 +144,7 @@ func TestStateLimitsAndLabels(t *testing.T) {
 		}
 	})
 	t.Run("a created container has no start time", func(t *testing.T) {
-		got, _ := State(&Container{Name: "r1", State: DockerCreated, StartedAt: started}, &Record{Request: req, State: RecordStarting})
+		got, _ := State(&Container{Name: "r1", State: docker.StateCreated, StartedAt: started}, &Record{Request: req, State: RecordStarting})
 		if !got.StartedAt.IsZero() {
 			t.Errorf("started = %v, want zero", got.StartedAt)
 		}

@@ -11,27 +11,27 @@ import (
 )
 
 const (
-	// ConnectTimeout bounds each connection a check makes.
-	ConnectTimeout = 3 * time.Second
+	// connectTimeout bounds each connection a check makes.
+	connectTimeout = 3 * time.Second
 	// LookupTimeout bounds each configured resolver the output leg's lookup
 	// asks, once, so it never waits out resolv.conf's 5 s and two attempts.
 	LookupTimeout = 3 * time.Second
-	// embeddedUpstreamWait and embeddedUpstreams are Docker's embedded
-	// resolver's per-upstream wait and upstream count, extIOTimeout and
-	// maxExtDNS in https://github.com/moby/moby/blob/docker-v29.0.0/daemon/libnetwork/resolver.go.
+	// embeddedUpstreamWait is Docker's embedded resolver's wait on each
+	// upstream, extIOTimeout in https://github.com/moby/moby/blob/docker-v29.0.0/daemon/libnetwork/resolver.go.
 	embeddedUpstreamWait = 4 * time.Second
-	embeddedUpstreams    = 3
-	// ForwarderBudget bounds an internet: false host's forwarder, its
-	// embedded resolver's one upstream, on each query across every resolver
-	// it asks (SERVFAIL past it): strictly inside embeddedUpstreamWait, so
-	// its answer lands before that wait gives up.
+	// ForwarderBudget bounds the host's forwarder, the embedded resolver's
+	// one upstream, on each query from its arrival, across every resolver it
+	// asks (SERVFAIL past it) and the learning of its answer: strictly inside
+	// embeddedUpstreamWait, so its answer lands before that wait gives up.
 	ForwarderBudget = embeddedUpstreamWait - 500*time.Millisecond
-	// lookupMargin is the job-leg lookup's time past the embedded
-	// resolver's last upstream wait, to relay an answer that came at its end.
-	lookupMargin = time.Second
-	// ExchangeSlack is added to a job-leg check's timeout for its exchange
+	// jobLookupTimeout bounds the job leg's lookup: the embedded resolver's
+	// wait on its one upstream, the host's forwarder (every host's
+	// resolv.conf names only it), plus 1 s to relay an answer that came at
+	// that wait's end.
+	jobLookupTimeout = embeddedUpstreamWait + time.Second
+	// exchangeSlack is added to a job-leg check's timeout for its exchange
 	// over the probe container's attached stream.
-	ExchangeSlack = 2 * time.Second
+	exchangeSlack = 2 * time.Second
 	// probeCalls are a run's Docker calls, each under the host's call
 	// timeout: for the probe and the listener a create, one more call of
 	// inspection after a timed-out create, a start, and after a timed-out
@@ -108,7 +108,7 @@ func (c *Check) Exchange() time.Duration {
 	if c.Leg != LegJob {
 		return 0
 	}
-	return c.Timeout + ExchangeSlack
+	return c.Timeout + exchangeSlack
 }
 
 // ProbeInput is what a probe plan is made from: the host's section, what
@@ -181,7 +181,7 @@ type planner struct {
 func (p *planner) add(c *Check) {
 	c.Leg = p.leg
 	if c.Timeout == 0 {
-		c.Timeout = ConnectTimeout
+		c.Timeout = connectTimeout
 	}
 	dup := func(o Check) bool { return o.Leg == c.Leg && o.Kind == c.Kind && o.Addr == c.Addr }
 	if !slices.ContainsFunc(p.checks, dup) {
@@ -230,19 +230,8 @@ func (p *planner) jobLeg() {
 	if !p.e.Internet {
 		p.block("a public address outside GitHub's names", outsideGitHub.Addr(), outsideGitHub.Port())
 	}
-	p.add(&Check{Name: "a lookup through the job's resolver", Kind: KindResolve, Addr: GitHubAPI, Timeout: p.jobLookup()})
+	p.add(&Check{Name: "a lookup through the job's resolver", Kind: KindResolve, Addr: GitHubAPI, Timeout: jobLookupTimeout})
 	p.ipv6()
-}
-
-// jobLookup is the embedded resolver's wait across the upstreams it asks,
-// the configured resolvers or on an internet: false host the supervisor's
-// forwarder alone, plus lookupMargin.
-func (p *planner) jobLookup() time.Duration {
-	n := min(len(p.in.Host.DNS), embeddedUpstreams)
-	if !p.e.Internet {
-		n = 1
-	}
-	return time.Duration(n)*embeddedUpstreamWait + lookupMargin
 }
 
 // gateway adds the outward gateway's ports 1 and 53, 53 only when no

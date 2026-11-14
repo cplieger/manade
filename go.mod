@@ -8,6 +8,7 @@ require (
 	github.com/cplieger/go/envx v1.1.0
 	github.com/cplieger/go/filesafe v1.1.0
 	github.com/cplieger/go/health v1.1.0
+	github.com/cplieger/go/health/v2 v2.0.0
 	github.com/cplieger/go/httpcache v1.1.0
 	github.com/cplieger/go/httpclient v1.2.0
 	github.com/cplieger/go/httpserver v1.5.0-dev.2

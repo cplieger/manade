@@ -77,7 +77,7 @@ func TestRemoveOwnedVolume(t *testing.T) {
 	if err := c.RemoveOwnedVolume(t.Context(), "mine"); err != nil || len(d.seen(http.MethodDelete, "/volumes/mine")) != 1 {
 		t.Errorf("RemoveOwnedVolume(mine) = %v", err)
 	}
-	if err := c.RemoveOwnedVolume(t.Context(), "foreign"); !errors.Is(err, ErrNotOwned) || len(d.seen(http.MethodDelete, "/volumes/foreign")) != 0 {
+	if err := c.RemoveOwnedVolume(t.Context(), "foreign"); !errors.Is(err, errNotOwned) || len(d.seen(http.MethodDelete, "/volumes/foreign")) != 0 {
 		t.Errorf("RemoveOwnedVolume(foreign) = %v", err)
 	}
 	if err := c.RemoveOwnedVolume(t.Context(), "inuse"); !errors.Is(err, ErrConflict) {

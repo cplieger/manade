@@ -31,8 +31,8 @@ type Backend interface {
 	// DeleteRunner stops and removes the runner's container and any orphan
 	// under it and drops its record; with diag it first copies the runner's
 	// _diag folder as a tar, nil when there is none. A runner with no
-	// container is no error. It makes at most six daemon calls, each within
-	// docker.CallTimeout, and gives the stop at most DeleteStopGrace.
+	// container is no error. The DELETE is bounded by deleteBound, whose
+	// comment lists its waits, and gives the stop at most DeleteStopGrace.
 	DeleteRunner(ctx context.Context, name string, diag bool) ([]byte, error)
 	// Logs answers the runner's last tail lines, or ErrUnknownRunner.
 	Logs(ctx context.Context, name string, tail int) ([]byte, error)
@@ -121,7 +121,7 @@ func NewServer(backend Backend, instanceID string, log *slog.Logger) *Server {
 // quickTimeout for the requests in flight, whose contexts end with ctx.
 func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	srv := &http.Server{
-		Handler:           s.Handler(),
+		Handler:           s.handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       quickTimeout,
 		IdleTimeout:       2 * time.Minute,
@@ -148,8 +148,8 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	return nil
 }
 
-// Handler answers every route under /v1.
-func (s *Server) Handler() http.Handler {
+// handler answers every route under /v1.
+func (s *Server) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("GET /v1/status", s.bounded(quickTimeout, s.status))
 	mux.Handle("POST /v1/runners", s.bounded(quickTimeout, s.createRunner))

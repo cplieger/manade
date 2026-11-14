@@ -2,6 +2,7 @@ package egress
 
 import (
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -23,6 +24,19 @@ const (
 
 var iptChainNames = map[string]string{hookForward: iptFwd, hookOutput: iptOut, hookInput: iptIn}
 
+// manadeJumps are the jumps into manade's own filter chains; an open host
+// deletes them. The jump to DOCKER-USER is the daemon's too, so it stays.
+var manadeJumps = []Jump{
+	{Table: tableFilter, Chain: "OUTPUT", Target: iptOut},
+	{Table: tableFilter, Chain: "INPUT", Target: iptIn},
+	{Table: tableFilter, Chain: "FORWARD", Target: iptFwd, IPv6: true},
+	{Table: tableFilter, Chain: "OUTPUT", Target: iptOut, IPv6: true},
+	{Table: tableFilter, Chain: "INPUT", Target: iptIn, IPv6: true},
+}
+
+// managedSets are every ipset a rule set may declare.
+var managedSets = []string{setProbe4, setTarget4, setProbe6, setTarget6, setGitHub4}
+
 var natJump = Jump{Table: "nat", Chain: "POSTROUTING", Target: iptNAT, IPv6: true}
 
 // renderIPTables writes the three payloads and the jumps. The chains are
@@ -35,7 +49,13 @@ func (rs *Ruleset) renderIPTables() {
 		rs.IPv6NATReset = "*nat\n:" + iptNAT + " - [0:0]\nCOMMIT\n"
 		rs.StaleJumps = []Jump{natJump}
 	}
+	for _, name := range managedSets {
+		if !slices.ContainsFunc(rs.sets, func(s set) bool { return s.name == name }) {
+			rs.StaleSets = append(rs.StaleSets, name)
+		}
+	}
 	if rs.open {
+		rs.StaleJumps = append(rs.StaleJumps, manadeJumps...)
 		return
 	}
 	var ipset strings.Builder
@@ -43,14 +63,7 @@ func (rs *Ruleset) renderIPTables() {
 		ipset.WriteString(s.ipset())
 	}
 	rs.IPSet = ipset.String()
-	rs.Jumps = []Jump{
-		{Table: tableFilter, Chain: "FORWARD", Target: iptDocker},
-		{Table: tableFilter, Chain: "OUTPUT", Target: iptOut},
-		{Table: tableFilter, Chain: "INPUT", Target: iptIn},
-		{Table: tableFilter, Chain: "FORWARD", Target: iptFwd, IPv6: true},
-		{Table: tableFilter, Chain: "OUTPUT", Target: iptOut, IPv6: true},
-		{Table: tableFilter, Chain: "INPUT", Target: iptIn, IPv6: true},
-	}
+	rs.Jumps = append([]Jump{{Table: tableFilter, Chain: "FORWARD", Target: iptDocker}}, manadeJumps...)
 	if rs.nat != nil {
 		rs.Jumps = append(rs.Jumps, natJump)
 	}
@@ -112,7 +125,7 @@ func (s *set) ipset() string {
 	if s.timeout {
 		fmt.Fprintf(&b, " timeout %d", ipsetTimeout)
 	}
-	fmt.Fprintf(&b, " maxelem %d\nflush %s\n", learnedMax, s.name)
+	fmt.Fprintf(&b, " maxelem %d\nflush %s\n", LearnedMax, s.name)
 	for _, l := range s.elems {
 		fmt.Fprintf(&b, "add %s %s timeout %d\n", s.name, l.Addr, seconds(l.Left))
 	}
@@ -232,7 +245,7 @@ type ipsetDef struct {
 }
 
 func (s *set) ipsetDef() ipsetDef {
-	d := ipsetDef{typ: "hash:ip", family: "inet", maxelem: strconv.Itoa(learnedMax)}
+	d := ipsetDef{typ: "hash:ip", family: "inet", maxelem: strconv.Itoa(LearnedMax)}
 	if s.family == ipv6 {
 		d.family = "inet6"
 	}

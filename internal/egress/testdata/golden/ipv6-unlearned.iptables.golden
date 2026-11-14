@@ -142,4 +142,6 @@ ip6 filter OUTPUT -j MANADE-OUT
 ip6 filter INPUT -j MANADE-IN
 ip6 nat POSTROUTING -j MANADE-NAT
 # ip6tables-restore --noflush, where a nat table lists
-# stale jumps, where a nat table lists
+# stale jumps, the nat one where a nat table lists
+# stale ipsets, destroyed where the kernel holds them
+manade-gh4

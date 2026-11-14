@@ -154,8 +154,8 @@ type Profile struct {
 	Privileged               bool
 }
 
-// DefaultMaxLifetime is a profile's max_lifetime when the file sets none.
-const DefaultMaxLifetime = 2 * time.Hour
+// defaultMaxLifetime is a profile's max_lifetime when the file sets none.
+const defaultMaxLifetime = 2 * time.Hour
 
 // Tmpfs is an in-memory mount, counted against the profile's memory.
 type Tmpfs struct {
@@ -176,9 +176,6 @@ type Mount struct {
 func (p *Profile) Allowed(key string) bool {
 	return p.Scopes == nil || slices.ContainsFunc(p.Scopes, func(s string) bool { return strings.EqualFold(s, key) })
 }
-
-// Pinned reports an image referenced by digest, which is never re-checked.
-func (p *Profile) Pinned() bool { return strings.Contains(p.Image, "@sha256:") }
 
 // Grants names each elevated field the profile sets away from its default,
 // in the order of the elevated-access table.
@@ -247,7 +244,7 @@ func (fp *fileProfile) parse(name string, p *problems) Profile {
 	if fp.Scopes != nil {
 		pr.Scopes = append([]string{}, *fp.Scopes...)
 	}
-	pr.Hosts = []string{DefaultHost}
+	pr.Hosts = []string{defaultHost}
 	if fp.Hosts != nil {
 		pr.Hosts = fp.hosts(at("hosts"), p)
 	}
@@ -262,7 +259,7 @@ func (fp *fileProfile) image(pr *Profile, at func(string) string, p *problems) {
 	case fp.Image != "":
 		if len(fp.Image) > 512 || !imageRefRe.MatchString(fp.Image) {
 			p.add(at("image"), invalid("want an image reference", fp.Image))
-		} else if _, port := registry(fp.Image); port == 0 {
+		} else if _, port := Registry(fp.Image); port == 0 {
 			p.add(at("image"), invalid("want a registry port from 1 to 65535", fp.Image))
 		}
 		pr.Image = fp.Image
@@ -297,7 +294,7 @@ func (fp *fileProfile) resources(pr *Profile, at func(string) string, p *problem
 	pr.PIDs = field(p, at("pids"), fp.PIDs, "4096", positive(1<<22))
 	pr.Disk = field(p, at("disk"), fp.Disk, "", parsePositiveSize)
 	pr.ShmSize = field(p, at("shm_size"), fp.ShmSize, "", parsePositiveSize)
-	pr.MaxLifetime = field(p, at("max_lifetime"), fp.MaxLifetime, DefaultMaxLifetime.String(), parseDuration)
+	pr.MaxLifetime = field(p, at("max_lifetime"), fp.MaxLifetime, defaultMaxLifetime.String(), parseDuration)
 	pr.IdleTimeout = field(p, at("idle_timeout"), fp.IdleTimeout, "10m", parseDuration)
 	pr.MaxRunners = int(field(p, at("max_runners"), fp.MaxRunners, "", positive(10000)))
 }
@@ -371,7 +368,7 @@ func (fp *fileProfile) mounts(pr *Profile, at func(string) string, p *problems) 
 // none twice.
 func (fp *fileProfile) hosts(path string, p *problems) []string {
 	if len(*fp.Hosts) == 0 {
-		p.addf(path, "list at least one host, or leave hosts out for %s", DefaultHost)
+		p.addf(path, "list at least one host, or leave hosts out for %s", defaultHost)
 	}
 	var out []string
 	for i, name := range *fp.Hosts {

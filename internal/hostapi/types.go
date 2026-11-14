@@ -22,10 +22,12 @@ const (
 	// DeleteStopGrace is the longest stop grace DeleteRunner gives a
 	// runner before its kill: Docker's own default stop timeout.
 	DeleteStopGrace = 10 * time.Second
-	// deleteBound bounds a DELETE by the calls Backend.DeleteRunner may
-	// make: the diag copy, the stop with its grace, an inspect and a
-	// removal of the runner's container, and of one orphan.
-	deleteBound = DeleteStopGrace + 6*docker.CallTimeout + quickTimeout
+	// deleteBound bounds a DELETE by Backend.DeleteRunner's waits, one
+	// CallTimeout each: a refused start's own removal (its 2 s baseline
+	// read inside quickTimeout), the inspect (a window when a cut create may
+	// still commit), the diag copy, the stop past its grace, the removal's
+	// inspect and removal, and the docker volume's read and removal.
+	deleteBound = DeleteStopGrace + 8*docker.CallTimeout + quickTimeout
 	// eventsBound ends an events stream, after which the client reconnects
 	// and lists again.
 	eventsBound = time.Hour
@@ -128,6 +130,9 @@ type HostLimits struct {
 
 // MemoryStatus is what jobs may use of the host's memory limit.
 type MemoryStatus struct {
+	// Limit is the host cgroup's memory limit, 0 for none, which admits
+	// nothing.
+	Limit int64 `json:"limit"`
 	// Admissible is the cgroup limit less Reserve: the most a capacity's
 	// memory may be.
 	Admissible int64 `json:"admissible"`
@@ -210,6 +215,18 @@ const (
 	// ReasonRefused is a profile whose registry resolved outside an
 	// internet: false host's allow entries.
 	ReasonRefused Reason = "refused"
+	// ReasonDataFull is every profile while a start the daemon refused for
+	// want of space holds the host's starts; Detail says when it lifts.
+	ReasonDataFull Reason = "data_full"
+	// ReasonEgressChangePending is every profile while the host applies a
+	// change of its open or internet key: until each runner on it has
+	// exited or been removed, then while it rebuilds its egress; Detail
+	// names the runners.
+	ReasonEgressChangePending Reason = "egress_change_pending"
+	// ReasonEgressChangeFailed is every profile once such a rebuild failed
+	// and the host went back to its old egress; Detail is the failure, which
+	// a later SIGHUP or a restart retries.
+	ReasonEgressChangeFailed Reason = "egress_change_failed"
 )
 
 // ProfileStatus is one profile's readiness and image on a host.
@@ -228,9 +245,11 @@ type ProfileStatus struct {
 	Image   string `json:"image"`
 	Digest  string `json:"digest,omitempty"`
 	ImageID string `json:"image_id,omitempty"`
-	// Failure is the last failed pull or check.
-	Failure string `json:"failure,omitempty"`
-	Ready   bool   `json:"ready"`
+	// Failure is the last failed pull or check; Failures counts them since
+	// the host started.
+	Failure  string `json:"failure,omitempty"`
+	Failures uint64 `json:"failures"`
+	Ready    bool   `json:"ready"`
 }
 
 // IPv6Status is the machine's /64 the host learned.
@@ -246,12 +265,10 @@ type GitHubStatus struct {
 	// Source is "read" for a list read from GitHub, "saved" for the copy
 	// on the data volume.
 	Source string `json:"source"`
-	// Addresses4 and Addresses6 are the learned addresses held; Refused4
-	// and Refused6 count adds a full set refused.
-	Addresses4 int    `json:"addresses4"`
-	Addresses6 int    `json:"addresses6"`
-	Refused4   uint64 `json:"refused4"`
-	Refused6   uint64 `json:"refused6"`
+	// Addresses are the learned IPv4 addresses held, the only family an
+	// internet: false host learns; Refused counts adds a full set refused.
+	Addresses int    `json:"addresses"`
+	Refused   uint64 `json:"refused"`
 }
 
 // LatencyBuckets are the upper bounds, in seconds, of a CallLatency's

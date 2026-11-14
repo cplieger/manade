@@ -6,8 +6,9 @@
 // slow daemon is waited out and a call that passes its timeout is answered
 // for what it is. Create and Start follow a timed-out call with an inspect
 // and never judge a container that may still be starting as failed. The
-// package stamps LabelManaged on every object it creates, and its removals
-// refuse an object without it. Every answer is read through a size cap.
+// package stamps LabelManaged on every container and volume it creates, and
+// their removals refuse one without it. Every answer is read through a size
+// cap.
 package docker
 
 import (
@@ -52,11 +53,11 @@ const (
 	listLimit = 16 << 20
 	// messageLimit caps one message of a pull, load or event stream.
 	messageLimit = 1 << 20
-	// errorTextLimit caps the daemon's error text kept in an APIError.
+	// errorTextLimit caps the daemon's error text kept in a daemonError.
 	errorTextLimit = 512
 )
 
-// Sentinels an APIError matches through errors.Is.
+// Sentinels a daemonError matches through errors.Is.
 var (
 	errNotFound = errors.New("docker: not found")
 	ErrConflict = errors.New("docker: conflict")
@@ -69,22 +70,22 @@ var (
 // overlap this client's.
 var errAPIVersion = errors.New("docker: unsupported API version")
 
-// APIError is a non-2xx answer. Message is the daemon's own text, sanitized
+// daemonError is a non-2xx answer. Message is the daemon's own text, sanitized
 // to one line and capped.
-type APIError struct {
+type daemonError struct {
 	status  error
 	Op      string
 	Message string
 	Code    int
 }
 
-func (e *APIError) Error() string {
+func (e *daemonError) Error() string {
 	return "docker " + e.Op + ": status " + strconv.Itoa(e.Code) + ": " + e.Message
 }
 
 // Is matches errNotFound for a 404, ErrConflict for a 409 and
 // ErrImageMissing for a 404 naming a missing image.
-func (e *APIError) Is(target error) bool {
+func (e *daemonError) Is(target error) bool {
 	switch target {
 	case errNotFound:
 		return e.Code == http.StatusNotFound
@@ -97,7 +98,7 @@ func (e *APIError) Is(target error) bool {
 }
 
 // Unwrap gives httpclient's status error, so its sentinels match too.
-func (e *APIError) Unwrap() error { return e.status }
+func (e *daemonError) Unwrap() error { return e.status }
 
 // dialer opens one connection to the daemon.
 type dialer func(ctx context.Context) (net.Conn, error)
@@ -182,7 +183,7 @@ func (c *Client) path(p string) string {
 	return "/v" + c.version.String() + p
 }
 
-// request sends one call and returns its answer's body, or an *APIError for
+// request sends one call and returns its answer's body, or a *daemonError for
 // a non-2xx answer. header may be nil. The caller closes the body.
 func (c *Client) request(ctx context.Context, hc *http.Client, op, method, path string, query url.Values, body any, header http.Header) (io.ReadCloser, error) {
 	var rd io.Reader
@@ -192,7 +193,9 @@ func (c *Client) request(ctx context.Context, hc *http.Client, op, method, path 
 	case io.Reader:
 		rd, contentType = b, "application/x-tar"
 	default:
-		raw, err := json.Marshal(b)
+		// body, not b: deadset follows a parameter forwarded to the encoder
+		// and keeps the fields it writes, never a type switch's binding.
+		raw, err := json.Marshal(body)
 		if err != nil {
 			return nil, fmt.Errorf("docker %s: %w", op, err)
 		}
@@ -220,9 +223,9 @@ func (c *Client) request(ctx context.Context, hc *http.Client, op, method, path 
 }
 
 // apiError reads the daemon's {"message": ...} body and closes it.
-func apiError(op string, resp *http.Response, status error) *APIError {
+func apiError(op string, resp *http.Response, status error) *daemonError {
 	defer httpclient.DrainClose(resp.Body)
-	e := &APIError{Op: op, Code: resp.StatusCode, status: status}
+	e := &daemonError{Op: op, Code: resp.StatusCode, status: status}
 	b, err := httpclient.ReadLimitedBody(resp.Body, jsonLimit)
 	var m struct {
 		Message string `json:"message"`
@@ -311,7 +314,7 @@ func (c *Client) managedLabels(labels map[string]string) map[string]string {
 	out := make(map[string]string, len(labels)+2)
 	maps.Copy(out, labels)
 	out[LabelManaged] = managedValue
-	out[LabelCreated] = c.now().UTC().Format(time.RFC3339)
+	out[labelCreated] = c.now().UTC().Format(time.RFC3339)
 	return out
 }
 

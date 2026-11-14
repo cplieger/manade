@@ -8,9 +8,9 @@ import (
 	"strings"
 )
 
-// DefaultIPv6Echo is the endpoint a host learns its IPv6 egress address from
+// defaultIPv6Echo is the endpoint a host learns its IPv6 egress address from
 // when its section names none.
-const DefaultIPv6Echo = "https://cloudflare.com/cdn-cgi/trace"
+const defaultIPv6Echo = "https://cloudflare.com/cdn-cgi/trace"
 
 // Protocol is an allow entry's transport.
 type Protocol int
@@ -83,7 +83,7 @@ func (fe *fileEgress) parse(path string, p *problems) Egress {
 		ipv6Set:     fe.IPv6 != "",
 		ipv6EchoSet: fe.IPv6Echo != "",
 	}
-	if echo := field(p, at("ipv6_echo"), fe.IPv6Echo, DefaultIPv6Echo, parseEcho); e.IPv6 && e.Internet {
+	if echo := field(p, at("ipv6_echo"), fe.IPv6Echo, defaultIPv6Echo, parseEcho); e.IPv6 && e.Internet {
 		e.IPv6Echo = echo
 	}
 	for i := range fe.Allow {

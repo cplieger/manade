@@ -14,13 +14,15 @@ import (
 	"github.com/cplieger/go/textsafe"
 )
 
-// The labels this package owns. LabelManaged marks every object the host
-// created, and only such objects are removed; LabelRunnerImage is baked into
-// each shipped runner image at build.
+// The labels this package owns. LabelManaged marks every container and
+// volume the host created, and only those are removed; LabelRunnerImage is baked into
+// each shipped runner image at build, and LabelProbeImage into the probe
+// image the host builds.
 const (
 	LabelManaged     = "manade.managed"
-	LabelCreated     = "manade.created"
+	labelCreated     = "manade.created"
 	LabelRunnerImage = "manade.runner-image"
+	LabelProbeImage  = "manade.probe-image"
 
 	managedValue = "true"
 )
@@ -35,7 +37,6 @@ type CreateRequest struct {
 	Image      string            `json:"Image"`
 	User       string            `json:"User,omitempty"`
 	Entrypoint []string          `json:"Entrypoint,omitempty"`
-	Cmd        []string          `json:"Cmd,omitempty"`
 	Env        []string          `json:"Env,omitempty"`
 	HostConfig HostConfig        `json:"HostConfig"`
 	// OpenStdin and StdinOnce, with AttachStdin and AttachStdout, let an
@@ -166,7 +167,7 @@ func ownIfMine(ctr *Container, req *CreateRequest, callErr error) Result {
 		return Result{Outcome: Failed, Err: callErr}
 	}
 	for k, v := range req.Labels {
-		if k != LabelManaged && k != LabelCreated && ctr.Config.Labels[k] != v {
+		if k != LabelManaged && k != labelCreated && ctr.Config.Labels[k] != v {
 			return Result{Outcome: Failed, Err: callErr}
 		}
 	}
@@ -226,37 +227,47 @@ func (c *Client) created(ctx context.Context, id string, warnings []string) Resu
 	return Result{Outcome: Failed, Err: werr}
 }
 
-// afterCreateTimeout judges a create of req whose call timed out by
-// inspecting name until a container appears (ownIfMine) or one more
-// CallTimeout passes. The window's end fails the create only when the last
-// inspect answered 404; an inspect that errs, the window's end cutting it
-// included, leaves it pending.
+// afterCreateTimeout judges a create of req whose call timed out by the
+// container InspectSettled finds under name (ownIfMine). The window's end
+// fails the create only when the last inspect answered 404; an inspect that
+// errs, the window's end cutting it included, leaves it pending.
 func (c *Client) afterCreateTimeout(ctx context.Context, name string, req *CreateRequest, callErr error) Result {
+	ctr, found, err := c.InspectSettled(ctx, name)
+	switch {
+	case err != nil:
+		return Result{Outcome: Pending, Err: errors.Join(callErr, err)}
+	case found:
+		return ownIfMine(&ctr, req, callErr)
+	}
+	return Result{Outcome: Failed, Err: fmt.Errorf("%w; no container %s appeared within a further %s", callErr, name, CallTimeout)}
+}
+
+// InspectSettled inspects name the way a create that may still commit
+// needs: until a container appears, or one more CallTimeout passes with
+// every inspect answering 404, which alone answers not found. An inspect
+// that errs, or ctx ending, answers the error.
+func (c *Client) InspectSettled(ctx context.Context, name string) (Container, bool, error) {
 	end := time.Now().Add(CallTimeout)
 	wctx, cancel := context.WithDeadline(ctx, end)
 	defer cancel()
 	tick := time.NewTicker(createPoll)
 	defer tick.Stop()
-	missing := fmt.Errorf("%w; no container %s appeared within a further %s", callErr, name, CallTimeout)
 	for {
 		ctr, found, err := c.inspectIn(wctx, name)
-		switch {
-		case err != nil:
-			return Result{Outcome: Pending, Err: errors.Join(callErr, err)}
-		case found:
-			return ownIfMine(&ctr, req, callErr)
+		if err != nil || found {
+			return ctr, found, err
 		}
 		select {
 		case <-ctx.Done():
-			return Result{Outcome: Pending, Err: errors.Join(callErr, ctx.Err())}
+			return Container{}, false, ctx.Err()
 		case <-wctx.Done():
-			return Result{Outcome: Failed, Err: missing}
+			return Container{}, false, nil
 		case <-tick.C:
 		}
 		// A tick ready together with the window's end must not start an
 		// inspect the window would cut; wctx.Err may not be set yet then.
 		if !time.Now().Before(end) && ctx.Err() == nil {
-			return Result{Outcome: Failed, Err: missing}
+			return Container{}, false, nil
 		}
 	}
 }
@@ -304,7 +315,7 @@ func (c *Client) startOnce(ctx context.Context, id string) (timedOut bool, err e
 	timedOut, err = timed(ctx, func(ctx context.Context) error {
 		return c.callIn(ctx, "start", http.MethodPost, "/containers/"+url.PathEscape(id)+"/start", nil, nil, nil, 0)
 	})
-	if e, ok := errors.AsType[*APIError](err); ok && e.Code == http.StatusNotModified {
+	if e, ok := errors.AsType[*daemonError](err); ok && e.Code == http.StatusNotModified {
 		return false, nil
 	}
 	return timedOut, err
@@ -312,11 +323,13 @@ func (c *Client) startOnce(ctx context.Context, id string) (timedOut bool, err e
 
 // The container states the daemon reports, as it names them.
 const (
-	StateCreated  = "created"
-	StateRunning  = "running"
-	StateRemoving = "removing"
-	StateExited   = "exited"
-	StateDead     = "dead"
+	StateCreated    = "created"
+	StateRunning    = "running"
+	StatePaused     = "paused"
+	StateRestarting = "restarting"
+	StateRemoving   = "removing"
+	StateExited     = "exited"
+	StateDead       = "dead"
 )
 
 // Summary is one entry of ListContainers.
@@ -325,7 +338,6 @@ type Summary struct {
 	ID     string `json:"Id"`
 	// State is the daemon's state word, one of the State constants.
 	State string
-	Names []string
 }
 
 // ListContainers lists every managed container, running or not.
@@ -355,11 +367,7 @@ type Container struct {
 	NetworkSettings struct {
 		Networks map[string]Endpoint
 	}
-	ID string `json:"Id"`
-	// Name is the container's name with Docker's leading slash.
-	Name string
-	// Image is the ID of the image the container was created from.
-	Image string
+	ID    string `json:"Id"`
 	State struct {
 		StartedAt  time.Time
 		FinishedAt time.Time
@@ -412,8 +420,8 @@ func (c *Client) inspectIn(ctx context.Context, ref string) (ctr Container, foun
 	return ctr, true, nil
 }
 
-// ErrNotOwned is a removal refused for an object without LabelManaged.
-var ErrNotOwned = errors.New("docker: not created by this host")
+// errNotOwned is a removal refused for an object without LabelManaged.
+var errNotOwned = errors.New("docker: not created by this host")
 
 // StopContainer sends the container SIGTERM and kills it after grace. A
 // container already stopped or gone is no error.
@@ -422,14 +430,14 @@ func (c *Client) StopContainer(ctx context.Context, id string, grace time.Durati
 	defer cancel()
 	q := url.Values{"t": {strconv.Itoa(int(grace.Seconds()))}}
 	err := c.callIn(ctx, "stop", http.MethodPost, "/containers/"+url.PathEscape(id)+"/stop", q, nil, nil, 0)
-	if e, ok := errors.AsType[*APIError](err); ok && (e.Code == http.StatusNotModified || e.Code == http.StatusNotFound) {
+	if e, ok := errors.AsType[*daemonError](err); ok && (e.Code == http.StatusNotModified || e.Code == http.StatusNotFound) {
 		return nil
 	}
 	return err
 }
 
 // RemoveOwned force-removes a container only when it carries LabelManaged;
-// ErrNotOwned otherwise. It re-inspects first and removes the inspected ID,
+// errNotOwned otherwise. It re-inspects first and removes the inspected ID,
 // so a name cannot be swapped in between. A container already gone is no
 // error; one whose removal is already in progress answers ErrConflict.
 func (c *Client) RemoveOwned(ctx context.Context, ref string) error {
@@ -438,7 +446,7 @@ func (c *Client) RemoveOwned(ctx context.Context, ref string) error {
 		return err
 	}
 	if ctr.Config.Labels[LabelManaged] != managedValue {
-		return fmt.Errorf("%w: container %s", ErrNotOwned, ctr.ID)
+		return fmt.Errorf("%w: container %s", errNotOwned, ctr.ID)
 	}
 	return c.remove(ctx, ctr.ID)
 }

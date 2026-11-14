@@ -23,13 +23,13 @@ const logReadLimit = 4 << 20
 // LogKeep is how many of a log tail's last bytes Logs keeps.
 const LogKeep = 256 << 10
 
-// ErrTooLarge is returned when an archive or file passes its caller's limit.
-var ErrTooLarge = errors.New("docker: content over its size limit")
+// errTooLarge is returned when an archive or file passes its caller's limit.
+var errTooLarge = errors.New("docker: content over its size limit")
 
 // Logs returns the container's last n log lines, stdout and stderr
 // interleaved, raw. Only whole lines of the tail's last LogKeep bytes are
 // returned, so a line longer than LogKeep is not. A tail over 4 MiB fails
-// with ErrTooLarge, and a negative n fails before any request.
+// with errTooLarge, and a negative n fails before any request.
 func (c *Client) Logs(ctx context.Context, id string, n int) ([]string, error) {
 	if n < 0 {
 		return nil, fmt.Errorf("docker logs: a negative line count (%d)", n)
@@ -47,7 +47,7 @@ func (c *Client) Logs(ctx context.Context, id string, n int) ([]string, error) {
 	if lr.N == 0 {
 		switch _, rerr := io.ReadFull(body, make([]byte, 1)); {
 		case rerr == nil:
-			return nil, fmt.Errorf("%w: the log tail passes %d bytes", ErrTooLarge, logReadLimit)
+			return nil, fmt.Errorf("%w: the log tail passes %d bytes", errTooLarge, logReadLimit)
 		case !errors.Is(rerr, io.EOF):
 			return nil, fmt.Errorf("docker logs: %w", rerr)
 		}
@@ -113,7 +113,7 @@ func payload(r io.Reader, size int64) ([]byte, error) {
 }
 
 // CopyArchive writes the tar archive of path inside the container to w, at
-// most limit bytes, and fails with ErrTooLarge past it, leaving what it wrote
+// most limit bytes, and fails with errTooLarge past it, leaving what it wrote
 // in w. found is false when the container or path does not exist.
 func (c *Client) CopyArchive(ctx context.Context, id, p string, w io.Writer, limit int64) (found bool, err error) {
 	ctx, cancel := context.WithTimeout(ctx, CallTimeout)
@@ -131,7 +131,7 @@ func (c *Client) CopyArchive(ctx context.Context, id, p string, w io.Writer, lim
 		return true, fmt.Errorf("docker archive: %w", err)
 	}
 	if n > limit {
-		return true, fmt.Errorf("%w: the archive of %s passes %d bytes", ErrTooLarge, p, limit)
+		return true, fmt.Errorf("%w: the archive of %s passes %d bytes", errTooLarge, p, limit)
 	}
 	return true, nil
 }
@@ -156,7 +156,7 @@ func (c *Client) ReadFile(ctx context.Context, id, p string, limit int64) (data 
 		return nil, true, fmt.Errorf("docker archive: %s is not a regular file", p)
 	}
 	if hdr.Size > limit {
-		return nil, true, fmt.Errorf("%w: %s is %d bytes, over %d", ErrTooLarge, p, hdr.Size, limit)
+		return nil, true, fmt.Errorf("%w: %s is %d bytes, over %d", errTooLarge, p, hdr.Size, limit)
 	}
 	data, err = io.ReadAll(tr)
 	if err != nil {

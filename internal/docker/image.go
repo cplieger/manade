@@ -22,7 +22,6 @@ type Image struct {
 		User   string
 	}
 	ID          string `json:"Id"`
-	RepoTags    []string
 	RepoDigests []string
 }
 
@@ -108,20 +107,30 @@ func readMessages(r io.Reader, op string, fn func([]byte) error) error {
 	return nil
 }
 
-// RemoveOwnedImage removes the image id, without force, only when it carries
-// the shipped-image label and no tag names it; ErrNotOwned otherwise, the
-// probe image included. Without
-// force the daemon refuses an image a container uses, which answers
-// ErrConflict. An image already gone is no error.
-func (c *Client) RemoveOwnedImage(ctx context.Context, id string) error {
-	img, found, err := c.InspectImage(ctx, id)
-	if err != nil || !found {
-		return err
+// ImageSummary is one entry of ListImages.
+type ImageSummary struct {
+	Labels      map[string]string
+	ID          string `json:"Id"`
+	RepoTags    []string
+	RepoDigests []string
+}
+
+// ListImages lists every image in the cache, intermediate layers left out.
+func (c *Client) ListImages(ctx context.Context) ([]ImageSummary, error) {
+	var out []ImageSummary
+	if err := c.call(ctx, "images", http.MethodGet, "/images/json", nil, nil, &out, listLimit); err != nil {
+		return nil, err
 	}
-	if img.Config.Labels[LabelRunnerImage] == "" || len(img.RepoTags) > 0 {
-		return fmt.Errorf("%w: image %s", ErrNotOwned, img.ID)
-	}
-	err = c.call(ctx, "remove", http.MethodDelete, "/images/"+img.ID, nil, nil, nil, 0)
+	return out, nil
+}
+
+// RemoveImage removes ref, an image ID or a tag, without force: a tag is
+// untagged, and the image goes with its last tag. The daemon refuses an
+// image a container uses, or an ID more than one repository tags, which
+// answers ErrConflict. An image already gone is no error. Which images are
+// the host's to remove is its caller's decision.
+func (c *Client) RemoveImage(ctx context.Context, ref string) error {
+	err := c.call(ctx, "remove", http.MethodDelete, "/images/"+ref, nil, nil, nil, 0)
 	if errors.Is(err, errNotFound) {
 		return nil
 	}

@@ -47,8 +47,8 @@ func TestProfileValidForms(t *testing.T) {
 	if p.MaxLifetime != 30*time.Minute || p.IdleTimeout != time.Minute || p.MaxRunners != 3 || p.User != "1001:1001" {
 		t.Errorf("limits = %+v", p)
 	}
-	if !p.Pinned() || p.RunnerImage != "" {
-		t.Errorf("image %q: want a pinned operator image", p.Image)
+	if !strings.Contains(p.Image, "@sha256:") || p.RunnerImage != "" {
+		t.Errorf("image %q: want the pinned operator image as written", p.Image)
 	}
 	if !slices.Equal(p.Command, []string{"/opt/runner/run.sh", "--once"}) {
 		t.Errorf("command = %q", p.Command)
@@ -90,9 +90,6 @@ func TestProfileImageFields(t *testing.T) {
 			p := profile(t, mustBuild(t, tokenEnv(), withProfile(tc.body)), "p")
 			if p.RunnerImage != tc.runner || p.Image != tc.image {
 				t.Errorf("runner_image %q, image %q; want %q, %q", p.RunnerImage, p.Image, tc.runner, tc.image)
-			}
-			if p.Pinned() {
-				t.Error("a tag reports pinned")
 			}
 		})
 	}

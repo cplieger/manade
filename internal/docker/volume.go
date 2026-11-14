@@ -38,7 +38,7 @@ func (c *Client) ListVolumes(ctx context.Context) ([]Volume, error) {
 }
 
 // RemoveOwnedVolume removes a volume only when it carries LabelManaged;
-// ErrNotOwned otherwise. A volume already gone is no error; one a container
+// errNotOwned otherwise. A volume already gone is no error; one a container
 // still uses answers ErrConflict.
 func (c *Client) RemoveOwnedVolume(ctx context.Context, name string) error {
 	var v Volume
@@ -50,7 +50,7 @@ func (c *Client) RemoveOwnedVolume(ctx context.Context, name string) error {
 		return err
 	}
 	if v.Labels[LabelManaged] != managedValue {
-		return fmt.Errorf("%w: volume %s", ErrNotOwned, v.Name)
+		return fmt.Errorf("%w: volume %s", errNotOwned, v.Name)
 	}
 	err = c.call(ctx, "volume", http.MethodDelete, "/volumes/"+url.PathEscape(v.Name), nil, nil, nil, 0)
 	if errors.Is(err, errNotFound) {

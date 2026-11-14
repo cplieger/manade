@@ -17,5 +17,16 @@ COMMIT
 *nat
 :MANADE-NAT - [0:0]
 COMMIT
-# stale jumps, where a nat table lists
+# stale jumps, the nat one where a nat table lists
 ip6 nat POSTROUTING -j MANADE-NAT
+filter OUTPUT -j MANADE-OUT
+filter INPUT -j MANADE-IN
+ip6 filter FORWARD -j MANADE-FWD
+ip6 filter OUTPUT -j MANADE-OUT
+ip6 filter INPUT -j MANADE-IN
+# stale ipsets, destroyed where the kernel holds them
+manade-probe4
+manade-target4
+manade-probe6
+manade-target6
+manade-gh4

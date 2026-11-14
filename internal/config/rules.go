@@ -224,7 +224,7 @@ func checkRegistry(pr *Profile, h *Host, at func(string) string, p *problems) {
 	if pr.Image == "" {
 		return
 	}
-	name, port := registry(pr.Image)
+	name, port := Registry(pr.Image)
 	addr, err := netip.ParseAddr(name)
 	addr = addr.Unmap()
 	switch {
@@ -237,12 +237,12 @@ func checkRegistry(pr *Profile, h *Host, at func(string) string, p *problems) {
 	}
 }
 
-// registry answers an image reference's registry name and port, with ""
+// Registry answers an image reference's registry name and port, with ""
 // for Docker Hub, an IPv6 host without its brackets and port 0 for one out
 // of range. The first component is a registry only when it holds a dot, a
 // colon or an upper-case letter, or is localhost, as in splitDockerDomain of
 // https://github.com/distribution/reference/blob/main/normalize.go.
-func registry(ref string) (name string, port uint16) {
+func Registry(ref string) (name string, port uint16) {
 	first, _, ok := strings.Cut(ref, "/")
 	if !ok || (!strings.ContainsAny(first, ".:") && first != "localhost" && strings.ToLower(first) == first) {
 		return "", registryPort

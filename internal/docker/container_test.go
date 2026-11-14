@@ -45,7 +45,7 @@ func TestCreate(t *testing.T) {
 		}
 		want := managedLabelsAt()
 		want["manade.runner"] = "r1"
-		if got.query["name"][0] != "r1" || len(body.Labels) != len(want) || body.Labels[LabelManaged] != "true" || body.Labels["manade.runner"] != "r1" || body.Labels[LabelCreated] != want[LabelCreated] {
+		if got.query["name"][0] != "r1" || len(body.Labels) != len(want) || body.Labels[LabelManaged] != "true" || body.Labels["manade.runner"] != "r1" || body.Labels[labelCreated] != want[labelCreated] {
 			t.Errorf("name %v labels %v, want %v", got.query["name"], body.Labels, want)
 		}
 		if req.Labels[LabelManaged] != "false" {
@@ -88,7 +88,7 @@ func TestCreate(t *testing.T) {
 	t.Run("a name held by this create's own container is done", func(t *testing.T) {
 		d := newDaemon(t, "1.51")
 		d.handle("POST /containers/create", inUse)
-		d.handle("GET /containers/r1/json", holder(map[string]string{LabelManaged: "true", LabelCreated: "2000-01-01T00:00:00Z", "manade.runner": "r1"}))
+		d.handle("GET /containers/r1/json", holder(map[string]string{LabelManaged: "true", labelCreated: "2000-01-01T00:00:00Z", "manade.runner": "r1"}))
 		res := d.dial(t).Create(t.Context(), "r1", req)
 		if res.Outcome != Done || res.ID != "c0" || res.Err != nil {
 			t.Errorf("Create = %+v, want done with the holder's ID", res)
@@ -229,6 +229,48 @@ func TestCreate(t *testing.T) {
 				t.Errorf("%d inspects after the caller left", n)
 			}
 		})
+	})
+}
+
+func TestInspectSettled(t *testing.T) {
+	t.Run("a container that appears within the window is found", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			d := newDaemon(t, "1.51")
+			start := time.Now()
+			d.handle("GET /containers/r1/json", func(w http.ResponseWriter, r *http.Request) {
+				if time.Since(start) < CallTimeout-time.Minute {
+					writeError(w, http.StatusNotFound, "No such container: r1")
+					return
+				}
+				inspectAs(StateCreated)(w, r)
+			})
+			ctr, found, err := d.dial(t).InspectSettled(t.Context(), "r1")
+			if err != nil || !found || ctr.ID != "c1" {
+				t.Errorf("InspectSettled = %+v, %v, %v, want c1 found", ctr.ID, found, err)
+			}
+		})
+	})
+	t.Run("a 404 for the whole window is not found after one call timeout", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			d := newDaemon(t, "1.51")
+			d.handle("GET /containers/r1/json", func(w http.ResponseWriter, _ *http.Request) {
+				writeError(w, http.StatusNotFound, "No such container: r1")
+			})
+			start := time.Now()
+			_, found, err := d.dial(t).InspectSettled(t.Context(), "r1")
+			if err != nil || found || time.Since(start) != CallTimeout {
+				t.Errorf("InspectSettled = %v, %v after %s, want not found at %s", found, err, time.Since(start), CallTimeout)
+			}
+		})
+	})
+	t.Run("an inspect that errs answers the error", func(t *testing.T) {
+		d := newDaemon(t, "1.51")
+		d.handle("GET /containers/r1/json", func(w http.ResponseWriter, _ *http.Request) {
+			writeError(w, http.StatusInternalServerError, "driver busy")
+		})
+		if _, found, err := d.dial(t).InspectSettled(t.Context(), "r1"); err == nil || found {
+			t.Errorf("InspectSettled = %v, %v, want the error", found, err)
+		}
 	})
 }
 
@@ -494,10 +536,10 @@ func TestStart(t *testing.T) {
 func TestListContainers(t *testing.T) {
 	d := newDaemon(t, "1.51")
 	d.handle("GET /containers/json", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, http.StatusOK, []map[string]any{{"Id": "c1", "State": StateRemoving, "Names": []string{"/r1"}, "Labels": managedLabelsAt()}})
+		writeJSON(w, http.StatusOK, []map[string]any{{"Id": "c1", "State": StateRemoving, "Labels": managedLabelsAt()}})
 	})
 	got, err := d.dial(t).ListContainers(t.Context())
-	if err != nil || len(got) != 1 || got[0].State != StateRemoving || got[0].Names[0] != "/r1" {
+	if err != nil || len(got) != 1 || got[0].State != StateRemoving || got[0].ID != "c1" {
 		t.Fatalf("ListContainers = %+v, %v", got, err)
 	}
 	q := d.seen(http.MethodGet, "/containers/json")[0].query
@@ -619,7 +661,7 @@ func TestRemoveOwned(t *testing.T) {
 		}
 	})
 	t.Run("refuses a container the host did not create", func(t *testing.T) {
-		if err := c.RemoveOwned(t.Context(), "foreign"); !errors.Is(err, ErrNotOwned) || len(d.seen(http.MethodDelete, "/containers/c2")) != 0 {
+		if err := c.RemoveOwned(t.Context(), "foreign"); !errors.Is(err, errNotOwned) || len(d.seen(http.MethodDelete, "/containers/c2")) != 0 {
 			t.Errorf("RemoveOwned = %v", err)
 		}
 	})

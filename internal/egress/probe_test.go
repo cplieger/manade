@@ -316,13 +316,13 @@ func TestPlanProbeTargetsAndTimeouts(t *testing.T) {
 	for _, c := range p.Checks {
 		t.Run(fmt.Sprintf("%d %s", c.Leg, c.Addr), func(t *testing.T) {
 			t.Parallel()
-			wantTimeout := ConnectTimeout
+			wantTimeout := connectTimeout
 			switch {
 			case c.Kind == KindResolve && c.Leg == LegJob:
-				// Docker's embedded resolver waits 4 s on each of the
-				// three configured resolvers in turn, and relays the last
-				// answer within 1 s.
-				wantTimeout = 13 * time.Second
+				// Docker's embedded resolver waits 4 s on its one
+				// upstream, the host's forwarder, whatever the configured
+				// resolvers, and relays its answer within 1 s.
+				wantTimeout = 5 * time.Second
 			case c.Kind == KindResolve:
 				// 3 s for each of the three configured resolvers.
 				wantTimeout = 9 * time.Second
@@ -367,11 +367,11 @@ func TestPlanBound(t *testing.T) {
 		t.Parallel()
 		p := PlanProbe(probeInput(config.Egress{Internet: true}))
 		// Twelve calls; the job leg's six blocks, its GitHub connection and
-		// its NoIPv6 check at 3 s and its lookup at 4 s for each of the two
-		// default resolvers plus 1 s, each with 2 s of slack; the output
+		// its NoIPv6 check at 3 s and its lookup at 4 s on the forwarder
+		// plus 1 s, each with 2 s of slack; the output
 		// leg's three blocks and NoIPv6 at 3 s and its lookup at 3 s for
 		// each of the two default resolvers.
-		want := 12*call + (8*(3+2)+(2*4+1+2))*time.Second + (4*3+2*3)*time.Second
+		want := 12*call + (8*(3+2)+(4+1+2))*time.Second + (4*3+2*3)*time.Second
 		if got := p.Bound(call); got != want {
 			t.Errorf("Bound = %v, want %v", got, want)
 		}
@@ -384,10 +384,10 @@ func TestPlanBound(t *testing.T) {
 		dns         []netip.Addr
 		job, output time.Duration
 	}{
-		// The embedded resolver asks three upstreams at most, 4 s each,
-		// and relays the last answer within 1 s.
-		{"two resolvers", []netip.Addr{addr("1.1.1.1"), addr("8.8.8.8")}, 9 * time.Second, 6 * time.Second},
-		{"four resolvers", []netip.Addr{addr("1.1.1.1"), addr("8.8.8.8"), addr("9.9.9.9"), addr("8.8.4.4")}, 13 * time.Second, 12 * time.Second},
+		// The job lookup waits 4 s on the forwarder plus 1 s whatever the
+		// configured resolvers; the output lookup asks each for 3 s.
+		{"two resolvers", []netip.Addr{addr("1.1.1.1"), addr("8.8.8.8")}, 5 * time.Second, 6 * time.Second},
+		{"four resolvers", []netip.Addr{addr("1.1.1.1"), addr("8.8.8.8"), addr("9.9.9.9"), addr("8.8.4.4")}, 5 * time.Second, 12 * time.Second},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -418,7 +418,7 @@ func TestPlanBound(t *testing.T) {
 				got = append(got, c.Timeout)
 			}
 		}
-		// The embedded resolver's one upstream is the supervisor's
+		// As on every host, the embedded resolver's one upstream is the
 		// forwarder, plus 1 s; the output leg asks each resolver for 3 s.
 		if want := []time.Duration{5 * time.Second, 6 * time.Second}; !slices.Equal(got, want) {
 			t.Errorf("lookup timeouts = %v, want %v", got, want)

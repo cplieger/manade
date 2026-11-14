@@ -114,7 +114,7 @@ func TestLogs(t *testing.T) {
 		}
 	})
 	t.Run("failsABodyCutAtTheLimit", func(t *testing.T) {
-		if lines, err := c.Logs(t.Context(), "cutAtTheLimit", 1); err == nil || errors.Is(err, ErrTooLarge) {
+		if lines, err := c.Logs(t.Context(), "cutAtTheLimit", 1); err == nil || errors.Is(err, errTooLarge) {
 			t.Errorf("Logs = %d lines, %v; want the read error of a body cut after 4 MiB", len(lines), err)
 		}
 	})
@@ -128,7 +128,7 @@ func TestLogs(t *testing.T) {
 	})
 	for _, id := range []string{"overOnAFrameEdge", "overInsideAFrame"} {
 		t.Run(id, func(t *testing.T) {
-			if lines, err := c.Logs(t.Context(), id, 50); !errors.Is(err, ErrTooLarge) {
+			if lines, err := c.Logs(t.Context(), id, 50); !errors.Is(err, errTooLarge) {
 				t.Errorf("Logs = %d lines, %v; want ErrTooLarge for a tail past 4 MiB", len(lines), err)
 			}
 		})
@@ -232,7 +232,7 @@ func TestArchive(t *testing.T) {
 		}
 	})
 	t.Run("readFileCapsTheSize", func(t *testing.T) {
-		if _, _, err := c.ReadFile(t.Context(), "probe", "/etc/big", 1024); !errors.Is(err, ErrTooLarge) {
+		if _, _, err := c.ReadFile(t.Context(), "probe", "/etc/big", 1024); !errors.Is(err, errTooLarge) {
 			t.Errorf("ReadFile over its limit = %v, want ErrTooLarge", err)
 		}
 		if data, _, err := c.ReadFile(t.Context(), "probe", "/etc/big", 4096); err != nil || len(data) != 4096 {
@@ -249,7 +249,7 @@ func TestArchive(t *testing.T) {
 	t.Run("copyArchiveCapsTheSize", func(t *testing.T) {
 		var buf bytes.Buffer
 		limit := int64(len(archives["/etc/big"]) - 1)
-		if _, err := c.CopyArchive(t.Context(), "probe", "/etc/big", &buf, limit); !errors.Is(err, ErrTooLarge) {
+		if _, err := c.CopyArchive(t.Context(), "probe", "/etc/big", &buf, limit); !errors.Is(err, errTooLarge) {
 			t.Errorf("CopyArchive over its limit = %v, want ErrTooLarge", err)
 		}
 		buf.Reset()

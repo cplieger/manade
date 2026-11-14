@@ -86,5 +86,9 @@ ip6 filter INPUT -j MANADE-IN
 *nat
 :MANADE-NAT - [0:0]
 COMMIT
-# stale jumps, where a nat table lists
+# stale jumps, the nat one where a nat table lists
 ip6 nat POSTROUTING -j MANADE-NAT
+# stale ipsets, destroyed where the kernel holds them
+manade-probe6
+manade-target6
+manade-gh4

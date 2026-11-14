@@ -109,7 +109,7 @@ func TestBuildHosts(t *testing.T) {
 	})
 	t.Run("nas", func(t *testing.T) {
 		h := host(t, cfg, "nas")
-		if h.Address != (Address{HostPort: "nas.example:7464"}) {
+		if h.Address != (Address{HostPort: "nas.example:7464", Port: 7464}) {
 			t.Errorf("address = %+v", h.Address)
 		}
 		if h.ImageRefresh != 2*time.Hour {
@@ -146,7 +146,7 @@ func TestBuildHosts(t *testing.T) {
 	})
 	t.Run("lan", func(t *testing.T) {
 		h := host(t, cfg, "lan")
-		if h.Address != (Address{HostPort: "10.0.0.9:7464"}) {
+		if h.Address != (Address{HostPort: "10.0.0.9:7464", Port: 7464}) {
 			t.Errorf("address = %+v, want the API's port 7464", h.Address)
 		}
 		if h.Capacity.MilliCPUs != 1500 || !h.Egress.Open {
@@ -166,7 +166,7 @@ func TestIPv6EchoOnlyWhereLearned(t *testing.T) {
 	}{
 		{"ipv6Off", `{ipv6_echo: "https://echo.example/ip"}`, ""},
 		{"internetOff", `{ipv6: true, internet: false}`, ""},
-		{"default", `{ipv6: true}`, DefaultIPv6Echo},
+		{"default", `{ipv6: true}`, defaultIPv6Echo},
 		{"own", `{ipv6: true, ipv6_echo: "https://echo.example/ip"}`, "https://echo.example/ip"},
 	}
 	for _, tt := range tests {

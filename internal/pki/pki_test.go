@@ -120,7 +120,7 @@ func TestIssueCapsALeafAtTheCA(t *testing.T) {
 	if _, err := Issue(root, nil, now); err != nil {
 		t.Fatal(err)
 	}
-	later := now.Add(Validity - 24*time.Hour)
+	later := now.Add(validity - 24*time.Hour)
 	if _, err := Issue(root, []string{"nas"}, later); err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +128,7 @@ func TestIssueCapsALeafAtTheCA(t *testing.T) {
 	if leaf := readCert(t, filepath.Join(root, "nas", "nas.pem")); !leaf.NotAfter.Equal(ca.NotAfter) {
 		t.Errorf("leaf until %v, CA until %v", leaf.NotAfter, ca.NotAfter)
 	}
-	if _, err := Issue(root, []string{"late"}, now.Add(Validity+time.Hour)); err == nil || !strings.Contains(err.Error(), "valid now") {
+	if _, err := Issue(root, []string{"late"}, now.Add(validity+time.Hour)); err == nil || !strings.Contains(err.Error(), "valid now") {
 		t.Errorf("an expired CA issued: %v", err)
 	}
 }

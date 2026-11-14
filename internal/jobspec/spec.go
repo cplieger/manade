@@ -16,8 +16,8 @@ import (
 	"github.com/cplieger/manade/internal/docker"
 )
 
-// The labels a runner's or a probe's container carries. LabelRunner also
-// names a docker-image runner's /var/lib/docker volume.
+// The labels a runner's, a probe's or an image check's container carries.
+// LabelRunner also names a docker-image runner's /var/lib/docker volume.
 const (
 	LabelRunner   = "manade.runner"
 	LabelRunnerID = "manade.runner-id"
@@ -25,6 +25,8 @@ const (
 	LabelProfile  = "manade.profile"
 	// LabelProbe is the probe run a probe or listener container belongs to.
 	LabelProbe = "manade.probe"
+	// LabelImageCheck is the image ID an image check's container reads.
+	LabelImageCheck = "manade.image-check"
 )
 
 // jitConfigEnv is the variable GitHub's runner reads its one-time config from.
@@ -90,9 +92,9 @@ func NewHost(cfg *config.Config, h *config.Host, plat *Platform) *Host {
 	return &Host{host: h, protected: prot, binds: cfg.BindSources(h.Name), plat: *plat}
 }
 
-// ErrUnenforceable is a profile asking for a limit its host's kernel or
+// errUnenforceable is a profile asking for a limit its host's kernel or
 // filesystem cannot enforce.
-var ErrUnenforceable = errors.New("jobspec: the host cannot enforce the profile's limits")
+var errUnenforceable = errors.New("jobspec: the host cannot enforce the profile's limits")
 
 // Check refuses profile p on this host when it asks for a limit the host
 // cannot enforce, naming the profile and the host. A pids limit the kernel
@@ -114,7 +116,7 @@ func (h *Host) Check(p *config.Profile) error {
 	if len(why) == 0 {
 		return nil
 	}
-	return fmt.Errorf("%w: profile %s on host %s: %s", ErrUnenforceable, p.Name, h.host.Name, strings.Join(why, "; "))
+	return fmt.Errorf("%w: profile %s on host %s: %s", errUnenforceable, p.Name, h.host.Name, strings.Join(why, "; "))
 }
 
 // Runner is one runner's identity, its one-time config and what the host
@@ -140,7 +142,7 @@ type Runner struct {
 // Runner is the create request for r on profile p, which Check passed. Each
 // bind source is resolved again here, every symlink followed, so call it
 // just before the create: on a host that is not open a source that reaches
-// a protected path or leaves the host's mounts fails with ErrMountRefused.
+// a protected path or leaves the host's mounts fails with errMountRefused.
 func (h *Host) Runner(p *config.Profile, r *Runner) (*docker.CreateRequest, error) {
 	hc, err := h.limits(p, r.CPUs)
 	if err != nil {
@@ -242,8 +244,7 @@ func cpuList(cpus []int) string {
 // as a job's container is, on the job network with Docker's default
 // capabilities, a non-root user and no mounts.
 type Probe struct {
-	// Name is unique to the run's container; Run labels both of a run's.
-	Name    string
+	// Run labels both of a run's containers.
 	Run     string
 	ImageID string
 	Command []string
@@ -274,5 +275,21 @@ func (h *Host) Probe(pr *Probe) *docker.CreateRequest {
 		OpenStdin:   pr.Stdin,
 		StdinOnce:   pr.Stdin,
 		AttachStdin: pr.Stdin, AttachStdout: pr.Stdin, AttachStderr: pr.Stdin,
+	}
+}
+
+// imageCheckEntrypoint names no file an image is expected to hold, so a
+// container started by mistake exits at once.
+const imageCheckEntrypoint = "/manade-image-check"
+
+// ImageCheck is the create request of the container the user check reads
+// imageID's passwd and group files from. It is never started: it has no
+// network and no command an image could run.
+func ImageCheck(imageID string) *docker.CreateRequest {
+	return &docker.CreateRequest{
+		Image:      imageID,
+		Entrypoint: []string{imageCheckEntrypoint},
+		Labels:     map[string]string{LabelImageCheck: imageID},
+		HostConfig: docker.HostConfig{NetworkMode: "none"},
 	}
 }

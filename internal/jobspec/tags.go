@@ -17,10 +17,10 @@ const moduleMajor = 1
 // releaseRe is a release tag, its major and its prerelease.
 var releaseRe = regexp.MustCompile(`^v(\d{1,6})\.\d{1,6}\.\d{1,6}(-[0-9A-Za-z.-]+)?$`)
 
-// Channel answers the major and channel of a build of version: a release
+// channel answers the major and channel of a build of version: a release
 // tag's own major, stable only without a prerelease; any other version
 // (dev, ci) is moduleMajor on the dev channel.
-func Channel(version string) (major int, dev bool) {
+func channel(version string) (major int, dev bool) {
 	m := releaseRe.FindStringSubmatch(version)
 	if m == nil {
 		return moduleMajor, true
@@ -37,7 +37,7 @@ func ImageRef(p *config.Profile, version string) string {
 	if p.Image != "" {
 		return p.Image
 	}
-	major, dev := Channel(version)
+	major, dev := channel(version)
 	tag := p.RunnerImage + "-v" + strconv.Itoa(major)
 	if dev {
 		tag += "-dev"

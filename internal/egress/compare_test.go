@@ -117,7 +117,7 @@ func TestCompareNFT(t *testing.T) {
 	t.Run("setElementsAndCountersChanged", func(t *testing.T) {
 		t.Parallel()
 		data := edit(t, off, `{"elem": {"val": "140.82.112.3", "timeout": 3600, "expires": 3599}}, `, "")
-		data = edit(t, data, `"val": "2606:50c0:8000::153", "timeout": 1200, "expires": 1199`, `"val": "2606:50c0:8000::154", "timeout": 600, "expires": 7`)
+		data = edit(t, data, `"val": "140.82.112.4", "timeout": 1801, "expires": 1800`, `"val": "140.82.112.9", "timeout": 600, "expires": 7`)
 		data = []byte(strings.ReplaceAll(string(data), `"counter": {"packets": 0, "bytes": 0}`, `"counter": {"packets": 12, "bytes": 720}`))
 		if err := generate(t, "ipv6-internet-off", NFTables).Compare(&ReadBack{NFT: data}); err != nil {
 			t.Error(err)
@@ -214,8 +214,8 @@ func TestCompareIPTables(t *testing.T) {
 			"ip6tables filter: chain MANADE-FWD is missing",
 		},
 		{
-			"ipsetMissing", "ipv6-internet-off", withSets(off, edit(t, off.IPSets, "Name: manade-gh6", "Name: other")),
-			"ipset manade-gh6 is missing",
+			"ipsetMissing", "ipv6-internet-off", withSets(off, edit(t, off.IPSets, "Name: manade-gh4", "Name: other")),
+			"ipset manade-gh4 is missing",
 		},
 		{
 			"ipsetMaxelem", "ipv6-internet-off", withSets(off, edit(t, off.IPSets, "family inet hashsize 1024 maxelem 65536 timeout 600", "family inet hashsize 1024 maxelem 1024 timeout 600")),

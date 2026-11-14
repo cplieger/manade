@@ -124,7 +124,7 @@ func TestCheck(t *testing.T) {
 			p := profile()
 			tc.edit(p)
 			err := h.Check(p)
-			if !errors.Is(err, ErrUnenforceable) || !strings.Contains(err.Error(), tc.want) || !strings.Contains(err.Error(), "profile small on host nas") {
+			if !errors.Is(err, errUnenforceable) || !strings.Contains(err.Error(), tc.want) || !strings.Contains(err.Error(), "profile small on host nas") {
 				t.Errorf("Check = %v, want %q naming the profile and host", err, tc.want)
 			}
 		})
@@ -245,7 +245,7 @@ func TestRunnerMounts(t *testing.T) {
 		t.Run(name+" is refused", func(t *testing.T) {
 			h, root := testHost(t, false, Platform{})
 			_, err := h.Runner(bind(src(root)), runner())
-			if !errors.Is(err, ErrMountRefused) || !strings.Contains(err.Error(), "profile small") {
+			if !errors.Is(err, errMountRefused) || !strings.Contains(err.Error(), "profile small") {
 				t.Errorf("Runner = %v, want the mount refused naming the profile", err)
 			}
 		})
@@ -253,7 +253,7 @@ func TestRunnerMounts(t *testing.T) {
 	t.Run("/tmp is refused on every host", func(t *testing.T) {
 		cfg := &config.Config{File: "/config/config.yaml"}
 		h := NewHost(cfg, &config.Host{Name: "nas"}, &Platform{Mounts: []string{"/"}})
-		if _, err := h.Runner(bind("/tmp"), runner()); !errors.Is(err, ErrMountRefused) || !strings.Contains(err.Error(), "/tmp") {
+		if _, err := h.Runner(bind("/tmp"), runner()); !errors.Is(err, errMountRefused) || !strings.Contains(err.Error(), "/tmp") {
 			t.Errorf("Runner = %v", err)
 		}
 	})
@@ -272,7 +272,7 @@ func TestRunnerMounts(t *testing.T) {
 		if err := os.Symlink(filepath.Join(root, "tls"), src); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := h.Runner(bind(src), runner()); !errors.Is(err, ErrMountRefused) || !strings.Contains(err.Error(), filepath.Join(root, "tls")) {
+		if _, err := h.Runner(bind(src), runner()); !errors.Is(err, errMountRefused) || !strings.Contains(err.Error(), filepath.Join(root, "tls")) {
 			t.Errorf("second create = %v, want the link refused naming its target", err)
 		}
 	})
@@ -284,7 +284,7 @@ func TestRunnerMounts(t *testing.T) {
 			t.Fatal(err)
 		}
 		for name, src := range map[string]string{"an ancestor of TLS_DIR": root, "a link to TLS_DIR": link} {
-			if _, err := h.Runner(bind(src), runner()); !errors.Is(err, ErrMountRefused) || !strings.Contains(err.Error(), "which host nas protects") {
+			if _, err := h.Runner(bind(src), runner()); !errors.Is(err, errMountRefused) || !strings.Contains(err.Error(), "which host nas protects") {
 				t.Errorf("%s: Runner = %v, want it refused as protected", name, err)
 			}
 		}
@@ -347,11 +347,11 @@ func TestRunnerMountNesting(t *testing.T) {
 		work, x, link := linkInto(t, root)
 		h, small := serve(root, link, false, work, true)
 		_, err := h.Runner(small, runner())
-		if !errors.Is(err, ErrMountRefused) || !strings.Contains(err.Error(), "profile small") || !strings.Contains(err.Error(), "profile big's jobs may write") {
+		if !errors.Is(err, errMountRefused) || !strings.Contains(err.Error(), "profile small") || !strings.Contains(err.Error(), "profile big's jobs may write") {
 			t.Fatalf("Runner = %v, want the source refused naming both profiles", err)
 		}
 		swap(t, root, x)
-		if _, err := h.Runner(small, runner()); !errors.Is(err, ErrMountRefused) {
+		if _, err := h.Runner(small, runner()); !errors.Is(err, errMountRefused) {
 			t.Errorf("Runner after the swap = %v, want refused", err)
 		}
 	})
@@ -360,7 +360,7 @@ func TestRunnerMountNesting(t *testing.T) {
 		work, x, link := linkInto(t, root)
 		swap(t, root, x)
 		h, small := serve(root, link, false, work, true)
-		if _, err := h.Runner(small, runner()); !errors.Is(err, ErrMountRefused) || !strings.Contains(err.Error(), "profile big's jobs may write") {
+		if _, err := h.Runner(small, runner()); !errors.Is(err, errMountRefused) || !strings.Contains(err.Error(), "profile big's jobs may write") {
 			t.Errorf("Runner = %v, want refused", err)
 		}
 	})
@@ -370,7 +370,7 @@ func TestRunnerMountNesting(t *testing.T) {
 		h, small := serve(root, work, true, link, false)
 		swap(t, root, x)
 		_, err := h.Runner(small, runner())
-		if !errors.Is(err, ErrMountRefused) || !strings.Contains(err.Error(), "writable to jobs and an ancestor of "+x) {
+		if !errors.Is(err, errMountRefused) || !strings.Contains(err.Error(), "writable to jobs and an ancestor of "+x) {
 			t.Errorf("Runner = %v, want refused for the link it holds", err)
 		}
 	})
@@ -390,7 +390,7 @@ func TestRunnerMountNesting(t *testing.T) {
 		_, root := testHost(t, false, Platform{})
 		work, lk := dotLink(t, root)
 		h, small := serve(root, lk, false, work, true)
-		if _, err := h.Runner(small, runner()); !errors.Is(err, ErrMountRefused) || !strings.Contains(err.Error(), "profile big's jobs may write") {
+		if _, err := h.Runner(small, runner()); !errors.Is(err, errMountRefused) || !strings.Contains(err.Error(), "profile big's jobs may write") {
 			t.Errorf("Runner = %v, want refused for the entry it reads under work", err)
 		}
 	})
@@ -398,7 +398,7 @@ func TestRunnerMountNesting(t *testing.T) {
 		_, root := testHost(t, false, Platform{})
 		work, lk := dotLink(t, root)
 		h, small := serve(root, work, true, lk, false)
-		if _, err := h.Runner(small, runner()); !errors.Is(err, ErrMountRefused) || !strings.Contains(err.Error(), "writable to jobs and an ancestor of") {
+		if _, err := h.Runner(small, runner()); !errors.Is(err, errMountRefused) || !strings.Contains(err.Error(), "writable to jobs and an ancestor of") {
 			t.Errorf("Runner = %v, want refused for the entry the link reads under it", err)
 		}
 	})
@@ -412,7 +412,7 @@ func TestRunnerMountNesting(t *testing.T) {
 		}
 		h, small := serve(root, link, true, filepath.Join(parent, "child"), false)
 		_, err := h.Runner(small, runner())
-		if !errors.Is(err, ErrMountRefused) || !strings.Contains(err.Error(), "writable to jobs and an ancestor of") || !strings.Contains(err.Error(), "profile big") {
+		if !errors.Is(err, errMountRefused) || !strings.Contains(err.Error(), "writable to jobs and an ancestor of") || !strings.Contains(err.Error(), "profile big") {
 			t.Errorf("Runner = %v, want the source refused naming both profiles", err)
 		}
 	})
@@ -565,7 +565,7 @@ func TestNewHostProtects(t *testing.T) {
 
 func TestProbe(t *testing.T) {
 	h, _ := testHost(t, false, Platform{PIDs: true, Swap: true})
-	probe := h.Probe(&Probe{Name: "manade-probe-1", Run: "run-1", ImageID: "sha256:probe", Command: []string{"/manade", "probe"}, Stdin: true})
+	probe := h.Probe(&Probe{Run: "run-1", ImageID: "sha256:probe", Command: []string{"/manade", "probe"}, Stdin: true})
 	hc := probe.HostConfig
 	if probe.Image != "sha256:probe" || probe.User != "65534:65534" || probe.Labels[LabelProbe] != "run-1" || !probe.OpenStdin || !probe.StdinOnce || !probe.AttachStdin || !probe.AttachStdout {
 		t.Errorf("probe = %+v", probe)
@@ -573,15 +573,29 @@ func TestProbe(t *testing.T) {
 	if hc.Memory != 32<<20 || hc.MemorySwap != 32<<20 || hc.NetworkMode != "manade" || len(hc.Mounts) != 0 || len(hc.CapAdd) != 0 || len(hc.CapDrop) != 0 || hc.Privileged || hc.PidsLimit == nil {
 		t.Errorf("probe host config = %+v, want a job's shape with Docker's default capabilities", hc)
 	}
-	listener := h.Probe(&Probe{Name: "manade-listener-1", Run: "run-1", ImageID: "sha256:probe", Command: []string{"/manade", "probe", "listen"}})
+	listener := h.Probe(&Probe{Run: "run-1", ImageID: "sha256:probe", Command: []string{"/manade", "probe", "listen"}})
 	if listener.OpenStdin || listener.StdinOnce || listener.AttachStdin || listener.Labels[LabelProbe] != "run-1" {
 		t.Errorf("listener = %+v", listener)
 	}
 	t.Run("a kernel without swap accounting gets unlimited swap", func(t *testing.T) {
 		h, _ := testHost(t, false, Platform{})
-		hc := h.Probe(&Probe{Name: "manade-probe-2", Run: "run-2", ImageID: "sha256:probe"}).HostConfig
+		hc := h.Probe(&Probe{Run: "run-2", ImageID: "sha256:probe"}).HostConfig
 		if hc.Memory != 32<<20 || hc.MemorySwap != -1 {
 			t.Errorf("probe memory = %d, swap = %d, want 32 MiB and -1", hc.Memory, hc.MemorySwap)
 		}
 	})
+}
+
+func TestImageCheck(t *testing.T) {
+	const id = "sha256:b3492d593e717af76e71e25dff4bb82d4fb35be4269f377cc2f4f40bd29b7c73"
+	req := ImageCheck(id)
+	if req.Image != id || req.Labels[LabelImageCheck] != id {
+		t.Errorf("image, labels = %q, %v; want the checked ID and its label", req.Image, req.Labels)
+	}
+	if req.HostConfig.NetworkMode != "none" {
+		t.Errorf("NetworkMode = %q, want none", req.HostConfig.NetworkMode)
+	}
+	if len(req.Entrypoint) != 1 || req.Env != nil || req.User != "" || req.HostConfig.Mounts != nil {
+		t.Errorf("request = %+v; want one fixed entrypoint and nothing else", req)
+	}
 }

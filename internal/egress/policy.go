@@ -29,12 +29,11 @@ const (
 	setProbe6  = "manade-probe6"
 	setTarget6 = "manade-target6"
 	setGitHub4 = "manade-gh4"
-	setGitHub6 = "manade-gh6"
 )
 
-// learnedMax bounds each family's learned set, as ipset's default maxelem
-// does.
-const learnedMax = 65536
+// LearnedMax bounds the learned set, in the kernel and in the host's own
+// record, as ipset's default maxelem does.
+const LearnedMax = 65536
 
 // globalUnicast6 is the only IPv6 jobs reach under internet.
 var globalUnicast6 = netip.MustParsePrefix("2000::/3")
@@ -71,7 +70,8 @@ type State struct {
 	// address is global, or the zero Prefix.
 	Own64 netip.Prefix
 	// GitHub holds the addresses learned for GitHub's names; they are
-	// loaded only on an internet: false host, IPv6 ones only with IPv6.
+	// loaded only on an internet: false host, and only those Learnable
+	// passes.
 	GitHub []Learned
 }
 
@@ -96,17 +96,23 @@ type Ruleset struct {
 	// Jumps must each be the first rule of their chain once the payloads
 	// are loaded; the loader inserts any that is not.
 	Jumps []Jump
-	// IPv6NATReset (ip6tables-restore --noflush) empties MANADE-NAT and the
-	// loader deletes StaleJumps, on an iptables rule set without IPv6 jobs,
-	// only where ip6tables lists a nat table: a kernel without IPv6 NAT
-	// refuses a payload naming one.
+	// IPv6NATReset (ip6tables-restore --noflush) empties MANADE-NAT on an
+	// iptables rule set without IPv6 jobs, only where ip6tables lists a nat
+	// table: a kernel without IPv6 NAT refuses a payload naming one.
 	IPv6NATReset string
-	StaleJumps   []Jump
-	chains       []chain
-	sets         []set
-	Backend      Backend
-	open         bool
-	ipv6         bool
+	// StaleJumps are jumps the loader deletes every copy of: the one to
+	// MANADE-NAT beside IPv6NATReset, under the same condition, and on an
+	// open host those into manade's filter chains.
+	StaleJumps []Jump
+	// StaleSets are the ipsets an IPTables rule set does not declare, which
+	// the loader destroys once the payloads no longer reference them, so a
+	// learned or probe set does not outlive the policy that had it.
+	StaleSets []string
+	chains    []chain
+	sets      []set
+	Backend   Backend
+	open      bool
+	ipv6      bool
 }
 
 // Jump is a rule `-j Target` that must be first in Chain of Table, under
@@ -254,33 +260,31 @@ func (rs *Ruleset) build(in *Input) {
 		rs.nat = &rule{family: ipv6, oif: iface{name: jobBridges.name, glob: true, not: true}, saddr: in.Job6, action: masquerade}
 	}
 	if !e.Internet {
-		rs.sets = append(rs.sets, set{name: setGitHub4, family: ipv4, timeout: true, elems: in.learned(ipv4)})
-		if v6 {
-			rs.sets = append(rs.sets, set{name: setGitHub6, family: ipv6, timeout: true, elems: in.learned(ipv6)})
-		}
+		rs.sets = append(rs.sets, set{name: setGitHub4, family: ipv4, timeout: true, elems: in.learned()})
 	}
 }
 
-// learned answers the learned addresses of family f that still have time
-// left, at most learnedMax of them. It leaves out any address the internet
-// rules drop, private and IPv6-blocked space: the set's accept precedes
-// those drops, so one such answer for a GitHub name would open the LAN.
-func (in *Input) learned(f family) []Learned {
-	block := in.block6()
-	blocked := func(a netip.Addr) bool {
-		if a.Is4() {
-			return !a.IsGlobalUnicast() || slices.ContainsFunc(config.PrivateRanges, func(p netip.Prefix) bool { return p.Contains(a) })
-		}
-		return !globalUnicast6.Contains(a) || slices.ContainsFunc(block, func(p netip.Prefix) bool { return p.Contains(a) })
-	}
+// learned answers the learned addresses that still have time left and pass
+// Learnable, at most LearnedMax of them.
+func (in *Input) learned() []Learned {
 	var out []Learned
 	for _, l := range in.State.GitHub {
 		a := l.Addr.Unmap()
-		if l.Left > 0 && a.Is4() == (f == ipv4) && !blocked(a) && len(out) < learnedMax {
+		if l.Left > 0 && Learnable(a) && len(out) < LearnedMax {
 			out = append(out, Learned{Addr: a, Left: l.Left})
 		}
 	}
 	return out
+}
+
+// Learnable reports whether an address learned for a GitHub name may enter
+// the learned set, whose accept precedes the private and IPv6 drops: a
+// global unicast IPv4 address outside the private ranges, never an IPv6
+// one, since an internet: false host cannot learn the machine's /64 and so
+// cannot keep a LAN answer under it out of the set.
+func Learnable(a netip.Addr) bool {
+	a = a.Unmap()
+	return a.Is4() && a.IsGlobalUnicast() && !slices.ContainsFunc(config.PrivateRanges, func(p netip.Prefix) bool { return p.Contains(a) })
 }
 
 // block6 answers the IPv6 prefixes jobs never reach on this host.
@@ -306,9 +310,6 @@ func destinations(in *Input, v6, global6 bool) []rule {
 	}
 	if !e.Internet {
 		rs = append(rs, rule{daddrSet: setGitHub4, action: accept})
-		if v6 {
-			rs = append(rs, rule{daddrSet: setGitHub6, action: accept})
-		}
 	}
 	rs = append(rs, rule{daddr: config.PrivateRanges, action: drop})
 	if v6 {
@@ -441,8 +442,6 @@ func (r *rule) matchFamily() family {
 		return familyOf(r.saddr.Addr())
 	case len(r.daddr) > 0:
 		return familyOf(r.daddr[0].Addr())
-	case r.daddrSet == setGitHub6:
-		return ipv6
 	case r.daddrSet == setGitHub4:
 		return ipv4
 	}

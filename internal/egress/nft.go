@@ -72,7 +72,7 @@ func (s *set) nft() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "\tset %s {\n\t\ttype %s\n", s.name, s.nftType())
 	if s.timeout {
-		fmt.Fprintf(&b, "\t\tflags timeout\n\t\tsize %d\n", learnedMax)
+		fmt.Fprintf(&b, "\t\tflags timeout\n\t\tsize %d\n", LearnedMax)
 	}
 	if len(s.elems) > 0 {
 		elems := make([]string, len(s.elems))

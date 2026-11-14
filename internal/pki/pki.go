@@ -34,9 +34,9 @@ const (
 	caKeyFile       = "ca-key.pem"
 )
 
-// Validity is how long a new CA, and any certificate it issues, is valid;
+// validity is how long a new CA, and any certificate it issues, is valid;
 // a certificate never outlives its CA.
-const Validity = 10 * 365 * 24 * time.Hour
+const validity = 10 * 365 * 24 * time.Hour
 
 // Issue writes into root the CA (CADir, made when absent), the
 // orchestrator's TLS_DIR (OrchestratorDir, made when absent) and a TLS_DIR
@@ -221,7 +221,7 @@ func makeCA(dir string, now time.Time) (*authority, error) {
 	}
 	tmpl := &x509.Certificate{
 		SerialNumber: serial(), Subject: pkix.Name{CommonName: "manade pool CA"},
-		NotBefore: now.Add(-time.Hour), NotAfter: now.Add(Validity),
+		NotBefore: now.Add(-time.Hour), NotAfter: now.Add(validity),
 		IsCA: true, BasicConstraintsValid: true, MaxPathLenZero: true,
 		KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
 	}
@@ -252,7 +252,7 @@ func (ca *authority) party(dir, name, dnsName string, usage x509.ExtKeyUsage, no
 	if err != nil {
 		return fmt.Errorf("pki: %w", err)
 	}
-	notAfter := now.Add(Validity)
+	notAfter := now.Add(validity)
 	if ca.cert.NotAfter.Before(notAfter) {
 		notAfter = ca.cert.NotAfter
 	}

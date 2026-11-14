@@ -67,7 +67,7 @@ func TestCheckUser(t *testing.T) {
 			if tt.ok && err != nil {
 				t.Errorf("CheckUser(%q) = %v, want nil", tt.user, err)
 			}
-			if !tt.ok && !errors.Is(err, ErrRootUser) {
+			if !tt.ok && !errors.Is(err, errRootUser) {
 				t.Errorf("CheckUser(%q) = %v, want ErrRootUser", tt.user, err)
 			}
 		})
