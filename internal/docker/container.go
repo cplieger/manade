@@ -305,7 +305,7 @@ func (c *Client) startOnce(ctx context.Context, id string) (timedOut bool, err e
 	timedOut, err = timed(ctx, func(ctx context.Context) error {
 		return c.callIn(ctx, "start", http.MethodPost, "/containers/"+url.PathEscape(id)+"/start", nil, nil, nil, 0)
 	})
-	if e, ok := errors.AsType[*APIError](err); ok && e.Code == http.StatusNotModified {
+	if e, ok := errors.AsType[*daemonError](err); ok && e.Code == http.StatusNotModified {
 		return false, nil
 	}
 	return timedOut, err
@@ -420,7 +420,7 @@ func (c *Client) StopContainer(ctx context.Context, id string, grace time.Durati
 	defer cancel()
 	q := url.Values{"t": {strconv.Itoa(int(grace.Seconds()))}}
 	err := c.callIn(ctx, "stop", http.MethodPost, "/containers/"+url.PathEscape(id)+"/stop", q, nil, nil, 0)
-	if e, ok := errors.AsType[*APIError](err); ok && (e.Code == http.StatusNotModified || e.Code == http.StatusNotFound) {
+	if e, ok := errors.AsType[*daemonError](err); ok && (e.Code == http.StatusNotModified || e.Code == http.StatusNotFound) {
 		return nil
 	}
 	return err

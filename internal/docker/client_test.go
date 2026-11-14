@@ -134,7 +134,7 @@ func TestCallTimeout(t *testing.T) {
 	})
 }
 
-func TestAPIError(t *testing.T) {
+func TestDaemonError(t *testing.T) {
 	d := newDaemon(t, "1.51")
 	d.handle("GET /containers/{id}/json", func(w http.ResponseWriter, r *http.Request) {
 		switch r.PathValue("id") {
@@ -150,9 +150,9 @@ func TestAPIError(t *testing.T) {
 	c := d.dial(t)
 	t.Run("a conflict matches ErrConflict", func(t *testing.T) {
 		_, _, err := c.InspectContainer(t.Context(), "conflict")
-		ae, ok := errors.AsType[*APIError](err)
+		ae, ok := errors.AsType[*daemonError](err)
 		if !errors.Is(err, ErrConflict) || errors.Is(err, errNotFound) || !ok || ae.Code != 409 || ae.Op != "inspect" {
-			t.Errorf("err = %v, want an inspect APIError 409 matching ErrConflict only", err)
+			t.Errorf("err = %v, want an inspect daemonError 409 matching ErrConflict only", err)
 		}
 	})
 	t.Run("the message is one sanitized line", func(t *testing.T) {
@@ -171,9 +171,9 @@ func TestAPIError(t *testing.T) {
 		}
 	})
 	t.Run("a missing image is told apart from another 404", func(t *testing.T) {
-		missing := &APIError{Code: http.StatusNotFound, Message: "No such image: ghcr.io/x@sha256:1"}
-		other := &APIError{Code: http.StatusNotFound, Message: "No such container: r1"}
-		fault := &APIError{Code: http.StatusInternalServerError, Message: "pull: no such image in the mirror"}
+		missing := &daemonError{Code: http.StatusNotFound, Message: "No such image: ghcr.io/x@sha256:1"}
+		other := &daemonError{Code: http.StatusNotFound, Message: "No such container: r1"}
+		fault := &daemonError{Code: http.StatusInternalServerError, Message: "pull: no such image in the mirror"}
 		if !errors.Is(missing, ErrImageMissing) || errors.Is(other, ErrImageMissing) || !errors.Is(other, errNotFound) || errors.Is(fault, ErrImageMissing) {
 			t.Errorf("missing image %v, other 404 %v, a 500 %v", errors.Is(missing, ErrImageMissing), errors.Is(other, ErrImageMissing), errors.Is(fault, ErrImageMissing))
 		}

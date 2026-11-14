@@ -15,12 +15,6 @@
     },
     {
       "code": "DS1501",
-      "symbol": "go://github.com/cplieger/manade/internal/docker#APIError",
-      "path": "internal/docker/client.go",
-      "reason": "staging: the supervisor (build plan item 5) reads a refused call's status and message; delete this entry there"
-    },
-    {
-      "code": "DS1501",
       "symbol": "go://github.com/cplieger/manade/internal/config#RoleOrchestrator",
       "path": "internal/config/config.go",
       "reason": "staging: the orchestrator (build plan items 7 and 8, batch 4) reads the orchestrator role, its scopes and its GitHub credentials; delete this entry there"
