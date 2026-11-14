@@ -27,8 +27,6 @@ const (
 	tcpConns    = 64
 	// tcpIdle closes a client's TCP connection that sends nothing.
 	tcpIdle = 10 * time.Second
-	// learnTimeout bounds a learned address's kernel write.
-	learnTimeout = 2 * time.Second
 )
 
 // Upstreams answers the configured resolvers on Port.
@@ -55,20 +53,23 @@ func Listen(ctx context.Context, addr netip.AddrPort) (net.PacketConn, net.Liste
 }
 
 // Learning is what a forwarder learns: the answers for a name Match lists
-// have their addresses added by Learner before they are answered.
+// have their addresses added by Learner before they are answered, or after
+// once the query's budget has passed.
 type Learning struct {
 	Match   *Matcher
 	Learner *Learner
 }
 
-// Forwarder answers each query from its upstreams and, while it learns,
-// has the Learner add the addresses of a listed name's answer before it
-// answers.
+// Forwarder answers each query from its upstreams within its budget and,
+// while it learns, has the Learner add the addresses of a listed name's
+// answer before it answers, finishing an add the budget cut after it.
 type Forwarder struct {
 	upstreams func() []netip.AddrPort
 	learning  func() *Learning
 	log       *slog.Logger
-	budget    time.Duration
+	// adds are the learns in flight, which may outlive their query.
+	adds   sync.WaitGroup
+	budget time.Duration
 }
 
 // NewForwarder answers a Forwarder asking the resolvers upstreams answers,
@@ -79,8 +80,8 @@ func NewForwarder(upstreams func() []netip.AddrPort, learning func() *Learning, 
 }
 
 // Serve answers queries on udp and tcp until ctx ends, then closes both
-// and answers nil once every query in flight is done; a listener that fails
-// first ends it with the failure.
+// and answers nil once every query and learn in flight is done; a listener
+// that fails first ends it with the failure.
 func (f *Forwarder) Serve(ctx context.Context, udp net.PacketConn, tcp net.Listener) error {
 	sctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -96,6 +97,7 @@ func (f *Forwarder) Serve(ctx context.Context, udp net.PacketConn, tcp net.Liste
 	err := <-errs
 	cancel()
 	wg.Wait()
+	f.adds.Wait()
 	if ctx.Err() != nil && errors.Is(err, net.ErrClosed) {
 		return nil
 	}
@@ -186,7 +188,8 @@ func writeTCP(w io.Writer, msg []byte) error {
 	return err
 }
 
-// answer answers query, or nil for a message that is not one query.
+// answer answers query within the budget from its arrival, or nil for a
+// message that is not one query.
 func (f *Forwarder) answer(ctx context.Context, network string, query []byte) []byte {
 	q, err := parseQuestion(query)
 	if err != nil {
@@ -195,17 +198,22 @@ func (f *Forwarder) answer(ctx context.Context, network string, query []byte) []
 	if isResponse(query) {
 		return nil
 	}
-	resp := f.ask(ctx, network, query, q)
+	qctx, cancel := context.WithTimeout(ctx, f.budget)
+	defer cancel()
+	resp := f.ask(qctx, network, query, q)
 	if resp == nil {
 		return failure(query, q, rcodeFail)
 	}
 	if l := f.learning(); l != nil && rcodeOf(resp) == rcodeOK && l.Match.Match(q.name) {
-		f.learn(ctx, l.Learner, resp)
+		f.learn(ctx, qctx, l.Learner, resp)
 	}
 	return resp
 }
 
-func (f *Forwarder) learn(ctx context.Context, l *Learner, resp []byte) {
+// learn adds resp's addresses under ctx, the forwarder's run, waiting for
+// the add until budget, the query's, ends: an add past it still lands
+// after the rule load it waits for, and the job's connection retransmits.
+func (f *Forwarder) learn(ctx, budget context.Context, l *Learner, resp []byte) {
 	rq, err := parseQuestion(resp)
 	var recs []Record
 	if err == nil {
@@ -215,10 +223,16 @@ func (f *Forwarder) learn(ctx context.Context, l *Learner, resp []byte) {
 		f.log.Warn("An upstream answer for a GitHub name did not parse; nothing learned", "name", rq.name, "err", err)
 		return
 	}
-	ctx, cancel := context.WithTimeout(ctx, learnTimeout)
-	defer cancel()
-	if err := l.Learn(ctx, recs); err != nil {
-		f.log.Warn("Adding learned GitHub addresses to the rules failed; jobs' connections to them are dropped", "name", rq.name, "err", err)
+	done := make(chan struct{})
+	f.adds.Go(func() {
+		defer close(done)
+		if err := l.Learn(ctx, recs); err != nil {
+			f.log.Warn("Adding learned GitHub addresses to the rules failed; jobs' connections to them are dropped", "name", rq.name, "err", err)
+		}
+	})
+	select {
+	case <-done:
+	case <-budget.Done():
 	}
 }
 
@@ -274,7 +288,7 @@ func (a *asking) took(r exchanged) ([]byte, bool) {
 	return a.last, a.pending == 0
 }
 
-// ask answers the first good answer of the upstreams within the budget,
+// ask answers the first good answer of the upstreams before ctx ends,
 // else the last SERVFAIL or REFUSED one gave, else nil. Each upstream is
 // asked in turn, the next one once the one before has failed or its share
 // of the budget has passed, while those before may still answer.
@@ -283,8 +297,6 @@ func (f *Forwarder) ask(ctx context.Context, network string, query []byte, q que
 	if len(ups) == 0 {
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(ctx, f.budget)
-	defer cancel()
 	step := f.budget / time.Duration(len(ups))
 	a := &asking{
 		ctx: ctx, res: make(chan exchanged, len(ups)), timer: time.NewTimer(step),

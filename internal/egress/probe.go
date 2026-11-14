@@ -20,9 +20,9 @@ const (
 	// upstream, extIOTimeout in https://github.com/moby/moby/blob/docker-v29.0.0/daemon/libnetwork/resolver.go.
 	embeddedUpstreamWait = 4 * time.Second
 	// ForwarderBudget bounds the host's forwarder, the embedded resolver's
-	// one upstream, on each query across every resolver it asks (SERVFAIL
-	// past it): strictly inside embeddedUpstreamWait, so its answer lands
-	// before that wait gives up.
+	// one upstream, on each query from its arrival, across every resolver it
+	// asks (SERVFAIL past it) and the learning of its answer: strictly inside
+	// embeddedUpstreamWait, so its answer lands before that wait gives up.
 	ForwarderBudget = embeddedUpstreamWait - 500*time.Millisecond
 	// jobLookupTimeout bounds the job leg's lookup: the embedded resolver's
 	// wait on its one upstream, the host's forwarder (every host's

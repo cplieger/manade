@@ -2,6 +2,7 @@ package resolver
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/netip"
 	"sync"
@@ -17,6 +18,9 @@ const learnPad = 10 * time.Minute
 
 // refusedLogEvery bounds the WARN a full set logs.
 const refusedLogEvery = time.Minute
+
+// learnTimeout bounds a learned address's kernel write.
+const learnTimeout = 2 * time.Second
 
 // SetWriter adds addresses to the kernel's learned sets, renewing the
 // timeout of any already there.
@@ -46,21 +50,38 @@ type Learner struct {
 	log     *slog.Logger
 	allowed atomic.Pointer[func(netip.Addr) bool]
 	held    map[netip.Addr]time.Time
-	warned  time.Time
-	refused [familyCount]atomic.Uint64
-	// n counts held's addresses per family, expired ones until pruned.
-	n [familyCount]int
 	// load is held from a learned address's record to its kernel write,
 	// and by Loading's holder from a rule set's generation to its load, so
 	// an address is in the loaded set or written after it.
-	load sync.Mutex
-	mu   sync.Mutex
+	load    loadLock
+	warned  time.Time
+	refused [familyCount]atomic.Uint64
+	// n counts held's addresses per family, expired ones until pruned.
+	n  [familyCount]int
+	mu sync.Mutex
+}
+
+// loadLock is a mutex whose wait a context can end, so a learn never
+// waits out a whole rule load past its query's deadline.
+type loadLock chan struct{}
+
+func (k loadLock) Lock() { k <- struct{}{} }
+
+func (k loadLock) Unlock() { <-k }
+
+func (k loadLock) lock(ctx context.Context) error {
+	select {
+	case k <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // NewLearner answers a Learner writing through write and learning only
 // addresses allowed passes.
 func NewLearner(write SetWriter, allowed func(netip.Addr) bool, log *slog.Logger) *Learner {
-	l := &Learner{write: write, log: log, held: map[netip.Addr]time.Time{}}
+	l := &Learner{write: write, log: log, held: map[netip.Addr]time.Time{}, load: make(loadLock, 1)}
 	l.allowed.Store(&allowed)
 	return l
 }
@@ -71,14 +92,18 @@ func NewLearner(write SetWriter, allowed func(netip.Addr) bool, log *slog.Logger
 func (l *Learner) SetAllowed(allowed func(netip.Addr) bool) { l.allowed.Store(&allowed) }
 
 // Loading is held across a rule set's generation from Held and its load.
-func (l *Learner) Loading() sync.Locker { return &l.load }
+func (l *Learner) Loading() sync.Locker { return l.load }
 
 // Learn records each allowed address of recs for its TTL plus learnPad and
-// writes them to the kernel before it returns, answering the write's
-// error. A new address past a family's bound is refused, counted and
-// logged at most once a minute; a held one is renewed whatever the count.
+// writes them to the kernel within learnTimeout before it returns,
+// answering the write's error, or ctx's with nothing recorded when it ends
+// while a rule load runs. A new address past a family's bound is refused,
+// counted and logged at most once a minute; a held one is renewed whatever
+// the count.
 func (l *Learner) Learn(ctx context.Context, recs []Record) error {
-	l.load.Lock()
+	if err := l.load.lock(ctx); err != nil {
+		return fmt.Errorf("waiting for the rule load: %w", err)
+	}
 	defer l.load.Unlock()
 	now := time.Now()
 	allowed := *l.allowed.Load()
@@ -104,6 +129,8 @@ func (l *Learner) Learn(ctx context.Context, recs []Record) error {
 	if len(ls) == 0 {
 		return nil
 	}
+	ctx, cancel := context.WithTimeout(ctx, learnTimeout)
+	defer cancel()
 	return l.write(ctx, ls)
 }
 

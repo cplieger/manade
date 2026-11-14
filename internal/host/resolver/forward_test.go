@@ -212,6 +212,83 @@ func TestForwardWritesBeforeItAnswers(t *testing.T) {
 	}
 }
 
+// written polls k until it holds n writes, failing past clientWait.
+func written(t *testing.T, k *kernelSets, n int) {
+	t.Helper()
+	for end := time.Now().Add(clientWait); len(k.all()) < n; time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(end) {
+			t.Fatalf("writes = %v, want %d", k.all(), n)
+		}
+	}
+}
+
+func TestForwardAnswersInsideTheEmbeddedWaitWhileItLearns(t *testing.T) {
+	t.Run("an upstream at 3s and a write taking 2s", func(t *testing.T) {
+		k := &kernelSets{}
+		l := NewLearner(func(ctx context.Context, ls []egress.Learned) error {
+			time.Sleep(2 * time.Second)
+			return k.write(ctx, ls)
+		}, learnable(), slog.New(slog.DiscardHandler))
+		up := upstream(t, func(q []byte) [][]byte {
+			time.Sleep(3 * time.Second)
+			return answering(0, aRR("140.82.121.10", 60))(q)
+		})
+		at := serve(t, NewForwarder(func() []netip.AddrPort { return []netip.AddrPort{up} }, learns(newMatcher(meta), l), slog.New(slog.DiscardHandler)))
+		start := time.Now()
+		resp := ask(t, "udp", at, query(3, "codeload.github.com", typeA))
+		if d := time.Since(start); d >= 4*time.Second {
+			t.Errorf("answered after %v, past Docker's embedded resolver's 4s wait", d)
+		}
+		if rcodeOf(resp) != rcodeOK {
+			t.Errorf("rcode = %d, want the upstream's answer", rcodeOf(resp))
+		}
+		written(t, k, 1)
+	})
+	t.Run("a rule load holding the lock", func(t *testing.T) {
+		k := &kernelSets{}
+		l := NewLearner(k.write, learnable(), slog.New(slog.DiscardHandler))
+		f := NewForwarder(func() []netip.AddrPort { return []netip.AddrPort{upstream(t, answering(0, aRR("140.82.121.10", 60)))} },
+			learns(newMatcher(meta), l), slog.New(slog.DiscardHandler))
+		f.budget = 300 * time.Millisecond
+		at := serve(t, f)
+		l.Loading().Lock()
+		resp := ask(t, "udp", at, query(4, "codeload.github.com", typeA))
+		if rcodeOf(resp) != rcodeOK || len(k.all()) != 0 {
+			t.Errorf("rcode %d, writes %v, want the answer while the load runs, nothing written", rcodeOf(resp), k.all())
+		}
+		l.Loading().Unlock()
+		written(t, k, 1)
+	})
+}
+
+func TestServeWaitsForALearnItsQueryLeft(t *testing.T) {
+	inWrite, release := make(chan struct{}), make(chan struct{})
+	l := NewLearner(func(context.Context, []egress.Learned) error {
+		close(inWrite)
+		<-release
+		return nil
+	}, learnable(), slog.New(slog.DiscardHandler))
+	f := NewForwarder(func() []netip.AddrPort { return []netip.AddrPort{upstream(t, answering(0, aRR("140.82.121.10", 60)))} },
+		learns(newMatcher(meta), l), slog.New(slog.DiscardHandler))
+	f.budget = 300 * time.Millisecond
+	at, udp, tcp := listenPair(t)
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- f.Serve(ctx, udp, tcp) }()
+	ask(t, "udp", at, query(4, "codeload.github.com", typeA))
+	<-inWrite
+	cancel()
+	select {
+	case <-done:
+		t.Error("Serve returned while a learn its query left was still writing")
+	case <-time.After(200 * time.Millisecond):
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestForwardLearnsNothing(t *testing.T) {
 	for _, tc := range []struct {
 		name   string

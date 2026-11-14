@@ -30,10 +30,12 @@ type fakeRunnerDaemon struct {
 	start  func(id string, n int) (docker.Result, bool)
 	// listed, when set, runs after a list read the containers and before
 	// it answers; inspected after an inspect of ref read its container;
-	// starting before a start; removed after a removal of ref.
+	// starting before a start; removing before a removal of ref, which its
+	// error fails; removed after a removal of ref.
 	listed    func()
 	inspected func(ref string)
 	starting  func()
+	removing  func(ctx context.Context, ref string) error
 	removed   func(ref string)
 	// gate holds each create until it closes; with commitLate a create its
 	// caller cut still commits once the gate opens, as a daemon under load
@@ -212,7 +214,15 @@ func (d *fakeRunnerDaemon) StopContainer(_ context.Context, id string, _ time.Du
 	return nil
 }
 
-func (d *fakeRunnerDaemon) RemoveOwned(_ context.Context, ref string) error {
+func (d *fakeRunnerDaemon) RemoveOwned(ctx context.Context, ref string) error {
+	d.mu.Lock()
+	removing := d.removing
+	d.mu.Unlock()
+	if removing != nil {
+		if err := removing(ctx, ref); err != nil {
+			return err
+		}
+	}
 	d.mu.Lock()
 	d.record("remove " + ref)
 	for name, c := range d.ctrs {
@@ -367,9 +377,10 @@ type runnersTest struct {
 	d   *fakeRunnerDaemon
 	img *fakeImages
 	// free is the data volume's free bytes; failReads is how many reads of
-	// them fail next.
+	// them fail next; reading, when set, runs at each read.
 	free      *atomic.Uint64
 	failReads *atomic.Int32
+	reading   *atomic.Pointer[func()]
 }
 
 // newRunnersTest runs a runnerSet until the test ends; cpus makes it a
@@ -384,12 +395,15 @@ func newRunnersTest(t *testing.T, cpus []int, setup func(d *fakeRunnerDaemon)) *
 		setup(d)
 	}
 	img := &fakeImages{notReady: map[string]hostapi.ProfileStatus{}}
-	free, failReads := &atomic.Uint64{}, &atomic.Int32{}
+	free, failReads, reading := &atomic.Uint64{}, &atomic.Int32{}, &atomic.Pointer[func()]{}
 	free.Store(1 << 30)
 	ctx, cancel := context.WithCancel(context.Background())
 	r := newRunners(ctx, &runnersConfig{
 		Daemon: d, Images: img, Served: testServed(cpus != nil), Log: slog.New(slog.DiscardHandler), CPUs: cpus,
 		DataFree: func() (uint64, error) {
+			if fn := reading.Load(); fn != nil {
+				(*fn)()
+			}
 			if failReads.Add(-1) >= 0 {
 				return 0, errors.New("statfs: input/output error")
 			}
@@ -405,7 +419,7 @@ func newRunnersTest(t *testing.T, cpus []int, setup func(d *fakeRunnerDaemon)) *
 	done := make(chan struct{})
 	go func() { r.run(ctx); close(done) }()
 	t.Cleanup(func() { cancel(); <-done })
-	return &runnersTest{r: r, d: d, img: img, free: free, failReads: failReads}
+	return &runnersTest{r: r, d: d, img: img, free: free, failReads: failReads, reading: reading}
 }
 
 func waitFor(t *testing.T, what string, ok func() bool) {
@@ -820,7 +834,7 @@ func TestAFullVolume(t *testing.T) {
 			if p.Ready || p.Reason != hostapi.ReasonDataFull || !strings.Contains(p.Detail, dataRoot) {
 				t.Errorf("status %+v, want every profile not ready for the full volume", p)
 			}
-			for _, arm := range []string{"a runner exits", "container is removed", "more free space", "no runner running"} {
+			for _, arm := range []string{"a runner exits", "a runner that ran is removed", "1024 MiB more free space", "no runner running"} {
 				if !strings.Contains(p.Detail, arm) {
 					t.Errorf("status detail %q does not name the lift %q", p.Detail, arm)
 				}
@@ -985,10 +999,12 @@ func TestAFullVolume(t *testing.T) {
 		rt := newRunnersTest(t, nil, func(d *fakeRunnerDaemon) { d.start = noSpaceOnce(1) })
 		rt.failReads.Store(int32(freeReads))
 		var heldAtPass atomic.Bool
+		var detail atomic.Value
 		rt.img.mu.Lock()
 		rt.img.pass = func() {
 			rt.r.sync(t.Context())
 			heldAtPass.Store(rt.held())
+			detail.Store(rt.r.profileStatus()[0].Detail)
 		}
 		rt.img.mu.Unlock()
 		if _, err := rt.r.accept(t.Context(), request("r1", "small")); err != nil {
@@ -998,6 +1014,9 @@ func TestAFullVolume(t *testing.T) {
 		rt.waitDone(t, "r1")
 		if !heldAtPass.Load() {
 			t.Error("the hold was not standing when the tidy pass ran, after a list")
+		}
+		if d, _ := detail.Load().(string); !strings.Contains(d, "once a tidy pass ends with no runner running") || strings.Contains(d, "MiB more free space") {
+			t.Errorf("status detail %q, want the tidy pass's end named and no margin", d)
 		}
 		if rt.held() {
 			t.Error("the hold with no reading stands after the pass ended with no runner running")
@@ -1038,6 +1057,152 @@ func TestAFullVolume(t *testing.T) {
 		}
 		if rt.held() {
 			t.Error("removing a runner's container kept the hold")
+		}
+	})
+	t.Run("a deleted runner's removal lifts the hold once it has exited", func(t *testing.T) {
+		rt := newRunnersTest(t, nil, func(d *fakeRunnerDaemon) { d.start = noSpaceOnce(2) })
+		if _, err := rt.r.accept(t.Context(), request("r1", "small")); err != nil {
+			t.Fatal(err)
+		}
+		rt.waitState(t, "r1", hostapi.StateRunning)
+		rt.d.exit("r1", 0, false)
+		rt.waitState(t, "r1", hostapi.StateExited)
+		if _, err := rt.r.accept(t.Context(), request("r2", "small")); err != nil {
+			t.Fatal(err)
+		}
+		rt.waitState(t, "r2", hostapi.StateFailed)
+		rt.waitDone(t, "r2")
+		if _, err := rt.r.remove(t.Context(), "r1", false); err != nil {
+			t.Fatal(err)
+		}
+		if rt.held() {
+			t.Error("removing the container of a runner that ran and exited kept the hold")
+		}
+	})
+	t.Run("the refused start's DELETE during its removal neither cuts it nor lifts the hold", func(t *testing.T) {
+		entered, gate := make(chan struct{}), make(chan struct{})
+		rt := newRunnersTest(t, nil, func(d *fakeRunnerDaemon) {
+			d.start = noSpaceOnce(1)
+			d.removing = func(ctx context.Context, ref string) error {
+				if ref != "id-r1" {
+					return nil
+				}
+				select {
+				case <-entered:
+					return nil
+				default:
+				}
+				close(entered)
+				<-gate
+				return ctx.Err()
+			}
+		})
+		if _, err := rt.r.accept(t.Context(), request("r1", "small")); err != nil {
+			t.Fatal(err)
+		}
+		<-entered
+		cancelled := make(chan struct{})
+		rt.r.mu.Lock()
+		rr := rt.r.records["r1"]
+		cut := rr.cancel
+		rr.cancel = func() { cut(); close(cancelled) }
+		rt.r.mu.Unlock()
+		deleted := make(chan error, 1)
+		go func() {
+			_, err := rt.r.remove(context.Background(), "r1", false)
+			deleted <- err
+		}()
+		<-cancelled
+		close(gate)
+		if err := <-deleted; err != nil {
+			t.Fatal(err)
+		}
+		rt.d.mu.Lock()
+		_, left := rt.d.ctrs["r1"]
+		rt.d.mu.Unlock()
+		if left || !rt.held() {
+			t.Errorf("container left %v, held %v, want it removed and the hold standing", left, rt.held())
+		}
+		if calls := rt.d.callList(); slices.Contains(calls, "stop id-r1") {
+			t.Errorf("calls %v: the DELETE found the container its cut removal left, want the failed start's removal done before it", calls)
+		}
+	})
+	t.Run("a DELETE removing a refused start's container that never ran keeps the hold", func(t *testing.T) {
+		var fails atomic.Bool
+		fails.Store(true)
+		rt := newRunnersTest(t, nil, func(d *fakeRunnerDaemon) {
+			d.start = noSpaceOnce(1)
+			d.removing = func(context.Context, string) error {
+				if fails.CompareAndSwap(true, false) {
+					return errors.New("removal of container id-r1 is already in progress")
+				}
+				return nil
+			}
+		})
+		if _, err := rt.r.accept(t.Context(), request("r1", "small")); err != nil {
+			t.Fatal(err)
+		}
+		rt.waitState(t, "r1", hostapi.StateFailed)
+		rt.waitDone(t, "r1")
+		if _, err := rt.r.remove(t.Context(), "r1", false); err != nil {
+			t.Fatal(err)
+		}
+		rt.d.mu.Lock()
+		_, left := rt.d.ctrs["r1"]
+		rt.d.mu.Unlock()
+		if left || !rt.held() {
+			t.Errorf("container left %v, held %v, want it removed and the hold standing", left, rt.held())
+		}
+	})
+	t.Run("the detail names the margin the host serves now", func(t *testing.T) {
+		rt := newRunnersTest(t, nil, func(d *fakeRunnerDaemon) { d.start = noSpaceOnce(1) })
+		if _, err := rt.r.accept(t.Context(), request("r1", "small")); err != nil {
+			t.Fatal(err)
+		}
+		rt.waitState(t, "r1", hostapi.StateFailed)
+		rt.waitDone(t, "r1")
+		if d := rt.r.profileStatus()[0].Detail; !strings.Contains(d, "1024 MiB more free space") {
+			t.Errorf("status detail %q, want the 1 GiB margin", d)
+		}
+		sv := testServed(false)
+		sv.Config.Profiles[1].Disk = 4 << 30
+		sv.Profiles = []*config.Profile{&sv.Config.Profiles[0], &sv.Config.Profiles[1]}
+		rt.r.setServed(sv)
+		if d := rt.r.profileStatus()[0].Detail; !strings.Contains(d, "4096 MiB more free space") {
+			t.Errorf("status detail %q after a reload serving a 4 GiB disk, want the 4 GiB margin", d)
+		}
+	})
+	t.Run("a refused start frees its CPUs once its container is removed", func(t *testing.T) {
+		rt := newRunnersTest(t, []int{0, 1}, func(d *fakeRunnerDaemon) { d.start = noSpaceOnce(2) })
+		if _, err := rt.r.accept(t.Context(), request("r1", "small")); err != nil {
+			t.Fatal(err)
+		}
+		rt.waitState(t, "r1", hostapi.StateRunning)
+		rt.failReads.Store(1)
+		var once sync.Once
+		var big hostapi.Runner
+		var bigErr error
+		lifted := false
+		hook := func() {
+			once.Do(func() {
+				rt.d.exit("r1", 0, false)
+				for end := time.Now().Add(5 * time.Second); !lifted && time.Now().Before(end); time.Sleep(5 * time.Millisecond) {
+					lifted = !rt.held()
+				}
+				big, bigErr = rt.r.accept(t.Context(), request("r3", "large"))
+			})
+		}
+		rt.reading.Store(&hook)
+		if _, err := rt.r.accept(t.Context(), request("r2", "small")); err != nil {
+			t.Fatal(err)
+		}
+		rt.waitState(t, "r2", hostapi.StateFailed)
+		rt.waitDone(t, "r2")
+		if !lifted {
+			t.Fatal("r1's exit did not lift the hold during the baseline's read")
+		}
+		if bigErr != nil || big.State == hostapi.StateFailed {
+			t.Errorf("a POST for both CPUs during the baseline's read = %+v, %v, want it taken", big, bigErr)
 		}
 	})
 }

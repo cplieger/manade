@@ -130,10 +130,9 @@ type runnerSet struct {
 
 // spaceHold is starts held after a start the daemon refused for space.
 type spaceHold struct {
-	at     time.Time
-	detail string
+	at time.Time
 	// free is the data volume's free bytes read once the refused start's
-	// container was removed, the baseline a lift is measured from.
+	// container removal was tried, the baseline a lift is measured from.
 	free uint64
 	base baseline
 }
@@ -539,16 +538,29 @@ func (r *runnerSet) holdForSpace() *spaceHold {
 	at := time.Now()
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	h := &spaceHold{at: at, detail: fmt.Sprintf("the data volume %s was full at %s; starts go on once a runner exits, once a runner's container is removed, "+
-		"or once a tidy pass or a list finds %d MiB more free space than after the refused start's container was removed, with no runner running",
-		dataRoot, at.UTC().Format(time.RFC3339), r.spaceMargin()>>20)}
+	h := &spaceHold{at: at}
 	r.space = h
 	return h
 }
 
+// spaceDetail names what lifts hold h now, its baseline and the margin
+// the host serves now deciding the last arm; r.mu is held.
+func (r *runnerSet) spaceDetail(h *spaceHold) string {
+	d := fmt.Sprintf("the data volume %s was full at %s; starts go on once a runner exits, once a container of a runner that ran is removed",
+		dataRoot, h.at.UTC().Format(time.RFC3339))
+	switch h.base {
+	case baselineRead:
+		d += fmt.Sprintf(", or once a tidy pass or a list finds %d MiB more free space than after the refused start's container removal was tried, with no runner running",
+			r.spaceMargin()>>20)
+	case baselineUnread:
+		d += ", or once a tidy pass ends with no runner running, as the free space could not be read"
+	}
+	return d
+}
+
 // measure reads hold h's baseline, trying freeReads times, then asks for
-// a tidy pass. Run once the refused start's container is gone, so its
-// removal never counts as space a pass freed.
+// a tidy pass. Run once the refused start's container removal was tried,
+// so a removal that succeeded never counts as space a pass freed.
 func (r *runnerSet) measure(h *spaceHold) {
 	base := baselineUnread
 	var free uint64
@@ -653,7 +665,7 @@ func (r *runnerSet) held() (reason hostapi.Reason, detail string) {
 		if reason == "" {
 			reason = hostapi.ReasonDataFull
 		}
-		why = append(why, r.space.detail)
+		why = append(why, r.spaceDetail(r.space))
 	}
 	return reason, strings.Join(why, "; ")
 }
@@ -1051,20 +1063,26 @@ func (r *runnerSet) failed(ctx context.Context, rr *record, res docker.Result, c
 	}
 }
 
-// removeFailed removes failed runner rr's container id and drops its view,
-// so the end of rr's work releases what a list of it held; a container
-// left keeps its view.
+// removeFailed removes failed runner rr's container id, drops its view and
+// frees its CPUs, so a lift before rr's work ends funds no start it still
+// holds; a container left keeps its view. The removal outlives ctx's end,
+// so a DELETE cannot cut it before a space hold's baseline is read.
 func (r *runnerSet) removeFailed(ctx context.Context, rr *record, id string) {
 	name := rr.rec.Request.RunnerName
 	r.mu.Lock()
 	rr.rec.RemovedBy = removedByFailed
 	r.mu.Unlock()
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), docker.CallTimeout)
+	defer cancel()
 	if err := r.daemon.RemoveOwned(ctx, id); err != nil {
 		r.log.Warn("Removing a failed runner's container failed; it is listed as an orphan", "runner", name, "error", err)
 		return
 	}
 	r.mu.Lock()
 	r.drop(name)
+	if r.pins != nil {
+		r.pins.release(name)
+	}
 	r.mu.Unlock()
 }
 
@@ -1099,15 +1117,15 @@ func (r *runnerSet) remove(ctx context.Context, name string, diag bool) ([]byte,
 		vol, settle = rr.volume, rr.mayCommit
 		r.mu.Unlock()
 	}
-	tar, removed, err := r.removeContainer(ctx, name, rr, diag, settle)
+	tar, ran, err := r.removeContainer(ctx, name, rr, diag, settle)
 	if err != nil {
 		return nil, err
 	}
 	r.mu.Lock()
 	delete(r.records, name)
 	r.drop(name)
-	if removed && r.space != nil {
-		r.lift("a runner's container was removed")
+	if ran && r.space != nil {
+		r.lift("a runner's container that ran was removed")
 	}
 	r.changed(name)
 	r.mu.Unlock()
@@ -1121,8 +1139,9 @@ func (r *runnerSet) remove(ctx context.Context, name string, diag bool) ([]byte,
 
 // removeContainer stops and removes runner name's labelled container, if
 // any, answering its _diag tar first when diag is set and whether it
-// removed one; settle inspects as after a create that may still commit.
-func (r *runnerSet) removeContainer(ctx context.Context, name string, rr *record, diag, settle bool) (tar []byte, removed bool, err error) {
+// removed one that had started: a container that never ran frees only its
+// init layer. settle inspects as after a create that may still commit.
+func (r *runnerSet) removeContainer(ctx context.Context, name string, rr *record, diag, settle bool) (tar []byte, ran bool, err error) {
 	inspect := r.daemon.InspectContainer
 	if settle {
 		inspect = r.daemon.InspectSettled
@@ -1140,7 +1159,7 @@ func (r *runnerSet) removeContainer(ctx context.Context, name string, rr *record
 	if err := r.daemon.RemoveOwned(ctx, ctr.ID); err != nil {
 		return nil, false, err
 	}
-	return tar, true, nil
+	return tar, !ctr.State.StartedAt.IsZero(), nil
 }
 
 // copyDiag answers the runner's _diag tar, nil when it has none or it

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
 	"log/slog"
 	"net/netip"
 	"slices"
@@ -209,11 +210,7 @@ func TestTheWriteHoldsLoading(t *testing.T) {
 		done <- l.Learn(context.Background(), []Record{{Addr: addr("140.82.121.10"), TTL: time.Minute}})
 	}()
 	<-inWrite
-	try, ok := l.Loading().(interface{ TryLock() bool })
-	if !ok {
-		t.Fatal("Loading is not a mutex")
-	}
-	if try.TryLock() {
+	if tryLock(l.load) {
 		t.Error("a rule load could start while a learned address was being written")
 	}
 	if len(l.Held()) != 1 {
@@ -223,7 +220,49 @@ func TestTheWriteHoldsLoading(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
-	if !try.TryLock() {
+	if !tryLock(l.load) {
 		t.Error("Loading still held after the write")
+	}
+}
+
+// tryLock takes k if it is free, answering whether it did.
+func tryLock(k loadLock) bool {
+	select {
+	case k <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+func TestLearnWaitingOnALoadEndsWithItsContext(t *testing.T) {
+	l, k := newTestLearner(&bytes.Buffer{})
+	l.Loading().Lock()
+	defer l.Loading().Unlock()
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+	err := l.Learn(ctx, []Record{{Addr: addr("140.82.121.10"), TTL: time.Minute}})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("Learn = %v, want its context's end while the load runs", err)
+	}
+	if len(l.Held()) != 0 || len(k.all()) != 0 {
+		t.Errorf("held %v, writes %v, want nothing recorded", l.Held(), k.all())
+	}
+}
+
+func TestLearnBoundsTheWrite(t *testing.T) {
+	var left time.Duration
+	l := NewLearner(func(ctx context.Context, _ []egress.Learned) error {
+		dl, ok := ctx.Deadline()
+		if ok {
+			left = time.Until(dl)
+		}
+		return nil
+	}, learnable(), slog.New(slog.DiscardHandler))
+	if err := l.Learn(t.Context(), []Record{{Addr: addr("140.82.121.10"), TTL: time.Minute}}); err != nil {
+		t.Fatal(err)
+	}
+	if left <= 0 || left > 2*time.Second {
+		t.Errorf("the write's time left = %v, want within the design's 2s", left)
 	}
 }
