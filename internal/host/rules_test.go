@@ -280,3 +280,39 @@ func TestGuardSwap(t *testing.T) {
 		}
 	})
 }
+
+// heldLocker records whether it is held.
+type heldLocker struct{ held bool }
+
+func (l *heldLocker) Lock()   { l.held = true }
+func (l *heldLocker) Unlock() { l.held = false }
+
+func TestGuardLoadsUnderLoading(t *testing.T) {
+	k := newFakeIPT(false)
+	l := &Rules{Run: k.run, Kernel: iptKernel(), Root: tree(t, map[string]string{"/etc/resolv.conf": resolvRendered, disableAll: "1\n", disableDefault: "1\n"})}
+	lock := &heldLocker{}
+	var held []string
+	want := func(name string) Want {
+		return Want{Loading: lock, Resolv: []byte(resolvRendered), IPv6Off: true, Generate: func() (*egress.Ruleset, error) {
+			if lock.held {
+				held = append(held, name)
+			}
+			return egress.Generate(&egress.Input{Host: section()}, egress.IPTables)
+		}}
+	}
+	g := NewGuard(l, want("restore"), slog.New(slog.DiscardHandler), Hooks{})
+	if err := g.Check(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.Refresh(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if kept, fatal := g.Swap(t.Context(), want("swap")); kept != nil || fatal != nil {
+		t.Fatal(kept, fatal)
+	}
+	// The check's own generation only compares, so it needs no lock; each
+	// of the three loads must generate under it.
+	if !slices.Equal(held, []string{"restore", "restore", "swap"}) || lock.held {
+		t.Errorf("generations under Loading = %q, want one per load; held after: %v", held, lock.held)
+	}
+}

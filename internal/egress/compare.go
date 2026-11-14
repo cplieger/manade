@@ -106,7 +106,7 @@ func (rs *Ruleset) nftExpected() *nftTableState {
 		s := &rs.sets[i]
 		d := nftSetDef{Type: s.nftType()}
 		if s.timeout {
-			d.Flags, d.Size = []string{"timeout"}, learnedMax
+			d.Flags, d.Size = []string{"timeout"}, LearnedMax
 		}
 		t.sets[s.name] = d
 	}

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/cplieger/manade/internal/config"
 	"github.com/cplieger/manade/internal/host/platform"
@@ -50,6 +52,7 @@ type fakeIPT struct {
 	failOnce   map[string]error
 	ran        []string
 	nftFiles   []string
+	ipsetFiles []string
 	mu         sync.Mutex
 	nft        bool
 	noSetMatch bool
@@ -218,6 +221,7 @@ func (f *fakeIPT) ipset(stdin []byte, args []string) ([]byte, error) {
 	case "list -n":
 		return nil, nil
 	case "restore -exist":
+		f.ipsetFiles = append(f.ipsetFiles, string(stdin))
 		for line := range strings.Lines(string(stdin)) {
 			fs := strings.Fields(line)
 			if len(fs) > 2 && fs[0] == "create" {
@@ -247,6 +251,13 @@ func (f *fakeIPT) edit(fn func(tables map[bool]map[string]*xtable)) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	fn(f.tables)
+}
+
+// payloads answers the nft and ipset payloads loaded, in order.
+func (f *fakeIPT) payloads() (nft, ipset []string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.nftFiles), slices.Clone(f.ipsetFiles)
 }
 
 func (f *fakeIPT) commands() []string {
@@ -298,3 +309,46 @@ func section(allow ...string) *config.Host {
 	}
 	return h
 }
+
+// idleConn is a DNS listener that never receives: its reads block on a
+// channel, which a synctest bubble counts as durably blocked, until Close
+// or fail ends them.
+type idleConn struct {
+	err    error
+	closed chan struct{}
+	once   sync.Once
+}
+
+func newIdleConn() *idleConn { return &idleConn{closed: make(chan struct{})} }
+
+func (c *idleConn) end(err error) {
+	c.once.Do(func() {
+		c.err = err
+		close(c.closed)
+	})
+}
+
+func (c *idleConn) wait() error {
+	<-c.closed
+	return c.err
+}
+
+// isClosed reports whether something closed or failed the listener.
+func (c *idleConn) isClosed() bool {
+	select {
+	case <-c.closed:
+		return true
+	default:
+		return false
+	}
+}
+
+func (c *idleConn) ReadFrom([]byte) (int, net.Addr, error)  { return 0, nil, c.wait() }
+func (*idleConn) WriteTo(b []byte, _ net.Addr) (int, error) { return len(b), nil }
+func (c *idleConn) Accept() (net.Conn, error)               { return nil, c.wait() }
+func (c *idleConn) Close() error                            { c.end(net.ErrClosed); return nil }
+func (c *idleConn) LocalAddr() net.Addr                     { return c.Addr() }
+func (*idleConn) Addr() net.Addr                            { return &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 53} }
+func (*idleConn) SetDeadline(time.Time) error               { return nil }
+func (*idleConn) SetReadDeadline(time.Time) error           { return nil }
+func (*idleConn) SetWriteDeadline(time.Time) error          { return nil }

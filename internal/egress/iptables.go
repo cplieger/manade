@@ -112,7 +112,7 @@ func (s *set) ipset() string {
 	if s.timeout {
 		fmt.Fprintf(&b, " timeout %d", ipsetTimeout)
 	}
-	fmt.Fprintf(&b, " maxelem %d\nflush %s\n", learnedMax, s.name)
+	fmt.Fprintf(&b, " maxelem %d\nflush %s\n", LearnedMax, s.name)
 	for _, l := range s.elems {
 		fmt.Fprintf(&b, "add %s %s timeout %d\n", s.name, l.Addr, seconds(l.Left))
 	}
@@ -232,7 +232,7 @@ type ipsetDef struct {
 }
 
 func (s *set) ipsetDef() ipsetDef {
-	d := ipsetDef{typ: "hash:ip", family: "inet", maxelem: strconv.Itoa(learnedMax)}
+	d := ipsetDef{typ: "hash:ip", family: "inet", maxelem: strconv.Itoa(LearnedMax)}
 	if s.family == ipv6 {
 		d.family = "inet6"
 	}

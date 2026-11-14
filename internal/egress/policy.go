@@ -32,9 +32,9 @@ const (
 	setGitHub6 = "manade-gh6"
 )
 
-// learnedMax bounds each family's learned set, as ipset's default maxelem
-// does.
-const learnedMax = 65536
+// LearnedMax bounds each family's learned set, in the kernel and in the
+// host's own record, as ipset's default maxelem does.
+const LearnedMax = 65536
 
 // globalUnicast6 is the only IPv6 jobs reach under internet.
 var globalUnicast6 = netip.MustParsePrefix("2000::/3")
@@ -262,25 +262,34 @@ func (rs *Ruleset) build(in *Input) {
 }
 
 // learned answers the learned addresses of family f that still have time
-// left, at most learnedMax of them. It leaves out any address the internet
-// rules drop, private and IPv6-blocked space: the set's accept precedes
-// those drops, so one such answer for a GitHub name would open the LAN.
+// left and pass Learnable, at most LearnedMax of them.
 func (in *Input) learned(f family) []Learned {
-	block := in.block6()
-	blocked := func(a netip.Addr) bool {
-		if a.Is4() {
-			return !a.IsGlobalUnicast() || slices.ContainsFunc(config.PrivateRanges, func(p netip.Prefix) bool { return p.Contains(a) })
-		}
-		return !globalUnicast6.Contains(a) || slices.ContainsFunc(block, func(p netip.Prefix) bool { return p.Contains(a) })
-	}
+	learnable := in.Learnable()
 	var out []Learned
 	for _, l := range in.State.GitHub {
 		a := l.Addr.Unmap()
-		if l.Left > 0 && a.Is4() == (f == ipv4) && !blocked(a) && len(out) < learnedMax {
+		if l.Left > 0 && a.Is4() == (f == ipv4) && learnable(a) && len(out) < LearnedMax {
 			out = append(out, Learned{Addr: a, Left: l.Left})
 		}
 	}
 	return out
+}
+
+// Learnable answers the test an address learned for a GitHub name must pass
+// to enter the host's set, as of in. It fails private space, anything
+// outside global unicast, the IPv6-blocked ranges and every IPv6 address
+// on a host without ipv6: the set's accept precedes those drops, so one such
+// answer would open the LAN.
+func (in *Input) Learnable() func(netip.Addr) bool {
+	block := in.block6()
+	v6 := in.Host.Egress.IPv6
+	return func(a netip.Addr) bool {
+		a = a.Unmap()
+		if a.Is4() {
+			return a.IsGlobalUnicast() && !slices.ContainsFunc(config.PrivateRanges, func(p netip.Prefix) bool { return p.Contains(a) })
+		}
+		return v6 && globalUnicast6.Contains(a) && !slices.ContainsFunc(block, func(p netip.Prefix) bool { return p.Contains(a) })
+	}
 }
 
 // block6 answers the IPv6 prefixes jobs never reach on this host.

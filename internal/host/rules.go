@@ -53,6 +53,22 @@ func (l *Rules) Check(ctx context.Context, rs *egress.Ruleset) error {
 	return rs.Compare(rb)
 }
 
+// AddLearned adds ls to the loaded rule set's learned sets, renewing the
+// timeout of any already there; it is a resolver.SetWriter.
+func (l *Rules) AddLearned(ctx context.Context, ls []egress.Learned) error {
+	payload := []byte(egress.Refresh(l.Kernel.Backend, ls))
+	var err error
+	if l.Kernel.Backend == egress.NFTables {
+		_, err = l.Run(ctx, payload, "nft", "-f", "-")
+	} else {
+		_, err = l.Run(ctx, payload, "ipset", "restore", "-exist")
+	}
+	if err != nil {
+		return fmt.Errorf("adding learned GitHub addresses: %w", err)
+	}
+	return nil
+}
+
 func (l *Rules) loadIPT(ctx context.Context, rs *egress.Ruleset) error {
 	if err := l.loadSets(ctx, rs); err != nil {
 		return err
@@ -185,6 +201,8 @@ type Hooks struct {
 
 // Want is what the 5-second check holds in place.
 type Want struct {
+	// Loading, when set, is held from each load's generation to its load.
+	Loading sync.Locker
 	// Generate builds the rule set from what the host holds at the time, so
 	// a restore carries the learned addresses.
 	Generate func() (*egress.Ruleset, error)
@@ -244,7 +262,7 @@ func (g *Guard) Check(ctx context.Context) error {
 		return err
 	}
 	if cerr := g.rules.Check(ctx, rs); cerr != nil {
-		if err := g.rules.Load(ctx, rs); err != nil {
+		if err := g.load(ctx, g.want); err != nil {
 			return fmt.Errorf("restoring the egress rules: %w", err)
 		}
 		g.restored(RestoredRules, cerr)
@@ -309,20 +327,37 @@ func (g *Guard) restored(what string, why error) {
 func (g *Guard) Swap(ctx context.Context, want Want) (kept, fatal error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	rs, err := want.Generate()
-	if err == nil {
-		err = g.rules.Load(ctx, rs)
-	}
-	if err != nil {
-		old, gerr := g.want.Generate()
-		if gerr == nil {
-			gerr = g.rules.Load(ctx, old)
-		}
-		if gerr != nil {
+	if err := g.load(ctx, want); err != nil {
+		if gerr := g.load(ctx, g.want); gerr != nil {
 			return err, fmt.Errorf("restoring the old egress rules after a failed swap: %w", gerr)
 		}
 		return err, nil
 	}
 	g.want = want
 	return nil, netsetup.WriteResolvConf(g.rules.Root, want.Resolv)
+}
+
+// Refresh loads the rule set generated from what the host holds now, for a
+// change the host made itself, such as a learned /64. A failure is one a
+// restore would answer, and the caller stops the host.
+func (g *Guard) Refresh(ctx context.Context) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if err := g.load(ctx, g.want); err != nil {
+		return fmt.Errorf("loading the egress rules again: %w", err)
+	}
+	return nil
+}
+
+// load generates want's rule set and loads it, holding want.Loading.
+func (g *Guard) load(ctx context.Context, want Want) error {
+	if want.Loading != nil {
+		want.Loading.Lock()
+		defer want.Loading.Unlock()
+	}
+	rs, err := want.Generate()
+	if err != nil {
+		return err
+	}
+	return g.rules.Load(ctx, rs)
 }

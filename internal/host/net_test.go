@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net"
 	"net/netip"
 	"slices"
 	"strings"
@@ -69,6 +70,10 @@ func (n *fakeNetworks) EnsureNetwork(_ context.Context, spec *docker.NetworkSpec
 type upFixture struct {
 	lookupErr error
 	startErr  error
+	fetchErr  error
+	echo      Echo
+	dnsUDP    *idleConn
+	dnsTCP    *idleConn
 	kernel    *fakeIPT
 	proc      *fakeProcess
 	nets      *fakeNetworks
@@ -90,8 +95,10 @@ func newUpFixture(t *testing.T) *upFixture {
 			"/proc/self/cgroup":    "4:memory:/docker/abc\n",
 			"/proc/self/mountinfo": "",
 		}),
-		proc: newProcess(),
-		nets: &fakeNetworks{},
+		proc:   newProcess(),
+		nets:   &fakeNetworks{},
+		dnsUDP: newIdleConn(),
+		dnsTCP: newIdleConn(),
 	}
 }
 
@@ -117,6 +124,18 @@ func (f *upFixture) platform() *Platform {
 			return f.proc, f.startErr
 		},
 		Dial: func(context.Context) (Networks, error) { return f.nets, nil },
+		ListenDNS: func(context.Context) (net.PacketConn, net.Listener, error) {
+			f.events = append(f.events, "resolver")
+			return f.dnsUDP, f.dnsTCP, nil
+		},
+		FetchDomains: func(context.Context) ([]byte, error) {
+			f.events = append(f.events, "domains")
+			if f.fetchErr != nil {
+				return nil, f.fetchErr
+			}
+			return []byte(metaBody), nil
+		},
+		Echo: f.echo,
 		Log:  slog.New(slog.DiscardHandler),
 	}
 }
