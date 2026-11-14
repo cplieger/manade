@@ -102,9 +102,11 @@ func TestMissingImagePulledAgain(t *testing.T) {
 		hs.d.serve(baseRef, shipped("sha256:a2", "base", digest(2)))
 		hs.d.mu.Lock()
 		hs.d.pullErr[baseRef] = errors.New("registry down")
+		hs.d.holdPull = make(chan struct{})
 		hs.d.mu.Unlock()
 		hs.d.forget("sha256:a1")
 		hs.m.Missing("small", "sha256:a1")
+		synctest.Wait()
 		for _, name := range []string{"small", "medium"} {
 			s := hs.status(t, name)
 			if s.Ready || s.Reason != hostapi.ReasonImageMissing || !strings.Contains(s.Failure, "sha256:a1") || s.FailedAt.IsZero() {
@@ -114,6 +116,7 @@ func TestMissingImagePulledAgain(t *testing.T) {
 				t.Errorf("ForStart(%s) served a missing image", name)
 			}
 		}
+		close(hs.d.holdPull)
 		synctest.Wait()
 		if n := len(hs.d.pullsOf(baseRef)); n != 2 {
 			t.Fatalf("pulls = %d, want the missing image pulled again at once", n)

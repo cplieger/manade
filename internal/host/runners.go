@@ -43,7 +43,7 @@ var _ runnerDaemon = (*docker.Client)(nil)
 type runnerImages interface {
 	ForStart(profile string) (string, bool)
 	Missing(profile, id string)
-	Tidy(done func())
+	Tidy()
 	Status() []hostapi.ProfileStatus
 }
 
@@ -85,30 +85,47 @@ var errSpace = errors.New("the host's data volume is full")
 // runnerSet is the host's record of the runners it accepted and their
 // containers. Its methods are safe for concurrent use.
 type runnerSet struct {
-	// spaceHeldAt is when spaceHeld began.
-	spaceHeldAt time.Time
-	daemon      runnerDaemon
-	images      runnerImages
+	daemon runnerDaemon
+	images runnerImages
 	// base is the host's run, which each runner's work runs under.
-	base    context.Context
-	ctrs    map[string]*hostapi.Container
-	pins    *pins
-	records map[string]*record
-	served  *served
-	last    map[string]hostapi.Runner
-	subs    map[chan hostapi.Runner]struct{}
-	// wrote is the gen at which put or drop last wrote each name, so a
-	// refresh keeps what changed after its list began.
-	wrote map[string]uint64
-	log   *slog.Logger
-	// spaceHeld says why starts are held after a refusal for space; ""
-	// when they are not.
-	spaceHeld string
-	work      sync.WaitGroup
-	gen       uint64
-	mu        sync.Mutex
+	base context.Context
+	// dataFree answers the data volume's free bytes.
+	dataFree func() (uint64, error)
+	ctrs     map[string]*hostapi.Container
+	pins     *pins
+	records  map[string]*record
+	served   *served
+	last     map[string]hostapi.Runner
+	subs     map[chan hostapi.Runner]struct{}
+	// wrote is the gen at which put or drop last wrote each name, and
+	// reading counts the reads made with mu dropped by the gen each began
+	// at: a read writes a name only when no write landed after it began,
+	// so wrote keeps a name any read in flight may still write.
+	wrote   map[string]uint64
+	reading map[uint64]int
+	// space holds starts after a refusal for space, nil when they are not.
+	space *spaceHold
+	// draining are the runners started while the host was open, which hold
+	// starts once a reload has closed it, until each has ended.
+	draining map[string]struct{}
+	// closedAt is when the reload that began the drain closed the host.
+	closedAt time.Time
+	log      *slog.Logger
+	work     sync.WaitGroup
+	gen      uint64
+	mu       sync.Mutex
 	// refreshMu serialises refreshes, so a swap's view of wrote is its own.
 	refreshMu sync.Mutex
+}
+
+// spaceHold is starts held after a start the daemon refused for space.
+type spaceHold struct {
+	at     time.Time
+	detail string
+	// free is the data volume's free bytes when the hold began; known is
+	// false until a read of them has succeeded, whose figure then stands.
+	free  uint64
+	known bool
 }
 
 // record is one accepted runner: its request, how far the host has taken
@@ -130,6 +147,8 @@ type runnersConfig struct {
 	Images runnerImages
 	Served *served
 	Log    *slog.Logger
+	// DataFree answers the data volume's free bytes.
+	DataFree func() (uint64, error)
 	// CPUs is the host's effective cpuset on a pinning host; nil on a host
 	// with CFS quota.
 	CPUs []int
@@ -140,10 +159,10 @@ type runnersConfig struct {
 // serves it.
 func newRunners(ctx context.Context, cfg *runnersConfig) *runnerSet {
 	r := &runnerSet{
-		daemon: cfg.Daemon, images: cfg.Images, served: cfg.Served, log: cfg.Log,
+		daemon: cfg.Daemon, images: cfg.Images, served: cfg.Served, log: cfg.Log, dataFree: cfg.DataFree,
 		records: map[string]*record{}, ctrs: map[string]*hostapi.Container{},
 		last: map[string]hostapi.Runner{}, subs: map[chan hostapi.Runner]struct{}{},
-		wrote: map[string]uint64{}, base: ctx,
+		wrote: map[string]uint64{}, reading: map[uint64]int{}, draining: map[string]struct{}{}, base: ctx,
 	}
 	if cfg.CPUs != nil {
 		r.pins = newPins(cfg.CPUs)
@@ -152,11 +171,57 @@ func newRunners(ctx context.Context, cfg *runnersConfig) *runnerSet {
 }
 
 // setServed swaps what the host serves; runners already accepted keep the
-// profile they were accepted with.
+// profile they were accepted with. A swap that closes an open host drains
+// it: every runner then busy holds its starts until each has ended, since
+// it may run with the open host's grants. A swap that opens it ends the
+// drain.
 func (r *runnerSet) setServed(s *served) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	was := r.served.open()
 	r.served = s
+	switch {
+	case s.open():
+		clear(r.draining)
+	case was:
+		r.closedAt = time.Now()
+		for _, name := range r.names() {
+			if r.busy(name) {
+				r.draining[name] = struct{}{}
+			}
+		}
+		if len(r.draining) > 0 {
+			r.log.Warn("The host is no longer open; it takes no start until the runners started while it was open have ended", "runners", r.drainNames())
+		}
+	}
+}
+
+func (s *served) open() bool {
+	h, ok := s.Config.Host(s.Host)
+	return ok && h.Egress.Open
+}
+
+// names answers every runner the host records or has a container of;
+// r.mu is held.
+func (r *runnerSet) names() []string {
+	names := slices.Collect(maps.Keys(r.ctrs))
+	for n := range r.records {
+		if r.ctrs[n] == nil {
+			names = append(names, n)
+		}
+	}
+	slices.Sort(names)
+	return names
+}
+
+func (r *runnerSet) drainNames() string {
+	return strings.Join(slices.Sorted(maps.Keys(r.draining)), ", ")
+}
+
+// drainDetail says what the drain waits for; r.mu is held.
+func (r *runnerSet) drainDetail() string {
+	return fmt.Sprintf("the host stopped being open at %s; starts go on once the runners started while it was open have exited or been removed: %s",
+		r.closedAt.UTC().Format(time.RFC3339), r.drainNames())
 }
 
 // load reads the daemon's labelled runner containers, so a supervisor
@@ -220,23 +285,24 @@ func (r *runnerSet) poll(ctx context.Context) {
 // exited reads the container whose die event arrived, then publishes the
 // change and releases what its runner held.
 func (r *runnerSet) exited(ctx context.Context, id string) {
+	begun := r.beginRead()
 	ctr, found, err := r.daemon.InspectContainer(ctx, id)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	defer r.endRead(begun)
 	if err != nil {
 		r.log.Warn("Reading an exited runner's container failed; the next list reads it", "container", id, "error", err)
 		return
 	}
 	c, ok := fromDocker(&ctr)
-	if !found || !ok {
+	if !found || !ok || !r.putNewer(c, begun) {
 		return
 	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.put(c)
 	r.liftOnExit()
 	r.changed(c.Name)
 }
 
-// put and drop write runner name's container view, newer than any refresh
+// put and drop write runner name's container view, newer than any read
 // begun before; r.mu is held.
 func (r *runnerSet) put(c *hostapi.Container) {
 	r.gen++
@@ -249,12 +315,75 @@ func (r *runnerSet) drop(name string) {
 	delete(r.ctrs, name)
 }
 
-// sync lists the containers again and publishes each change.
+// putNewer puts c, read by a read begun at gen begun, unless a write for
+// its name landed since; r.mu is held. A later stage of the same container
+// wins either way, since a runner's container never runs again once it
+// has exited (no restart policy).
+func (r *runnerSet) putNewer(c *hostapi.Container, begun uint64) bool {
+	cur := r.ctrs[c.Name]
+	if later(cur, c) || (!later(c, cur) && r.wrote[c.Name] > begun) {
+		return false
+	}
+	r.put(c)
+	return true
+}
+
+// later reports a and b views of the same container, a further on in its
+// life: created, then running, then ended.
+func later(a, b *hostapi.Container) bool {
+	return a != nil && b != nil && a.ID == b.ID && stage(a.State) > stage(b.State)
+}
+
+func stage(state string) int {
+	switch {
+	case state == docker.StateCreated:
+		return 0
+	case holdsCPUs(state):
+		return 1
+	}
+	return 2
+}
+
+// beginRead marks a read of the daemon made with r.mu dropped, answering
+// the gen it began at for its endRead.
+func (r *runnerSet) beginRead() uint64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.reading[r.gen]++
+	return r.gen
+}
+
+// endRead ends the read begun at begun and forgets each name in neither the
+// view nor the record whose last write no read in flight began before;
+// r.mu is held.
+func (r *runnerSet) endRead(begun uint64) {
+	r.reading[begun]--
+	if r.reading[begun] == 0 {
+		delete(r.reading, begun)
+	}
+	oldest := r.gen
+	for g := range r.reading {
+		oldest = min(oldest, g)
+	}
+	for name, at := range r.wrote {
+		if at <= oldest && r.ctrs[name] == nil && r.records[name] == nil {
+			delete(r.wrote, name)
+		}
+	}
+}
+
+// sync lists the containers again, publishes each change and checks
+// whether the space hold's wait is over.
 func (r *runnerSet) sync(ctx context.Context) {
 	if err := r.refresh(ctx); err != nil {
 		r.log.Warn("Listing the host's runner containers failed", "error", err)
 		return
 	}
+	r.publishAll()
+	r.checkFreed()
+}
+
+func (r *runnerSet) publishAll() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.liftOnExit()
@@ -280,11 +409,26 @@ func (r *runnerSet) refresh(ctx context.Context) error {
 	r.refreshMu.Lock()
 	defer r.refreshMu.Unlock()
 	r.mu.Lock()
-	old, begun := maps.Clone(r.ctrs), r.gen
+	old := maps.Clone(r.ctrs)
 	r.mu.Unlock()
-	list, err := r.daemon.ListContainers(ctx)
+	begun := r.beginRead()
+	now, err := r.read(ctx, old)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	defer r.endRead(begun)
 	if err != nil {
 		return err
+	}
+	r.swap(now, begun)
+	return nil
+}
+
+// read lists the labelled runner containers, inspecting each that is not
+// in old with the same ID and state.
+func (r *runnerSet) read(ctx context.Context, old map[string]*hostapi.Container) (map[string]*hostapi.Container, error) {
+	list, err := r.daemon.ListContainers(ctx)
+	if err != nil {
+		return nil, err
 	}
 	now := map[string]*hostapi.Container{}
 	for i := range list {
@@ -299,23 +443,21 @@ func (r *runnerSet) refresh(ctx context.Context) error {
 		}
 		ctr, found, err := r.daemon.InspectContainer(ctx, s.ID)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if c, ok := fromDocker(&ctr); found && ok {
 			now[name] = c
 		}
 	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.swap(now, begun)
-	return nil
+	return now, nil
 }
 
 // swap makes now the container view, keeping the current view of each name
-// written after gen begun; r.mu is held.
+// written after gen begun unless now holds a later stage of it; r.mu is
+// held.
 func (r *runnerSet) swap(now map[string]*hostapi.Container, begun uint64) {
 	for name, at := range r.wrote {
-		if at <= begun {
+		if at <= begun || later(now[name], r.ctrs[name]) {
 			continue
 		}
 		if c := r.ctrs[name]; c != nil {
@@ -324,7 +466,6 @@ func (r *runnerSet) swap(now map[string]*hostapi.Container, begun uint64) {
 			delete(now, name)
 		}
 	}
-	clear(r.wrote)
 	r.ctrs = now
 }
 
@@ -352,11 +493,11 @@ func fromDocker(ctr *docker.Container) (*hostapi.Container, bool) {
 // liftOnExit lifts the space hold once a runner's container has exited
 // since the hold began; r.mu is held.
 func (r *runnerSet) liftOnExit() {
-	if r.spaceHeld == "" {
+	if r.space == nil {
 		return
 	}
 	for _, c := range r.ctrs {
-		if !holdsCPUs(c.State) && c.FinishedAt.After(r.spaceHeldAt) {
+		if !holdsCPUs(c.State) && c.FinishedAt.After(r.space.at) {
 			r.lift("a runner exited")
 			return
 		}
@@ -366,55 +507,112 @@ func (r *runnerSet) liftOnExit() {
 // lift ends the space hold; r.mu is held.
 func (r *runnerSet) lift(why string) {
 	r.log.Info("The starts held for space go on", "why", why)
-	r.spaceHeld, r.spaceHeldAt = "", time.Time{}
+	r.space = nil
 }
 
-// holdForSpace holds starts after a refusal for space and asks for a tidy
-// pass at once, whose end may lift the hold (tidied).
+// holdForSpace holds starts after a refusal for space, with the data
+// volume's free bytes then, and asks for a tidy pass at once.
 func (r *runnerSet) holdForSpace() {
 	at := time.Now()
+	h := &spaceHold{at: at, detail: fmt.Sprintf("the data volume %s was full at %s; starts go on once a runner exits, once a runner's container is removed, "+
+		"or once a tidy pass or a list finds more free space than then with no runner running", dataRoot, at.UTC().Format(time.RFC3339))}
+	if free, err := r.dataFree(); err != nil {
+		r.log.Warn("Reading the data volume's free space failed; the next read that succeeds stands for the hold's start", "error", err)
+	} else {
+		h.free, h.known = free, true
+	}
 	r.mu.Lock()
-	r.spaceHeld = fmt.Sprintf("the data volume %s was full at %s; starts go on once a runner exits, or once the tidy pass ends with no runner running",
-		dataRoot, at.UTC().Format(time.RFC3339))
-	r.spaceHeldAt = at
+	r.space = h
 	r.mu.Unlock()
-	r.images.Tidy(func() { r.tidied(at) })
+	r.images.Tidy()
 }
 
-// tidied lifts the hold begun at at once its tidy pass has ended with no
-// runner container running, since no exit is then left to lift it.
-func (r *runnerSet) tidied(at time.Time) {
+// tidied lists the containers after a tidy pass, then checks whether the
+// pass freed what the space hold waits for.
+func (r *runnerSet) tidied() {
+	r.mu.Lock()
+	held := r.space != nil
+	r.mu.Unlock()
+	if !held {
+		return
+	}
 	if err := r.refresh(r.base); err != nil {
 		r.log.Warn("Listing the host's runner containers after the tidy pass failed; the last list decides", "error", err)
 	}
+	r.checkFreed()
+}
+
+// checkFreed lifts the space hold once no runner container runs and the
+// data volume has more free bytes than when the hold began, since no exit
+// is then left to lift it: a tidy pass freed space or the volume grew.
+func (r *runnerSet) checkFreed() {
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.spaceHeld == "" || !r.spaceHeldAt.Equal(at) {
+	h := r.space
+	r.mu.Unlock()
+	if h == nil {
 		return
 	}
+	free, err := r.dataFree()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.space != h || r.anyRunning() {
+		return
+	}
+	switch {
+	case err != nil:
+		r.log.Warn("Reading the data volume's free space failed; the space hold stands", "error", err)
+	case !h.known:
+		h.free, h.known = free, true
+	case free > h.free:
+		r.lift("the data volume has more free space, with no runner running")
+	}
+}
+
+// anyRunning reports a runner container still running; r.mu is held.
+func (r *runnerSet) anyRunning() bool {
 	for _, c := range r.ctrs {
 		switch c.State {
 		case docker.StateRunning, docker.StateRestarting, docker.StatePaused:
-			return
+			return true
 		}
 	}
-	r.lift("the tidy pass ended with no runner running")
+	return false
+}
+
+// held answers why the host takes no start now, "" for none: a drain after
+// the host was closed, starts held for space, or both; r.mu is held.
+func (r *runnerSet) held() (reason hostapi.Reason, detail string) {
+	var why []string
+	if len(r.draining) > 0 {
+		reason = hostapi.ReasonOpenDraining
+		why = append(why, r.drainDetail())
+	}
+	if r.space != nil {
+		if reason == "" {
+			reason = hostapi.ReasonDataFull
+		}
+		why = append(why, r.space.detail)
+	}
+	return reason, strings.Join(why, "; ")
 }
 
 // profileStatus is each profile's readiness: the image manager's, with
-// every ready profile not ready while starts are held for space.
+// every profile not ready while the host takes no start, a profile already
+// not ready keeping its own reason after the hold's.
 func (r *runnerSet) profileStatus() []hostapi.ProfileStatus {
 	st := r.images.Status()
 	r.mu.Lock()
-	held := r.spaceHeld
+	reason, detail := r.held()
 	r.mu.Unlock()
-	if held == "" {
+	if reason == "" {
 		return st
 	}
 	for i := range st {
-		if st[i].Ready {
-			st[i].Ready, st[i].Reason, st[i].Detail = false, hostapi.ReasonDataFull, held
+		d := detail
+		if !st[i].Ready {
+			d += "; and " + string(st[i].Reason) + ": " + st[i].Detail
 		}
+		st[i].Ready, st[i].Reason, st[i].Detail = false, reason, d
 	}
 	return st
 }
@@ -438,10 +636,16 @@ func (r *runnerSet) listed(name string) (hostapi.Runner, bool) {
 }
 
 // changed publishes runner name when its listed state moved since the last
-// publish, and releases its CPUs once it no longer holds them; r.mu is held.
+// publish, and releases its CPUs and its part in a drain once it is no
+// longer busy; r.mu is held.
 func (r *runnerSet) changed(name string) {
 	run, ok := r.listed(name)
-	r.release(name)
+	if !r.busy(name) {
+		if r.pins != nil {
+			r.pins.release(name)
+		}
+		r.drained(name)
+	}
 	if !ok {
 		delete(r.last, name)
 		return
@@ -465,23 +669,30 @@ func sameState(a, b *hostapi.Runner) bool {
 		(a.ExitCode == nil) == (b.ExitCode == nil) && (a.ExitCode == nil || *a.ExitCode == *b.ExitCode)
 }
 
-// release frees runner name's CPUs once neither pending work nor a live
-// container holds them; r.mu is held.
-func (r *runnerSet) release(name string) {
-	if r.pins == nil {
-		return
-	}
+// busy reports runner name's work in flight or a container of it that
+// still holds its CPUs; r.mu is held.
+func (r *runnerSet) busy(name string) bool {
 	if rr := r.records[name]; rr != nil && rr.done != nil {
 		select {
 		case <-rr.done:
 		default:
-			return
+			return true
 		}
 	}
-	if c := r.ctrs[name]; c != nil && holdsCPUs(c.State) {
+	c := r.ctrs[name]
+	return c != nil && holdsCPUs(c.State)
+}
+
+// drained takes runner name, no longer busy, out of the drain, ending it
+// with the last; r.mu is held.
+func (r *runnerSet) drained(name string) {
+	if _, ok := r.draining[name]; !ok {
 		return
 	}
-	r.pins.release(name)
+	delete(r.draining, name)
+	if len(r.draining) == 0 {
+		r.log.Info("The runners started while the host was open have ended; it takes starts again")
+	}
 }
 
 // subscribe sends each runner whose listed state changes until ctx ends,
@@ -512,16 +723,7 @@ func (r *runnerSet) list(ctx context.Context) ([]hostapi.Runner, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.liftOnExit()
-	names := make([]string, 0, len(r.ctrs)+len(r.records))
-	for n := range r.ctrs {
-		names = append(names, n)
-	}
-	for n := range r.records {
-		if r.ctrs[n] == nil {
-			names = append(names, n)
-		}
-	}
-	slices.Sort(names)
+	names := r.names()
 	out := make([]hostapi.Runner, 0, len(names))
 	for _, n := range names {
 		r.changed(n)
@@ -554,8 +756,8 @@ func (r *runnerSet) accept(_ context.Context, req *hostapi.RunnerRequest) (hosta
 	if err != nil {
 		return hostapi.Runner{}, err
 	}
-	if r.spaceHeld != "" {
-		return hostapi.Runner{}, &hostapi.NotReadyError{Profile: p.Name, Reason: hostapi.ReasonDataFull, Detail: r.spaceHeld}
+	if reason, detail := r.held(); reason != "" {
+		return hostapi.Runner{}, &hostapi.NotReadyError{Profile: p.Name, Reason: reason, Detail: detail}
 	}
 	imageID, ready := r.images.ForStart(p.Name)
 	if !ready {
@@ -583,16 +785,27 @@ func (r *runnerSet) accept(_ context.Context, req *hostapi.RunnerRequest) (hosta
 		spec := r.served.Spec
 		jit := req.JITConfig
 		r.work.Go(func() {
-			defer close(rr.done)
-			defer cancel()
 			r.build(ctx, rr, spec, &jobspec.Runner{
 				Scope: req.Scope, Name: req.RunnerName, ImageID: imageID, JITConfig: jit, CPUs: cpus, ID: req.RunnerID,
 			})
+			cancel()
+			r.finished(rr)
 		})
 	}
 	r.changed(req.RunnerName)
 	run, _ := r.listed(req.RunnerName)
 	return run, nil
+}
+
+// finished ends rr's work: with done closed, a runner that failed frees
+// its CPUs now rather than at the next list.
+func (r *runnerSet) finished(rr *record) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	close(rr.done)
+	if name := rr.rec.Request.RunnerName; r.records[name] == rr {
+		r.changed(name)
+	}
 }
 
 // admit answers the profile a request names, refused when the config does
@@ -712,13 +925,15 @@ func (r *runnerSet) create(ctx context.Context, rr *record, req *docker.CreateRe
 // started records rr started and reads its container, which may have
 // exited already.
 func (r *runnerSet) started(ctx context.Context, rr *record, id string) {
+	begun := r.beginRead()
 	ctr, found, err := r.daemon.InspectContainer(ctx, id)
 	r.mu.Lock()
 	if err == nil && found {
 		if c, ok := fromDocker(&ctr); ok {
-			r.put(c)
+			r.putNewer(c, begun)
 		}
 	}
+	r.endRead(begun)
 	r.mu.Unlock()
 	r.setState(rr, hostapi.RecordStarted, "")
 }
@@ -781,7 +996,7 @@ func (r *runnerSet) remove(ctx context.Context, name string, diag bool) ([]byte,
 	r.mu.Lock()
 	delete(r.records, name)
 	r.drop(name)
-	if removed && r.spaceHeld != "" {
+	if removed && r.space != nil {
 		r.lift("a runner's container was removed")
 	}
 	r.changed(name)

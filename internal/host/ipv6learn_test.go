@@ -139,10 +139,7 @@ func TestHoldLearns64(t *testing.T) {
 			func() ([]byte, error) { return nil, errors.New("timeout") },
 		}}
 		f := v6Fixture(t, e)
-		n, err := bringUp(t.Context(), v6Section(), f.platform(), guardHooks{})
-		if err != nil {
-			t.Fatal(err)
-		}
+		n := upNet(t, f, v6Section())
 		if st := n.iPv6Status(); st == nil || st.Reason == "" || st.Prefix.IsValid() {
 			t.Errorf("IPv6Status before any ask = %+v, want a reason", st)
 		}
@@ -193,10 +190,7 @@ func TestHoldLearns64(t *testing.T) {
 func TestHoldEndsWhenA64CannotLoad(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := v6Fixture(t, &echoes{replies: []func() ([]byte, error){answer("2a01:e0a:1259:2710::7008")}})
-		n, err := bringUp(t.Context(), v6Section(), f.platform(), guardHooks{})
-		if err != nil {
-			t.Fatal(err)
-		}
+		n := upNet(t, f, v6Section())
 		f.kernel.fail[platform.LegacyDir+"/ip6tables-restore"] = errors.New("refused")
 		if err := n.hold(t.Context()); err == nil || !strings.Contains(err.Error(), "loading the egress rules again") || f.proc.stopped != 1 {
 			t.Errorf("Hold = %v, stopped %d, want the failure with the daemon stopped", err, f.proc.stopped)
@@ -210,10 +204,7 @@ func TestNoEchoWithoutIPv6AndInternet(t *testing.T) {
 		t.Error("an IPv4 host asked its ipv6_echo")
 		return nil, errors.New("no")
 	}
-	n, err := bringUp(t.Context(), section(), f.platform(), guardHooks{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	n := upNet(t, f, section())
 	if n.iPv6Status() != nil {
 		t.Error("an IPv4 host reports a /64")
 	}

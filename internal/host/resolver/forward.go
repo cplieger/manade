@@ -54,22 +54,28 @@ func Listen(ctx context.Context, addr netip.AddrPort) (net.PacketConn, net.Liste
 	return udp, tcp, nil
 }
 
-// Forwarder answers each query from its upstreams and, for a name its
-// Matcher lists, has the Learner add the answer's addresses before it
+// Learning is what a forwarder learns: the answers for a name Match lists
+// have their addresses added by Learner before they are answered.
+type Learning struct {
+	Match   *Matcher
+	Learner *Learner
+}
+
+// Forwarder answers each query from its upstreams and, while it learns,
+// has the Learner add the addresses of a listed name's answer before it
 // answers.
 type Forwarder struct {
 	upstreams func() []netip.AddrPort
-	match     func() *Matcher
-	learner   *Learner
+	learning  func() *Learning
 	log       *slog.Logger
 	budget    time.Duration
 }
 
 // NewForwarder answers a Forwarder asking the resolvers upstreams answers,
-// in order, and reading the current list through match; both are read at
-// each query, so they follow the host's section and list.
-func NewForwarder(upstreams func() []netip.AddrPort, match func() *Matcher, learner *Learner, log *slog.Logger) *Forwarder {
-	return &Forwarder{upstreams: upstreams, match: match, learner: learner, log: log, budget: egress.ForwarderBudget}
+// in order, and learning what learning answers, nil to learn nothing; both
+// are read at each query, so they follow the host's section and list.
+func NewForwarder(upstreams func() []netip.AddrPort, learning func() *Learning, log *slog.Logger) *Forwarder {
+	return &Forwarder{upstreams: upstreams, learning: learning, log: log, budget: egress.ForwarderBudget}
 }
 
 // Serve answers queries on udp and tcp until ctx ends, then closes both
@@ -193,13 +199,13 @@ func (f *Forwarder) answer(ctx context.Context, network string, query []byte) []
 	if resp == nil {
 		return failure(query, q, rcodeFail)
 	}
-	if rcodeOf(resp) == rcodeOK && f.match().Match(q.name) {
-		f.learn(ctx, resp)
+	if l := f.learning(); l != nil && rcodeOf(resp) == rcodeOK && l.Match.Match(q.name) {
+		f.learn(ctx, l.Learner, resp)
 	}
 	return resp
 }
 
-func (f *Forwarder) learn(ctx context.Context, resp []byte) {
+func (f *Forwarder) learn(ctx context.Context, l *Learner, resp []byte) {
 	rq, err := parseQuestion(resp)
 	var recs []Record
 	if err == nil {
@@ -211,7 +217,7 @@ func (f *Forwarder) learn(ctx context.Context, resp []byte) {
 	}
 	ctx, cancel := context.WithTimeout(ctx, learnTimeout)
 	defer cancel()
-	if err := f.learner.Learn(ctx, recs); err != nil {
+	if err := l.Learn(ctx, recs); err != nil {
 		f.log.Warn("Adding learned GitHub addresses to the rules failed; jobs' connections to them are dropped", "name", rq.name, "err", err)
 	}
 }

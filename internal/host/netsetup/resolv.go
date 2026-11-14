@@ -19,27 +19,15 @@ import (
 // it is rewritten in place, since a rename onto a mount point fails.
 const resolvConf = "/etc/resolv.conf"
 
-// ForwarderAddr is where an internet: false host serves DNS to its own
-// stack, forwarding to its configured resolvers.
+// ForwarderAddr is where the host serves DNS to its own stack, forwarding
+// to its configured resolvers.
 var ForwarderAddr = netip.MustParseAddr("127.0.0.1")
 
-// Nameservers answers the resolvers h's resolv.conf names: its configured
-// ones, or on an internet: false host its own forwarder.
-func Nameservers(h *config.Host) []netip.Addr {
-	if h.Egress.Internet {
-		return h.DNS
-	}
-	return []netip.Addr{ForwarderAddr}
-}
-
-// RenderResolvConf answers the resolv.conf naming servers.
-func RenderResolvConf(servers []netip.Addr) []byte {
-	var b bytes.Buffer
-	for _, s := range servers {
-		b.WriteString("nameserver " + s.String() + "\n")
-	}
-	return b.Bytes()
-}
+// ResolvConf answers the resolv.conf the host writes at its start and keeps
+// for its life: its own forwarder alone. A running job's embedded resolver
+// keeps the upstreams its container started with, so a reload that changed
+// this file would leave running jobs on the old ones.
+func ResolvConf() []byte { return []byte("nameserver " + ForwarderAddr.String() + "\n") }
 
 // ReadOriginal reads the resolvers the container's resolv.conf names before
 // the host rewrites it.
@@ -91,20 +79,21 @@ func LookupVia(ctx context.Context, server netip.Addr, name string) ([]netip.Add
 	return r.LookupNetIP(ctx, "ip", name)
 }
 
-// CheckName resolves egress.GitHubAPI through servers, in turn, until one answers
-// with an address; it fails naming h's dns field and each resolver's error.
-func CheckName(ctx context.Context, h *config.Host, servers []netip.Addr, lookup Lookup) error {
-	var fails []string
-	for _, s := range servers {
-		addrs, err := lookup(ctx, s, egress.GitHubAPI)
-		if err == nil && len(addrs) > 0 {
-			return nil
-		}
-		if err == nil {
-			err = errors.New("no address")
-		}
-		fails = append(fails, s.String()+": "+err.Error())
+// CheckName resolves egress.GitHubAPI through the host's forwarder, which
+// must be serving; it fails naming h's dns field, the resolvers it lists
+// and the lookup's error.
+func CheckName(ctx context.Context, h *config.Host, lookup Lookup) error {
+	addrs, err := lookup(ctx, ForwarderAddr, egress.GitHubAPI)
+	if err == nil && len(addrs) > 0 {
+		return nil
 	}
-	return fmt.Errorf("netsetup: %s did not resolve through hosts.%s.dns (%s); list resolvers the host can reach on port 53",
-		egress.GitHubAPI, h.Name, strings.Join(fails, "; "))
+	if err == nil {
+		err = errors.New("no address")
+	}
+	dns := make([]string, len(h.DNS))
+	for i, a := range h.DNS {
+		dns[i] = a.String()
+	}
+	return fmt.Errorf("netsetup: %s did not resolve through the host's resolver, which forwards to hosts.%s.dns (%s): %w; list resolvers the host can reach on port 53",
+		egress.GitHubAPI, h.Name, strings.Join(dns, ", "), err)
 }

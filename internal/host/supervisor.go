@@ -179,9 +179,10 @@ func (s *supervisor) warnNoMemoryLimit(h *config.Host, sv *served, cg *platform.
 // host's run, which each runner's work runs under.
 func (s *supervisor) build(ctx context.Context, h *config.Host, sv *served, cg *platform.Cgroup) error {
 	s.images = images.New(&images.Config{
-		Daemon: s.dk, Host: h, Lookup: s.lookup, ByName: s.net.gitHubName, Log: s.log,
+		Daemon: s.dk, Host: h, Lookup: lookupRegistry, ByName: s.net.gitHubName, Log: s.log,
 		Keep:    images.Keep{Runner: func(n string) bool { return s.runners.holds(n) }, ProbeLeftover: func(r string) bool { return s.prober.Leftover(r) }},
 		Version: s.opts.Version, StateDir: stateDir, Binary: binaryPath, Profiles: sv.Profiles,
+		Tidied: func() { s.runners.tidied() },
 	})
 	var cpus []int
 	if !cg.Quota {
@@ -190,7 +191,7 @@ func (s *supervisor) build(ctx context.Context, h *config.Host, sv *served, cg *
 			return fmt.Errorf("the host's cpuset %q: %w", cg.CPUSet, err)
 		}
 	}
-	s.runners = newRunners(ctx, &runnersConfig{Daemon: s.dk, Images: s.images, Served: sv, Log: s.log, CPUs: cpus})
+	s.runners = newRunners(ctx, &runnersConfig{Daemon: s.dk, Images: s.images, Served: sv, Log: s.log, CPUs: cpus, DataFree: dataFree})
 	if err := s.runners.load(ctx); err != nil {
 		return err
 	}
@@ -404,27 +405,20 @@ func (s *supervisor) platform() *seams {
 			}
 			return c, nil
 		},
-		ListenDNS: listenDNS, FetchDomains: resolver.FetchMeta(httpclient.New(metaTimeout)), Echo: echo,
+		ListenDNS: listenDNS, FetchDomains: resolver.FetchMeta(httpclient.New(metaTimeout)), Upstreams: resolver.Upstreams, Echo: echo,
 		Log: s.log, Root: platform.System,
 	}
 }
 
-// lookup resolves a registry's name through the resolvers the host's
-// resolv.conf names, as its daemon's pull does.
-func (s *supervisor) lookup(ctx context.Context, name string) ([]netip.Addr, error) {
-	var errs []error
-	for _, server := range netsetup.Nameservers(s.host()) {
-		addrs, err := netsetup.LookupVia(ctx, server, name)
-		switch {
-		case err != nil:
-			errs = append(errs, err)
-		case len(addrs) == 0:
-			errs = append(errs, fmt.Errorf("%s answered no address", server))
-		default:
-			return addrs, nil
-		}
-	}
-	return nil, fmt.Errorf("resolving %s: %w", name, errors.Join(errs...))
+// lookupRegistry resolves a registry's name through the host's resolver,
+// as its daemon's pull does.
+func lookupRegistry(ctx context.Context, name string) ([]netip.Addr, error) {
+	return netsetup.LookupVia(ctx, netsetup.ForwarderAddr, name)
+}
+
+func dataFree() (uint64, error) {
+	u, err := platform.DataUsage(dataRoot)
+	return u.Free, err
 }
 
 // socketGID is the group that owns the daemon's socket, for a host-socket

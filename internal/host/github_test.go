@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net"
 	"net/netip"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -70,7 +72,7 @@ func TestUpInternetFalse(t *testing.T) {
 		f := newUpFixture(t)
 		writeAt(t, f.root, domainsFile, `{"read_at":"2026-11-01T00:00:00Z","full_domains":["api.github.com","github.com"]}`)
 		f.fetchErr = errors.New("503")
-		n := upClosed(t, f, closedSection())
+		n := upNet(t, f, closedSection())
 		if st := n.gitHubStatus(); st.Source != resolver.SourceSaved || st.DomainsAt.Format(time.DateOnly) != "2026-11-01" {
 			t.Errorf("GitHubStatus = %+v, want the saved list with its age", st)
 		}
@@ -82,18 +84,18 @@ func TestUpInternetFalse(t *testing.T) {
 			t.Errorf("Up = %v, resolver closed %v", err, f.dnsUDP.isClosed())
 		}
 	})
-	t.Run("an internet host runs no resolver", func(t *testing.T) {
+	t.Run("an internet host serves its resolver and reads no list", func(t *testing.T) {
 		f := newUpFixture(t)
-		n, err := bringUp(t.Context(), section(), f.platform(), guardHooks{})
-		if err != nil || slices.Contains(f.events, "resolver") || n.gitHubStatus() != nil {
-			t.Errorf("Up = %v, events %q, status %+v", err, f.events, n.gitHubStatus())
+		n := upNet(t, f, section())
+		if !slices.Contains(f.events, "resolver") || slices.Contains(f.events, "domains") || n.gitHubStatus() != nil {
+			t.Errorf("events %q, status %+v, want the resolver serving with no list", f.events, n.gitHubStatus())
 		}
 	})
 }
 
-// upClosed brings an internet: false host up and stops it when the test
-// ends, inside a synctest bubble too, whose goroutines must end with it.
-func upClosed(t *testing.T, f *upFixture, h *config.Host) *hostNet {
+// upNet brings host h up and stops it when the test ends, inside a
+// synctest bubble too, whose goroutines must end with it.
+func upNet(t *testing.T, f *upFixture, h *config.Host) *hostNet {
 	t.Helper()
 	n, err := bringUp(t.Context(), h, f.platform(), guardHooks{})
 	if err != nil {
@@ -109,7 +111,7 @@ func compact(events []string) []string { return slices.Compact(slices.Clone(even
 func TestLearnedAddressesInTheRules(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newUpFixture(t)
-		n := upClosed(t, f, closedSection())
+		n := upNet(t, f, closedSection())
 		err := n.gh.Load().learner.Learn(t.Context(), []resolver.Record{
 			{Addr: netip.MustParseAddr("140.82.121.10"), TTL: time.Minute},
 			{Addr: netip.MustParseAddr("192.168.1.10"), TTL: time.Minute},
@@ -138,7 +140,7 @@ func TestLearnedAddressesInTheRules(t *testing.T) {
 
 func TestReloadMovesTheResolversUpstreams(t *testing.T) {
 	f := newUpFixture(t)
-	n := upClosed(t, f, closedSection())
+	n := upNet(t, f, closedSection())
 	h := closedSection()
 	h.DNS = []netip.Addr{netip.MustParseAddr("9.9.9.9")}
 	if k, fatal := n.reload(t.Context(), h); k != nil || fatal != nil {
@@ -156,15 +158,19 @@ func TestReloadMovesTheResolversUpstreams(t *testing.T) {
 }
 
 func TestHoldEndsWhenTheResolverStops(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		f := newUpFixture(t)
-		n := upClosed(t, f, closedSection())
-		f.dnsUDP.end(errors.New("read udp 127.0.0.1:53: bad file descriptor"))
-		err := n.hold(t.Context())
-		if err == nil || !strings.Contains(err.Error(), "DNS resolver stopped") || f.proc.stopped != 1 {
-			t.Errorf("Hold = %v, stopped %d, want the failure with the daemon stopped", err, f.proc.stopped)
-		}
-	})
+	for name, h := range map[string]*config.Host{"internet": section(), "internet: false": closedSection()} {
+		t.Run(name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				f := newUpFixture(t)
+				n := upNet(t, f, h)
+				f.dnsUDP.end(errors.New("read udp 127.0.0.1:53: bad file descriptor"))
+				err := n.hold(t.Context())
+				if err == nil || !strings.Contains(err.Error(), "DNS resolver stopped") || f.proc.stopped != 1 {
+					t.Errorf("Hold = %v, stopped %d, want the failure with the daemon stopped", err, f.proc.stopped)
+				}
+			})
+		})
+	}
 }
 
 func TestAddLearned(t *testing.T) {
@@ -215,7 +221,7 @@ func TestReloadFiltersLearnedAddressesByTheNewSection(t *testing.T) {
 	f := v6Fixture(t, &echoes{replies: []func() ([]byte, error){answer("2a01:e0a:1259:2710::1")}})
 	h := closedSection()
 	h.Egress.IPv6 = true
-	n := upClosed(t, f, h)
+	n := upNet(t, f, h)
 	next := closedSection()
 	next.Egress.IPv6 = true
 	next.Egress.Block6 = []netip.Prefix{pfx("2606:50c0::/32")}
@@ -231,27 +237,96 @@ func TestReloadFiltersLearnedAddressesByTheNewSection(t *testing.T) {
 	}
 }
 
-// A resolver that stops after a reload took it out of service is no
-// failure, whichever of the stop and the wake followGitHub sees first.
-func TestFollowGitHubIgnoresARetiredResolver(t *testing.T) {
+// followGitHub refreshes the list of whichever learning a reload made the
+// host's, and none once learning is off.
+func TestFollowGitHubFollowsTheLearning(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		log := slog.New(slog.DiscardHandler)
-		g := &gitHub{
-			source: resolver.NewSource(func(context.Context) ([]byte, error) { return []byte(metaBody), nil }, filepath.Join(t.TempDir(), "domains.json"), log),
-			done:   make(chan struct{}),
-		}
+		var fetches atomic.Int32
+		fetch := func(context.Context) ([]byte, error) { fetches.Add(1); return []byte(metaBody), nil }
 		n := &hostNet{ghMoved: make(chan struct{}, 1)}
-		n.gh.Store(g)
 		ctx, cancel := context.WithCancel(t.Context())
-		done := make(chan error, 1)
-		go func() { done <- n.followGitHub(ctx) }()
-		synctest.Wait()
-		n.gh.Store(nil)
-		close(g.done)
-		synctest.Wait()
-		cancel()
-		if err := <-done; err != nil {
-			t.Errorf("followGitHub = %v, want nil for a resolver no longer in service", err)
+		done := make(chan struct{})
+		go func() { n.followGitHub(ctx); close(done) }()
+		n.setGitHub(&gitHub{source: resolver.NewSource(fetch, filepath.Join(t.TempDir(), "domains.json"), log)})
+		time.Sleep(6*time.Hour + time.Minute)
+		if got := fetches.Load(); got != 1 {
+			t.Errorf("fetches after one refresh period = %d, want 1", got)
 		}
+		n.setGitHub(nil)
+		time.Sleep(12 * time.Hour)
+		if got := fetches.Load(); got != 1 {
+			t.Errorf("fetches with learning off = %d, want none more", got)
+		}
+		cancel()
+		<-done
 	})
+}
+
+// A job started before a reload that flips egress.internet keeps the
+// resolver resolv.conf named at its start: it resolves after each flip, and
+// its GitHub lookup is learned once internet is off.
+func TestARunningJobResolvesAcrossInternetFlips(t *testing.T) {
+	f := newUpFixture(t)
+	up := fakeUpstream(t, netip.MustParseAddr("140.82.121.10"))
+	udp, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tcp, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := jobResolver(udp.LocalAddr().String())
+	learned := func() bool {
+		_, ipset := f.kernel.payloads()
+		return slices.ContainsFunc(ipset, func(p string) bool { return strings.HasPrefix(p, "add manade-gh4 140.82.121.10 ") })
+	}
+	// The list read resolves api.github.com through the host's resolver, as
+	// the supervisor's HTTP client does, and needs that answer learned.
+	var learnedForTheList bool
+	p := f.platform()
+	p.ListenDNS = func(context.Context) (net.PacketConn, net.Listener, error) { return udp, tcp, nil }
+	p.Upstreams = func([]netip.Addr) []netip.AddrPort { return []netip.AddrPort{up} }
+	p.FetchDomains = func(ctx context.Context) ([]byte, error) {
+		if _, err := job.LookupNetIP(ctx, "ip4", "api.github.com"); err != nil {
+			return nil, err
+		}
+		learnedForTheList = learned()
+		return []byte(metaBody), nil
+	}
+	n, err := bringUp(t.Context(), section(), p, guardHooks{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = n.stop() })
+	resolvAtStart := readAt(t, f.root, "/etc/resolv.conf")
+	resolves := func(when string) {
+		t.Helper()
+		addrs, err := job.LookupNetIP(t.Context(), "ip4", "codeload.github.com")
+		if err != nil || !slices.Equal(addrs, []netip.Addr{netip.MustParseAddr("140.82.121.10")}) {
+			t.Errorf("%s: the job's lookup = %v, %v, want the upstream's answer", when, addrs, err)
+		}
+		if got := readAt(t, f.root, "/etc/resolv.conf"); got != resolvAtStart {
+			t.Errorf("%s: resolv.conf = %q, want %q unchanged", when, got, resolvAtStart)
+		}
+	}
+	resolves("before any flip")
+	if learned() {
+		t.Error("an internet host learned the job's answer")
+	}
+	if k, fatal := n.reload(t.Context(), closedSection()); k != nil || fatal != nil {
+		t.Fatalf("Reload to internet: false = %v, %v", k, fatal)
+	}
+	if !learnedForTheList {
+		t.Error("api.github.com's address was not learned before the domain list was read")
+	}
+	resolves("after internet was turned off")
+	if !learned() {
+		t.Error("the job's GitHub lookup after internet was turned off was not learned")
+	}
+	if k, fatal := n.reload(t.Context(), section()); k != nil || fatal != nil {
+		t.Fatalf("Reload to internet = %v, %v", k, fatal)
+	}
+	resolves("after internet was turned on again")
 }

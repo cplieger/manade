@@ -16,6 +16,7 @@ import (
 	"github.com/cplieger/manade/internal/config"
 	"github.com/cplieger/manade/internal/docker"
 	"github.com/cplieger/manade/internal/host/platform"
+	"github.com/cplieger/manade/internal/host/resolver"
 )
 
 // route4 has a default route via 172.17.0.1 and the on-link 172.17.0.0/16,
@@ -140,20 +141,18 @@ func (f *upFixture) platform() *seams {
 			}
 			return []byte(metaBody), nil
 		},
-		Echo: f.echo,
-		Log:  slog.New(slog.DiscardHandler),
+		Upstreams: resolver.Upstreams,
+		Echo:      f.echo,
+		Log:       slog.New(slog.DiscardHandler),
 	}
 }
 
 func TestUp(t *testing.T) {
 	t.Run("the floor, in order", func(t *testing.T) {
 		f := newUpFixture(t)
-		n, err := bringUp(t.Context(), section("172.17.4.10/32"), f.platform(), guardHooks{})
-		if err != nil {
-			t.Fatalf("Up: %v", err)
-		}
-		if i, j, k := slices.Index(f.events, "rules"), slices.Index(f.events, "lookup"), slices.Index(f.events, "daemon"); i < 0 || i >= j || j >= k {
-			t.Errorf("events = %q, want rules, then the lookup, then the daemon", f.events)
+		n := upNet(t, f, section("172.17.4.10/32"))
+		if !slices.Equal(compact(f.events), []string{"rules", "resolver", "lookup", "daemon"}) {
+			t.Errorf("events = %q, want the rules, the resolver, the lookup through it, then the daemon", compact(f.events))
 		}
 		if readAt(t, f.root, "/etc/resolv.conf") != resolvRendered {
 			t.Errorf("resolv.conf = %q", readAt(t, f.root, "/etc/resolv.conf"))
@@ -179,16 +178,19 @@ func TestUp(t *testing.T) {
 		if f.spec.Storage != platform.Btrfs {
 			t.Errorf("storage = %s, want the pick", f.spec.Storage)
 		}
-		if !slices.Equal(f.lookups, []string{"1.1.1.1 api.github.com"}) {
-			t.Errorf("lookups = %q", f.lookups)
+		if !slices.Equal(f.lookups, []string{"127.0.0.1 api.github.com"}) {
+			t.Errorf("lookups = %q, want the host's own resolver asked", f.lookups)
+		}
+		if n.gitHubStatus() != nil || n.learning() != nil {
+			t.Error("an internet host learns GitHub's addresses")
 		}
 	})
 	t.Run("a failed lookup starts no daemon and names the field", func(t *testing.T) {
 		f := newUpFixture(t)
 		f.lookupErr = errors.New("i/o timeout")
 		_, err := bringUp(t.Context(), section(), f.platform(), guardHooks{})
-		if err == nil || !strings.Contains(err.Error(), "hosts.lan.dns") || slices.Contains(f.events, "daemon") {
-			t.Errorf("Up = %v, events %q, want the refusal before any daemon", err, f.events)
+		if err == nil || !strings.Contains(err.Error(), "hosts.lan.dns") || slices.Contains(f.events, "daemon") || !f.dnsUDP.isClosed() {
+			t.Errorf("Up = %v, events %q, resolver closed %v, want the refusal before any daemon with the resolver stopped", err, f.events, f.dnsUDP.isClosed())
 		}
 	})
 	t.Run("rules that do not load start no lookup and no daemon", func(t *testing.T) {
@@ -201,11 +203,7 @@ func TestUp(t *testing.T) {
 	})
 	t.Run("an internet: false host resolves through its own forwarder", func(t *testing.T) {
 		f := newUpFixture(t)
-		h := section()
-		h.Egress.Internet = false
-		if _, err := bringUp(t.Context(), h, f.platform(), guardHooks{}); err != nil {
-			t.Fatal(err)
-		}
+		upNet(t, f, closedSection())
 		if readAt(t, f.root, "/etc/resolv.conf") != "nameserver 127.0.0.1\n" || !slices.Equal(f.lookups, []string{"127.0.0.1 api.github.com"}) {
 			t.Errorf("resolv.conf %q, lookups %q", readAt(t, f.root, "/etc/resolv.conf"), f.lookups)
 		}
@@ -237,10 +235,7 @@ func TestUp(t *testing.T) {
 		writeAt(t, f.root, platform.BridgeNFCall6, "0\n")
 		h := section()
 		h.Egress.IPv6 = true
-		n, err := bringUp(t.Context(), h, f.platform(), guardHooks{})
-		if err != nil {
-			t.Fatalf("Up: %v", err)
-		}
+		n := upNet(t, f, h)
 		if n.Job6 != pfx("fd01:203:405::/64") || f.nets.spec.Subnet6 != n.Job6 {
 			t.Errorf("Job6 = %v, network %+v", n.Job6, f.nets.spec)
 		}
@@ -267,8 +262,8 @@ func TestUp(t *testing.T) {
 	t.Run("a failed network create stops the daemon", func(t *testing.T) {
 		f := newUpFixture(t)
 		f.nets.err = errors.New("pool overlaps")
-		if _, err := bringUp(t.Context(), section(), f.platform(), guardHooks{}); err == nil || f.proc.stopped != 1 {
-			t.Errorf("Up = %v, stopped %d times", err, f.proc.stopped)
+		if _, err := bringUp(t.Context(), section(), f.platform(), guardHooks{}); err == nil || f.proc.stopped != 1 || !f.dnsUDP.isClosed() {
+			t.Errorf("Up = %v, stopped %d times, resolver closed %v", err, f.proc.stopped, f.dnsUDP.isClosed())
 		}
 	})
 	t.Run("a daemon that exits before it answers", func(t *testing.T) {
@@ -288,11 +283,7 @@ func TestReload(t *testing.T) {
 	up := func(t *testing.T) (*upFixture, *hostNet) {
 		t.Helper()
 		f := newUpFixture(t)
-		n, err := bringUp(t.Context(), section(), f.platform(), guardHooks{})
-		if err != nil {
-			t.Fatal(err)
-		}
-		return f, n
+		return f, upNet(t, f, section())
 	}
 	kept := map[string]struct {
 		edit func(h *config.Host)
@@ -341,8 +332,11 @@ func TestReload(t *testing.T) {
 		if k, fatal := n.reload(t.Context(), h); k != nil || fatal != nil {
 			t.Fatalf("Reload = %v, %v", k, fatal)
 		}
-		if readAt(t, f.root, "/etc/resolv.conf") != "nameserver 9.9.9.9\n" {
-			t.Errorf("resolv.conf = %q", readAt(t, f.root, "/etc/resolv.conf"))
+		if readAt(t, f.root, "/etc/resolv.conf") != resolvRendered {
+			t.Errorf("resolv.conf = %q, want the host's resolver kept", readAt(t, f.root, "/etc/resolv.conf"))
+		}
+		if got := n.upstreams(); !slices.Equal(got, []netip.AddrPort{netip.MustParseAddrPort("9.9.9.9:53")}) {
+			t.Errorf("upstreams = %v, want the new section's resolver", got)
 		}
 		if !slices.ContainsFunc(f.kernel.chain(false, "filter", "MANADE-OUT"), func(r string) bool { return strings.Contains(r, "9.9.9.9/32") }) {
 			t.Error("the new resolver has no port 53 accept")
@@ -353,10 +347,7 @@ func TestReload(t *testing.T) {
 func TestHold(t *testing.T) {
 	t.Run("the daemon exits", func(t *testing.T) {
 		f := newUpFixture(t)
-		n, err := bringUp(t.Context(), section(), f.platform(), guardHooks{})
-		if err != nil {
-			t.Fatal(err)
-		}
+		n := upNet(t, f, section())
 		f.proc.exit(errors.New("exit status 2"))
 		if err := n.hold(t.Context()); err == nil || !strings.Contains(err.Error(), "exit status 2") {
 			t.Errorf("Hold = %v", err)
@@ -365,10 +356,7 @@ func TestHold(t *testing.T) {
 	t.Run("a failed restore stops the daemon", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			f := newUpFixture(t)
-			n, err := bringUp(t.Context(), section(), f.platform(), guardHooks{})
-			if err != nil {
-				t.Fatal(err)
-			}
+			n := upNet(t, f, section())
 			f.kernel.edit(func(tb map[bool]map[string]*xtable) { tb[false]["filter"].chains["MANADE-IN"] = []string{} })
 			f.kernel.fail[platform.LegacyDir+"/iptables-restore"] = errors.New("refused")
 			if err := n.hold(t.Context()); err == nil || !strings.Contains(err.Error(), "restoring") || f.proc.stopped != 1 {
@@ -378,10 +366,7 @@ func TestHold(t *testing.T) {
 	})
 	t.Run("a cancelled context leaves the daemon to Stop", func(t *testing.T) {
 		f := newUpFixture(t)
-		n, err := bringUp(t.Context(), section(), f.platform(), guardHooks{})
-		if err != nil {
-			t.Fatal(err)
-		}
+		n := upNet(t, f, section())
 		ctx, cancel := context.WithCancel(t.Context())
 		cancel()
 		if err := n.hold(ctx); err != nil || f.proc.stopped != 0 {
@@ -395,10 +380,7 @@ func TestReloadAppliesTheEgressKeys(t *testing.T) {
 		f := newUpFixture(t)
 		open := section()
 		open.Egress.Open = true
-		n, err := bringUp(t.Context(), open, f.platform(), guardHooks{})
-		if err != nil {
-			t.Fatal(err)
-		}
+		n := upNet(t, f, open)
 		before := f.kernel.chain(false, "filter", "MANADE-FWD")
 		if readAt(t, f.root, disableAll) != "0\n" {
 			t.Fatal("setup: an open host turned IPv6 off")
@@ -416,32 +398,32 @@ func TestReloadAppliesTheEgressKeys(t *testing.T) {
 			t.Error("the host still holds the open section")
 		}
 	})
-	t.Run("internet on to off starts the resolver and points resolv.conf at it", func(t *testing.T) {
+	t.Run("internet on to off turns learning on and keeps resolv.conf", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			f := newUpFixture(t)
-			n := upClosed(t, f, section())
+			n := upNet(t, f, section())
 			if k, fatal := n.reload(t.Context(), closedSection()); k != nil || fatal != nil {
 				t.Fatalf("Reload = %v, %v, want the swap", k, fatal)
 			}
-			if readAt(t, f.root, "/etc/resolv.conf") != "nameserver 127.0.0.1\n" || n.gitHubStatus() == nil || f.dnsUDP.isClosed() {
+			if readAt(t, f.root, "/etc/resolv.conf") != resolvRendered || n.gitHubStatus() == nil || n.learning() == nil || f.dnsUDP.isClosed() {
 				t.Errorf("resolv.conf %q, status %+v, resolver closed %v", readAt(t, f.root, "/etc/resolv.conf"), n.gitHubStatus(), f.dnsUDP.isClosed())
 			}
-			if i, j := slices.Index(f.events, "resolver"), slices.Index(f.events, "domains"); i < 0 || j < i {
-				t.Errorf("events %q, want the resolver serving, then the list read through it", f.events)
+			if i, j := slices.Index(f.events, "rules"), slices.Index(f.events, "domains"); len(slices.DeleteFunc(slices.Clone(f.events), func(e string) bool { return e != "resolver" })) != 1 || j < i {
+				t.Errorf("events %q, want the one resolver kept and the list read after the swap", f.events)
 			}
 			if _, ipset := f.kernel.payloads(); !slices.ContainsFunc(ipset, func(p string) bool { return strings.Contains(p, "create manade-gh4") }) {
 				t.Errorf("ipset payloads %q, want the learned sets created", ipset)
 			}
 		})
 	})
-	t.Run("internet off to on stops the resolver after the swap", func(t *testing.T) {
+	t.Run("internet off to on turns learning off and keeps the resolver serving", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			f := newUpFixture(t)
-			n := upClosed(t, f, closedSection())
+			n := upNet(t, f, closedSection())
 			if k, fatal := n.reload(t.Context(), section()); k != nil || fatal != nil {
 				t.Fatalf("Reload = %v, %v, want the swap", k, fatal)
 			}
-			if readAt(t, f.root, "/etc/resolv.conf") != resolvRendered || n.gitHubStatus() != nil || !f.dnsUDP.isClosed() {
+			if readAt(t, f.root, "/etc/resolv.conf") != resolvRendered || n.gitHubStatus() != nil || n.learning() != nil || f.dnsUDP.isClosed() {
 				t.Errorf("resolv.conf %q, status %+v, resolver closed %v", readAt(t, f.root, "/etc/resolv.conf"), n.gitHubStatus(), f.dnsUDP.isClosed())
 			}
 		})
@@ -449,7 +431,7 @@ func TestReloadAppliesTheEgressKeys(t *testing.T) {
 	t.Run("a domain list that cannot be read keeps the internet rules", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			f := newUpFixture(t)
-			n := upClosed(t, f, section())
+			n := upNet(t, f, section())
 			before := f.kernel.chain(false, "filter", "MANADE-OUT")
 			f.fetchErr = errors.New("403 rate limit exceeded")
 			k, fatal := n.reload(t.Context(), closedSection())
@@ -459,32 +441,15 @@ func TestReloadAppliesTheEgressKeys(t *testing.T) {
 			if !slices.Equal(f.kernel.chain(false, "filter", "MANADE-OUT"), before) || readAt(t, f.root, "/etc/resolv.conf") != resolvRendered {
 				t.Error("the internet rules or resolv.conf were not restored")
 			}
-			if n.gitHubStatus() != nil || !f.dnsUDP.isClosed() || !n.host.Egress.Internet {
-				t.Errorf("status %+v, resolver closed %v, want no resolver left", n.gitHubStatus(), f.dnsUDP.isClosed())
+			if n.gitHubStatus() != nil || n.learning() != nil || f.dnsUDP.isClosed() || !n.host.Egress.Internet {
+				t.Errorf("status %+v, resolver closed %v, want learning off and the resolver serving", n.gitHubStatus(), f.dnsUDP.isClosed())
 			}
 		})
 	})
-	t.Run("a resolver started by a reload ends the hold when it stops", func(t *testing.T) {
+	t.Run("a reload that turns internet on leaves the hold running", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			f := newUpFixture(t)
-			n := upClosed(t, f, section())
-			done := make(chan error, 1)
-			go func() { done <- n.hold(t.Context()) }()
-			synctest.Wait()
-			if k, fatal := n.reload(t.Context(), closedSection()); k != nil || fatal != nil {
-				t.Fatalf("Reload = %v, %v", k, fatal)
-			}
-			synctest.Wait()
-			f.dnsUDP.end(errors.New("read udp 127.0.0.1:53: bad file descriptor"))
-			if err := <-done; err == nil || !strings.Contains(err.Error(), "DNS resolver stopped") {
-				t.Errorf("Hold = %v, want the resolver's failure", err)
-			}
-		})
-	})
-	t.Run("a resolver a reload stopped does not end the hold", func(t *testing.T) {
-		synctest.Test(t, func(t *testing.T) {
-			f := newUpFixture(t)
-			n := upClosed(t, f, closedSection())
+			n := upNet(t, f, closedSection())
 			ctx, cancel := context.WithCancel(t.Context())
 			done := make(chan error, 1)
 			go func() { done <- n.hold(ctx) }()
@@ -495,7 +460,7 @@ func TestReloadAppliesTheEgressKeys(t *testing.T) {
 			synctest.Wait()
 			select {
 			case err := <-done:
-				t.Fatalf("Hold = %v after a reload stopped the resolver", err)
+				t.Fatalf("Hold = %v after a reload turned learning off", err)
 			default:
 			}
 			cancel()

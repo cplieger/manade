@@ -23,8 +23,9 @@ const (
 	// runner before its kill: Docker's own default stop timeout.
 	DeleteStopGrace = 10 * time.Second
 	// deleteBound bounds a DELETE by the calls Backend.DeleteRunner may
-	// make: the diag copy, the stop with its grace, an inspect and a
-	// removal of the runner's container, and of one orphan.
+	// make: the inspect (a CallTimeout window when a cut create may still
+	// commit), the diag copy, the stop with its grace, the removal's
+	// inspect and removal, and the docker volume's removal.
 	deleteBound = DeleteStopGrace + 6*docker.CallTimeout + quickTimeout
 	// eventsBound ends an events stream, after which the client reconnects
 	// and lists again.
@@ -216,6 +217,9 @@ const (
 	// ReasonDataFull is every profile while a start the daemon refused for
 	// want of space holds the host's starts; Detail says when it lifts.
 	ReasonDataFull Reason = "data_full"
+	// ReasonOpenDraining is every profile while runners started before a
+	// reload closed an open host still run; Detail names them.
+	ReasonOpenDraining Reason = "open_draining"
 )
 
 // ProfileStatus is one profile's readiness and image on a host.

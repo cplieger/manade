@@ -11,17 +11,6 @@ import (
 	"testing"
 )
 
-func TestNameservers(t *testing.T) {
-	h := section()
-	if got := Nameservers(h); !slices.Equal(got, h.DNS) {
-		t.Errorf("internet host: %v, want its dns", got)
-	}
-	h.Egress.Internet = false
-	if got := Nameservers(h); !slices.Equal(got, []netip.Addr{addr("127.0.0.1")}) {
-		t.Errorf("internet: false host: %v, want its own forwarder 127.0.0.1", got)
-	}
-}
-
 func TestResolvConfWrittenInPlace(t *testing.T) {
 	r := tree(t, map[string]string{resolvConf: "# ExtServers: [host(192.168.1.1)]\nnameserver 127.0.0.11\noptions ndots:0\n"})
 	before, err := os.Stat(r.Path(resolvConf))
@@ -32,9 +21,9 @@ func TestResolvConfWrittenInPlace(t *testing.T) {
 	if err != nil || !slices.Equal(orig.Addrs, []netip.Addr{addr("192.168.1.1")}) {
 		t.Fatalf("ReadOriginal = %+v, %v, want the ExtServers upstream", orig, err)
 	}
-	content := RenderResolvConf(Nameservers(section()))
-	if string(content) != "nameserver 1.1.1.1\nnameserver 8.8.8.8\n" {
-		t.Errorf("RenderResolvConf = %q", content)
+	content := ResolvConf()
+	if string(content) != "nameserver 127.0.0.1\n" {
+		t.Errorf("ResolvConf = %q, want the host's own forwarder alone", content)
 	}
 	if err := WriteResolvConf(r, content); err != nil {
 		t.Fatal(err)
@@ -55,37 +44,36 @@ func TestResolvConfWrittenInPlace(t *testing.T) {
 }
 
 func TestCheckName(t *testing.T) {
-	servers := []netip.Addr{addr("1.1.1.1"), addr("8.8.8.8")}
-	t.Run("the second resolver answers", func(t *testing.T) {
+	t.Run("asks the host's forwarder", func(t *testing.T) {
 		var asked []string
 		lookup := func(_ context.Context, s netip.Addr, name string) ([]netip.Addr, error) {
 			asked = append(asked, s.String()+" "+name)
-			if s == servers[0] {
-				return nil, errors.New("i/o timeout")
-			}
 			return []netip.Addr{addr("140.82.112.6")}, nil
 		}
-		if err := CheckName(t.Context(), section(), servers, lookup); err != nil {
+		if err := CheckName(t.Context(), section(), lookup); err != nil {
 			t.Errorf("CheckName = %v", err)
 		}
-		if !slices.Equal(asked, []string{"1.1.1.1 api.github.com", "8.8.8.8 api.github.com"}) {
+		if !slices.Equal(asked, []string{"127.0.0.1 api.github.com"}) {
 			t.Errorf("asked %q", asked)
 		}
 	})
-	t.Run("none answers", func(t *testing.T) {
-		lookup := func(_ context.Context, s netip.Addr, _ string) ([]netip.Addr, error) {
-			if s == servers[0] {
-				return nil, errors.New("i/o timeout")
+	for name, tc := range map[string]struct {
+		err  error
+		want string
+	}{
+		"a failed lookup": {err: errors.New("i/o timeout"), want: "i/o timeout"},
+		"no address":      {want: "no address"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			lookup := func(context.Context, netip.Addr, string) ([]netip.Addr, error) { return nil, tc.err }
+			err := CheckName(t.Context(), section(), lookup)
+			for _, want := range []string{"hosts.lan.dns", "1.1.1.1, 8.8.8.8", tc.want} {
+				if err == nil || !strings.Contains(err.Error(), want) {
+					t.Errorf("CheckName = %v, want it to name %q", err, want)
+				}
 			}
-			return nil, nil
-		}
-		err := CheckName(t.Context(), section(), servers, lookup)
-		for _, want := range []string{"hosts.lan.dns", "1.1.1.1: i/o timeout", "8.8.8.8: no address"} {
-			if err == nil || !strings.Contains(err.Error(), want) {
-				t.Errorf("CheckName = %v, want it to name %q", err, want)
-			}
-		}
-	})
+		})
+	}
 }
 
 func TestCheckIPv6(t *testing.T) {

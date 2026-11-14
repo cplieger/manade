@@ -358,3 +358,58 @@ func (*idleConn) Addr() net.Addr                            { return &net.UDPAdd
 func (*idleConn) SetDeadline(time.Time) error               { return nil }
 func (*idleConn) SetReadDeadline(time.Time) error           { return nil }
 func (*idleConn) SetWriteDeadline(time.Time) error          { return nil }
+
+// fakeUpstream serves DNS over UDP on loopback, answering each A query with
+// a and every other query with no records, and answers its address.
+func fakeUpstream(t *testing.T, a netip.Addr) netip.AddrPort {
+	t.Helper()
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = pc.Close() })
+	go func() {
+		buf := make([]byte, 512)
+		for {
+			n, from, err := pc.ReadFrom(buf)
+			if err != nil {
+				return
+			}
+			if resp := answerA(buf[:n], a); resp != nil {
+				_, _ = pc.WriteTo(resp, from)
+			}
+		}
+	}()
+	return pc.LocalAddr().(*net.UDPAddr).AddrPort()
+}
+
+// answerA answers query q (RFC 1035 §4.1) with a for type A, nil for a
+// message too short to hold one question.
+func answerA(q []byte, a netip.Addr) []byte {
+	end := 12
+	for end < len(q) && q[end] != 0 {
+		end += int(q[end]) + 1
+	}
+	end += 5
+	if end > len(q) {
+		return nil
+	}
+	isA := q[end-4] == 0 && q[end-3] == 1
+	resp := append([]byte{q[0], q[1], 0x81, 0x80, 0, 1, 0, 0, 0, 0, 0, 0}, q[12:end]...)
+	if isA {
+		resp[7] = 1
+		ip := a.As4()
+		resp = append(resp, 0xc0, 12, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4)
+		resp = append(resp, ip[:]...)
+	}
+	return resp
+}
+
+// jobResolver resolves through the DNS server at addr, as a job's embedded
+// resolver forwards to the one its container started with.
+func jobResolver(addr string) *net.Resolver {
+	return &net.Resolver{PreferGo: true, Dial: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		var d net.Dialer
+		return d.DialContext(ctx, "udp", addr)
+	}}
+}

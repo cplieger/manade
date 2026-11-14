@@ -68,11 +68,13 @@ type fakeDaemon struct {
 	// ctrImage is each container's image ID.
 	ctrImage   map[string]string
 	holdDigest chan struct{}
-	pulls      []pullAt
-	digests    []string
-	removed    []string
-	volumes    []docker.Volume
-	mu         sync.Mutex
+	// holdPull holds each pull until it closes.
+	holdPull chan struct{}
+	pulls    []pullAt
+	digests  []string
+	removed  []string
+	volumes  []docker.Volume
+	mu       sync.Mutex
 }
 
 type pullAt struct {
@@ -119,7 +121,17 @@ func (d *fakeDaemon) InspectImage(_ context.Context, ref string) (docker.Image, 
 	return out, true, nil
 }
 
-func (d *fakeDaemon) PullImage(_ context.Context, ref, _ string) error {
+func (d *fakeDaemon) PullImage(ctx context.Context, ref, _ string) error {
+	d.mu.Lock()
+	hold := d.holdPull
+	d.mu.Unlock()
+	if hold != nil {
+		select {
+		case <-hold:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.pulls = append(d.pulls, pullAt{ref: ref, at: time.Now()})

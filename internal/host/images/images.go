@@ -67,6 +67,8 @@ type Config struct {
 	// ByName reports a name an internet: false host reaches by name:
 	// GitHub's domain list.
 	ByName func(name string) bool
+	// Tidied, if set, is called after each tidy pass has ended.
+	Tidied func()
 	Log    *slog.Logger
 	Keep   Keep
 	// Version is the host's build version, which picks the shipped
@@ -86,6 +88,7 @@ type Manager struct {
 	daemon   Daemon
 	lookup   func(ctx context.Context, name string) ([]netip.Addr, error)
 	byName   func(name string) bool
+	tidied   func()
 	log      *slog.Logger
 	keep     Keep
 	wake     chan struct{}
@@ -97,9 +100,9 @@ type Manager struct {
 	probeID  string
 	checking map[string]int
 	profiles []*profile
-	// tidied are the callers waiting for the next tidy pass to end.
-	tidied []func()
-	mu     sync.Mutex
+	// tidyAsked is a tidy pass Tidy asked for, not yet begun.
+	tidyAsked bool
+	mu        sync.Mutex
 }
 
 // ref is one image reference the profiles name, and its check state.
@@ -135,7 +138,7 @@ func (p *profile) ready() bool { return p.id != "" && p.ref.refused == nil }
 // New answers a Manager for cfg. No image is in service until Run.
 func New(cfg *Config) *Manager {
 	m := &Manager{
-		daemon: cfg.Daemon, lookup: cfg.Lookup, byName: cfg.ByName, log: cfg.Log, keep: cfg.Keep,
+		daemon: cfg.Daemon, lookup: cfg.Lookup, byName: cfg.ByName, log: cfg.Log, keep: cfg.Keep, tidied: cfg.Tidied,
 		version: cfg.Version, binary: cfg.Binary, wake: make(chan struct{}, 1),
 		rec: record{path: recordPath(cfg.StateDir)}, checking: map[string]int{},
 	}
@@ -276,11 +279,10 @@ func (m *Manager) Status() []hostapi.ProfileStatus {
 }
 
 // Tidy asks for a tidy pass now, as after a start the daemon refused for
-// want of space, and calls done, if set, once a pass begun after the ask
-// has ended.
-func (m *Manager) Tidy(done func()) {
+// want of space.
+func (m *Manager) Tidy() {
 	m.mu.Lock()
-	m.tidied = append(m.tidied, done)
+	m.tidyAsked = true
 	m.mu.Unlock()
 	m.kick()
 }
@@ -308,41 +310,31 @@ func (m *Manager) Run(ctx context.Context) {
 		for _, r := range due {
 			wg.Go(func() { m.check(ctx, r) })
 		}
-		if tidy.due {
+		if tidy {
 			lastTidy = time.Now()
-			wg.Go(func() { m.tidyFor(ctx, tidy.waiters) })
+			wg.Go(func() { m.tidyThenTell(ctx) })
 		}
 		t.Reset(time.Until(next))
 	}
 }
 
-// tidyFor runs a tidy pass, then calls each waiter's done.
-func (m *Manager) tidyFor(ctx context.Context, waiters []func()) {
+func (m *Manager) tidyThenTell(ctx context.Context) {
 	m.tidy(ctx)
-	for _, done := range waiters {
-		if done != nil {
-			done()
-		}
+	if m.tidied != nil {
+		m.tidied()
 	}
-}
-
-// tidyDue is a tidy pass due now and the Tidy callers it ends for.
-type tidyDue struct {
-	waiters []func()
-	due     bool
 }
 
 // due marks each ref due now busy and answers them, the tidy pass due now,
 // and when the next work falls due.
-func (m *Manager) due(lastTidy time.Time) (due []*ref, tidy tidyDue, next time.Time) {
+func (m *Manager) due(lastTidy time.Time) (due []*ref, tidy bool, next time.Time) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	now := time.Now()
 	refresh := m.host.ImageRefresh
 	next = lastTidy.Add(refresh)
-	if m.tidied != nil || !now.Before(next) {
-		tidy = tidyDue{waiters: m.tidied, due: true}
-		m.tidied, next = nil, now.Add(refresh)
+	if m.tidyAsked || !now.Before(next) {
+		tidy, m.tidyAsked, next = true, false, now.Add(refresh)
 	}
 	for _, r := range m.refs {
 		if r.busy {

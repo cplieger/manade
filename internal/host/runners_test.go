@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -28,8 +29,9 @@ type fakeRunnerDaemon struct {
 	create func(name string, n int) (docker.Result, bool)
 	start  func(id string, n int) (docker.Result, bool)
 	// listed, when set, runs after a list read the containers and before
-	// it answers.
-	listed func()
+	// it answers; inspected after an inspect of ref read its container.
+	listed    func()
+	inspected func(ref string)
 	// gate holds each create until it closes; with commitLate a create its
 	// caller cut still commits once the gate opens, as a daemon under load
 	// does, and InspectSettled waits for that.
@@ -136,13 +138,18 @@ func (d *fakeRunnerDaemon) byID(ref string) *docker.Container {
 
 func (d *fakeRunnerDaemon) InspectContainer(_ context.Context, ref string) (docker.Container, bool, error) {
 	d.mu.Lock()
-	defer d.mu.Unlock()
 	d.inspects++
 	c := d.byID(ref)
-	if c == nil {
-		return docker.Container{}, false, nil
+	var ctr docker.Container
+	if c != nil {
+		ctr = *c
 	}
-	return *c, true, nil
+	inspected := d.inspected
+	d.mu.Unlock()
+	if inspected != nil {
+		inspected(ref)
+	}
+	return ctr, c != nil, nil
 }
 
 // InspectSettled inspects ref once no create cut by its caller is still
@@ -259,9 +266,12 @@ func (d *fakeRunnerDaemon) callList() []string {
 }
 
 // fakeImages serves every profile with one image, unless not ready; each
-// tidy pass ends before Tidy returns.
+// tidy pass runs pass, then tidied, before Tidy returns, as the image
+// manager's Tidied hook does after its pass.
 type fakeImages struct {
 	notReady map[string]hostapi.ProfileStatus
+	pass     func()
+	tidied   func()
 	missing  []string
 	mu       sync.Mutex
 	tidies   int
@@ -280,12 +290,16 @@ func (f *fakeImages) Missing(p, id string) {
 	f.missing = append(f.missing, p+" "+id)
 }
 
-func (f *fakeImages) Tidy(done func()) {
+func (f *fakeImages) Tidy() {
 	f.mu.Lock()
 	f.tidies++
+	pass, tidied := f.pass, f.tidied
 	f.mu.Unlock()
-	if done != nil {
-		done()
+	if pass != nil {
+		pass()
+	}
+	if tidied != nil {
+		tidied()
 	}
 }
 
@@ -331,6 +345,8 @@ type runnersTest struct {
 	r   *runnerSet
 	d   *fakeRunnerDaemon
 	img *fakeImages
+	// free is the data volume's free bytes.
+	free *atomic.Uint64
 }
 
 // newRunnersTest runs a runnerSet until the test ends; cpus makes it a
@@ -345,8 +361,14 @@ func newRunnersTest(t *testing.T, cpus []int, setup func(d *fakeRunnerDaemon)) *
 		setup(d)
 	}
 	img := &fakeImages{notReady: map[string]hostapi.ProfileStatus{}}
+	free := &atomic.Uint64{}
+	free.Store(1 << 30)
 	ctx, cancel := context.WithCancel(context.Background())
-	r := newRunners(ctx, &runnersConfig{Daemon: d, Images: img, Served: testServed(cpus != nil), Log: slog.New(slog.DiscardHandler), CPUs: cpus})
+	r := newRunners(ctx, &runnersConfig{
+		Daemon: d, Images: img, Served: testServed(cpus != nil), Log: slog.New(slog.DiscardHandler), CPUs: cpus,
+		DataFree: func() (uint64, error) { return free.Load(), nil },
+	})
+	img.tidied = r.tidied
 	if err := r.load(t.Context()); err != nil {
 		cancel()
 		t.Fatal(err)
@@ -354,7 +376,7 @@ func newRunnersTest(t *testing.T, cpus []int, setup func(d *fakeRunnerDaemon)) *
 	done := make(chan struct{})
 	go func() { r.run(ctx); close(done) }()
 	t.Cleanup(func() { cancel(); <-done })
-	return &runnersTest{r: r, d: d, img: img}
+	return &runnersTest{r: r, d: d, img: img, free: free}
 }
 
 func waitFor(t *testing.T, what string, ok func() bool) {
@@ -538,12 +560,21 @@ func noSpaceOnce(n int) func(id string, i int) (docker.Result, bool) {
 func (rt *runnersTest) held() bool {
 	rt.r.mu.Lock()
 	defer rt.r.mu.Unlock()
-	return rt.r.spaceHeld != ""
+	return rt.r.space != nil
+}
+
+// freesOnTidy makes each tidy pass free n bytes of the data volume.
+func (rt *runnersTest) freesOnTidy(n uint64) {
+	rt.img.mu.Lock()
+	defer rt.img.mu.Unlock()
+	rt.img.pass = func() { rt.free.Add(n) }
 }
 
 func TestAFullVolume(t *testing.T) {
 	t.Run("fails the start naming the volume, holds starts as not ready and tidies", func(t *testing.T) {
 		rt := newRunnersTest(t, nil, func(d *fakeRunnerDaemon) { d.start = noSpaceOnce(2) })
+		rt.freesOnTidy(1 << 20)
+		rt.img.notReady["large"] = hostapi.ProfileStatus{Name: "large", Reason: hostapi.ReasonPulling, Detail: "no image of base has passed its pull and check yet"}
 		if _, err := rt.r.accept(t.Context(), request("r1", "small")); err != nil {
 			t.Fatal(err)
 		}
@@ -563,8 +594,16 @@ func TestAFullVolume(t *testing.T) {
 			t.Error("a POST refused while held left a record")
 		}
 		for _, p := range rt.r.profileStatus() {
-			if p.Ready || p.Reason != hostapi.ReasonDataFull {
+			if p.Ready || p.Reason != hostapi.ReasonDataFull || !strings.Contains(p.Detail, dataRoot) {
 				t.Errorf("status %+v, want every profile not ready for the full volume", p)
+			}
+			for _, arm := range []string{"a runner exits", "container is removed", "more free space", "no runner running"} {
+				if !strings.Contains(p.Detail, arm) {
+					t.Errorf("status detail %q does not name the lift %q", p.Detail, arm)
+				}
+			}
+			if p.Name == "large" && !strings.Contains(p.Detail, "pulling: no image of base") {
+				t.Errorf("large's detail %q hides its own reason", p.Detail)
 			}
 		}
 		rt.img.mu.Lock()
@@ -574,7 +613,7 @@ func TestAFullVolume(t *testing.T) {
 			t.Errorf("%d tidy passes, want 1 at once", tidies)
 		}
 		if !rt.held() {
-			t.Error("the tidy pass lifted the hold while a runner runs")
+			t.Error("the tidy pass, which freed space, lifted the hold while a runner runs")
 		}
 		rt.d.exit("r1", 0, false)
 		waitFor(t, "the hold lifted", func() bool { return !rt.held() })
@@ -602,17 +641,44 @@ func TestAFullVolume(t *testing.T) {
 			t.Error("the list read r1's exit and kept the hold")
 		}
 	})
-	t.Run("with no runner running, the tidy pass's end lifts the hold", func(t *testing.T) {
+	t.Run("with no runner running, a pass that frees nothing keeps the hold and one that frees space lifts it", func(t *testing.T) {
 		rt := newRunnersTest(t, nil, func(d *fakeRunnerDaemon) { d.start = noSpaceOnce(1) })
 		if _, err := rt.r.accept(t.Context(), request("r1", "small")); err != nil {
 			t.Fatal(err)
 		}
 		rt.waitState(t, "r1", hostapi.StateFailed)
-		waitFor(t, "the hold lifted", func() bool { return !rt.held() })
-		if _, err := rt.r.accept(t.Context(), request("r2", "small")); err != nil {
+		rt.r.tidied()
+		rt.r.sync(t.Context())
+		if !rt.held() {
+			t.Fatal("passes and a list that freed nothing lifted the hold")
+		}
+		if st := rt.r.profileStatus(); st[0].Reason != hostapi.ReasonDataFull {
+			t.Errorf("status %+v, want data_full to stand", st[0])
+		}
+		if _, err := rt.r.accept(t.Context(), request("r2", "small")); err == nil {
+			t.Error("a POST was taken while the full volume's hold stands")
+		}
+		rt.freesOnTidy(1 << 20)
+		rt.img.Tidy()
+		if rt.held() {
+			t.Fatal("a pass that freed space kept the hold with no runner running")
+		}
+		if _, err := rt.r.accept(t.Context(), request("r3", "small")); err != nil {
 			t.Fatal(err)
 		}
-		rt.waitState(t, "r2", hostapi.StateRunning)
+		rt.waitState(t, "r3", hostapi.StateRunning)
+	})
+	t.Run("a list that finds the volume grown lifts the hold", func(t *testing.T) {
+		rt := newRunnersTest(t, nil, func(d *fakeRunnerDaemon) { d.start = noSpaceOnce(1) })
+		if _, err := rt.r.accept(t.Context(), request("r1", "small")); err != nil {
+			t.Fatal(err)
+		}
+		rt.waitState(t, "r1", hostapi.StateFailed)
+		rt.free.Add(10 << 30)
+		rt.r.sync(t.Context())
+		if rt.held() {
+			t.Error("a list that found more free space kept the hold with no runner running")
+		}
 	})
 	t.Run("an exit from before the hold does not lift it", func(t *testing.T) {
 		rt := newRunnersTest(t, nil, func(d *fakeRunnerDaemon) { d.start = noSpaceOnce(3) })
@@ -894,5 +960,288 @@ func TestWorkRunsUnderTheHostsRunFromTheStart(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("the build ignored the host's stop")
+	}
+}
+
+// A read made with the lock dropped never writes over a newer write for the
+// same name: a start's inspect that read the running container before its
+// die was handled leaves the exited view.
+func TestAStartsInspectDoesNotHideAnExit(t *testing.T) {
+	read, release := make(chan struct{}), make(chan struct{})
+	rt := newRunnersTest(t, nil, nil)
+	var first atomic.Bool
+	rt.d.mu.Lock()
+	rt.d.inspected = func(ref string) {
+		if ref == "id-r1" && first.CompareAndSwap(false, true) {
+			close(read)
+			<-release
+		}
+	}
+	rt.d.mu.Unlock()
+	if _, err := rt.r.accept(t.Context(), request("r1", "small")); err != nil {
+		t.Fatal(err)
+	}
+	<-read
+	rt.d.exit("r1", 0, false)
+	waitFor(t, "the die handled", func() bool {
+		rt.r.mu.Lock()
+		defer rt.r.mu.Unlock()
+		c := rt.r.ctrs["r1"]
+		return c != nil && c.State == docker.StateExited
+	})
+	close(release)
+	waitFor(t, "r1 recorded started", func() bool {
+		rt.r.mu.Lock()
+		defer rt.r.mu.Unlock()
+		return rt.r.records["r1"].rec.State == hostapi.RecordStarted
+	})
+	rt.r.mu.Lock()
+	got, _ := rt.r.listed("r1")
+	rt.r.mu.Unlock()
+	if got.State != hostapi.StateExited {
+		t.Errorf("r1 = %+v, want exited: the start's older read put its running view back", got)
+	}
+}
+
+// A die's inspect still in flight when a DELETE removes the runner does not
+// put the deleted runner back.
+func TestAnExitsInspectDoesNotUndoADelete(t *testing.T) {
+	read, release := make(chan struct{}), make(chan struct{})
+	rt := newRunnersTest(t, nil, nil)
+	if _, err := rt.r.accept(t.Context(), request("r1", "small")); err != nil {
+		t.Fatal(err)
+	}
+	rt.waitState(t, "r1", hostapi.StateRunning)
+	var first atomic.Bool
+	rt.d.mu.Lock()
+	rt.d.inspected = func(ref string) {
+		if ref == "id-r1" && first.CompareAndSwap(false, true) {
+			close(read)
+			<-release
+		}
+	}
+	rt.d.mu.Unlock()
+	rt.d.exit("r1", 0, false)
+	<-read
+	if _, err := rt.r.remove(t.Context(), "r1", false); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+	waitFor(t, "the die's inspect done", func() bool {
+		rt.r.mu.Lock()
+		defer rt.r.mu.Unlock()
+		return len(rt.r.reading) == 0
+	})
+	rt.r.mu.Lock()
+	got, listed := rt.r.listed("r1")
+	_, remembered := rt.r.wrote["r1"]
+	rt.r.mu.Unlock()
+	if listed {
+		t.Errorf("r1 listed %+v after its DELETE answered", got)
+	}
+	if remembered {
+		t.Error("the deleted runner's write is kept after the last read that could write it ended")
+	}
+}
+
+// A failed create's CPUs are free as soon as its work ends, with no list
+// between.
+func TestAFailedCreateFreesItsCPUsAtOnce(t *testing.T) {
+	rt := newRunnersTest(t, []int{0, 1}, func(d *fakeRunnerDaemon) {
+		d.create = func(name string, _ int) (docker.Result, bool) {
+			return docker.Result{Outcome: docker.Failed, Err: errors.New("invalid mount")}, name == "r1"
+		}
+	})
+	if _, err := rt.r.accept(t.Context(), request("r1", "large")); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "r1's work ended", func() bool {
+		rt.r.mu.Lock()
+		defer rt.r.mu.Unlock()
+		select {
+		case <-rt.r.records["r1"].done:
+			return true
+		default:
+			return false
+		}
+	})
+	run, err := rt.r.accept(t.Context(), request("r2", "large"))
+	if err != nil || run.State == hostapi.StateFailed || run.Limits.CPUSet != "0,1" {
+		t.Errorf("r2 = %+v, %v, want r1's CPUs 0,1", run, err)
+	}
+}
+
+// openServed is testServed with host nas open.
+func openServed() *served {
+	sv := testServed(false)
+	sv.Config.Hosts[0].Egress.Open = true
+	return sv
+}
+
+func TestAReloadThatClosesTheHostDrainsIt(t *testing.T) {
+	setup := func(t *testing.T) *runnersTest {
+		t.Helper()
+		rt := newRunnersTest(t, nil, nil)
+		rt.r.setServed(openServed())
+		for _, name := range []string{"done", "r1"} {
+			if _, err := rt.r.accept(t.Context(), request(name, "small")); err != nil {
+				t.Fatal(err)
+			}
+			rt.waitState(t, name, hostapi.StateRunning)
+		}
+		rt.d.exit("done", 0, false)
+		rt.waitState(t, "done", hostapi.StateExited)
+		rt.r.setServed(testServed(false))
+		return rt
+	}
+	t.Run("holds starts until the runners started while open have ended", func(t *testing.T) {
+		rt := setup(t)
+		for _, p := range rt.r.profileStatus() {
+			if p.Ready || p.Reason != hostapi.ReasonOpenDraining || !strings.Contains(p.Detail, "r1") || strings.Contains(p.Detail, "done") {
+				t.Errorf("status %+v, want every profile not ready naming r1 alone", p)
+			}
+		}
+		_, err := rt.r.accept(t.Context(), request("r2", "small"))
+		if nr, ok := errors.AsType[*hostapi.NotReadyError](err); !ok || nr.Reason != hostapi.ReasonOpenDraining {
+			t.Errorf("POST while draining = %v, want not ready", err)
+		}
+		rt.d.exit("r1", 0, false)
+		waitFor(t, "the drain over", func() bool {
+			rt.r.mu.Lock()
+			defer rt.r.mu.Unlock()
+			return len(rt.r.draining) == 0
+		})
+		if st := rt.r.profileStatus(); !st[0].Ready {
+			t.Errorf("status %+v after the drain, want ready", st[0])
+		}
+		if _, err := rt.r.accept(t.Context(), request("r3", "small")); err != nil {
+			t.Errorf("POST after the drain = %v", err)
+		}
+	})
+	t.Run("a removal ends a runner's part in it", func(t *testing.T) {
+		rt := setup(t)
+		if _, err := rt.r.remove(t.Context(), "r1", false); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := rt.r.accept(t.Context(), request("r2", "small")); err != nil {
+			t.Errorf("POST after the removal = %v", err)
+		}
+	})
+	t.Run("opening the host again ends it", func(t *testing.T) {
+		rt := setup(t)
+		rt.r.setServed(openServed())
+		if _, err := rt.r.accept(t.Context(), request("r2", "small")); err != nil {
+			t.Errorf("POST once open again = %v", err)
+		}
+	})
+	t.Run("a closed host's own runners hold nothing", func(t *testing.T) {
+		rt := newRunnersTest(t, nil, nil)
+		if _, err := rt.r.accept(t.Context(), request("r1", "small")); err != nil {
+			t.Fatal(err)
+		}
+		rt.waitState(t, "r1", hostapi.StateRunning)
+		rt.r.setServed(testServed(false))
+		if _, err := rt.r.accept(t.Context(), request("r2", "small")); err != nil {
+			t.Errorf("POST after a reload that kept the host closed = %v", err)
+		}
+	})
+}
+
+// A start's read from before the die that lands after the die's inspect
+// began, and before it wrote, still loses to the exited view.
+func TestAnExitWinsOverAnOlderReadWrittenFirst(t *testing.T) {
+	startRead, exitRead := make(chan struct{}), make(chan struct{})
+	releaseStart, releaseExit := make(chan struct{}), make(chan struct{})
+	rt := newRunnersTest(t, nil, nil)
+	var calls atomic.Int32
+	rt.d.mu.Lock()
+	rt.d.inspected = func(ref string) {
+		if ref != "id-r1" {
+			return
+		}
+		switch calls.Add(1) {
+		case 1:
+			close(startRead)
+			<-releaseStart
+		case 2:
+			close(exitRead)
+			<-releaseExit
+		}
+	}
+	rt.d.mu.Unlock()
+	if _, err := rt.r.accept(t.Context(), request("r1", "small")); err != nil {
+		t.Fatal(err)
+	}
+	<-startRead
+	rt.d.exit("r1", 0, false)
+	<-exitRead
+	close(releaseStart)
+	waitFor(t, "r1 recorded started", func() bool {
+		rt.r.mu.Lock()
+		defer rt.r.mu.Unlock()
+		return rt.r.records["r1"].rec.State == hostapi.RecordStarted
+	})
+	close(releaseExit)
+	waitFor(t, "the die's inspect done", func() bool {
+		rt.r.mu.Lock()
+		defer rt.r.mu.Unlock()
+		return len(rt.r.reading) == 0
+	})
+	rt.r.mu.Lock()
+	got, _ := rt.r.listed("r1")
+	rt.r.mu.Unlock()
+	if got.State != hostapi.StateExited {
+		t.Errorf("r1 = %+v, want exited", got)
+	}
+}
+
+// A list that read a runner's exit keeps it over a start's older read
+// written while the list was out.
+func TestAListsExitWinsOverAStartsOlderRead(t *testing.T) {
+	startRead, releaseStart := make(chan struct{}), make(chan struct{})
+	listRead, releaseList := make(chan struct{}), make(chan struct{})
+	rt := newRunnersTest(t, nil, nil)
+	var first atomic.Bool
+	rt.d.mu.Lock()
+	rt.d.inspected = func(ref string) {
+		if ref == "id-r1" && first.CompareAndSwap(false, true) {
+			close(startRead)
+			<-releaseStart
+		}
+	}
+	rt.d.mu.Unlock()
+	if _, err := rt.r.accept(t.Context(), request("r1", "small")); err != nil {
+		t.Fatal(err)
+	}
+	<-startRead
+	rt.d.mu.Lock()
+	c := rt.d.ctrs["r1"]
+	c.State.Status, c.State.FinishedAt = docker.StateExited, time.Now()
+	var listOnce atomic.Bool
+	rt.d.listed = func() {
+		if listOnce.CompareAndSwap(false, true) {
+			close(listRead)
+			<-releaseList
+		}
+	}
+	rt.d.mu.Unlock()
+	refreshed := make(chan error, 1)
+	go func() { refreshed <- rt.r.refresh(t.Context()) }()
+	<-listRead
+	close(releaseStart)
+	waitFor(t, "r1 recorded started", func() bool {
+		rt.r.mu.Lock()
+		defer rt.r.mu.Unlock()
+		return rt.r.records["r1"].rec.State == hostapi.RecordStarted
+	})
+	close(releaseList)
+	if err := <-refreshed; err != nil {
+		t.Fatal(err)
+	}
+	rt.r.mu.Lock()
+	got, _ := rt.r.listed("r1")
+	rt.r.mu.Unlock()
+	if got.State != hostapi.StateExited {
+		t.Errorf("r1 = %+v, want the list's exited view", got)
 	}
 }

@@ -1,7 +1,7 @@
-// Package resolver is an internet: false host's own DNS resolver: it
-// forwards every query to the host's configured resolvers and, for a name
-// on GitHub's published list of runner domains, adds each address of the
-// answer to the rules' learned set before it answers.
+// Package resolver is the host's own DNS resolver: it forwards every query
+// to the host's configured resolvers and, on an internet: false host, for a
+// name on GitHub's published list of runner domains, adds each address of
+// the answer to the rules' learned set before it answers.
 package resolver
 
 import (

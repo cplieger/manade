@@ -12,6 +12,7 @@ import (
 
 	"github.com/cplieger/go/health/v2"
 	"github.com/cplieger/manade/internal/config"
+	"github.com/cplieger/manade/internal/docker"
 	"github.com/cplieger/manade/internal/egress"
 	"github.com/cplieger/manade/internal/host/images"
 	"github.com/cplieger/manade/internal/hostapi"
@@ -114,8 +115,8 @@ func reloadSupervisorOf(t *testing.T, h *config.Host, cfg func() (*config.Config
 	s := &supervisor{log: log, net: n, opts: &Options{Log: log, Reload: func(context.Context) (*config.Config, error) { return cfg() }}}
 	sv := s.newServed(lanConfig(h, testProfile("small", 1)), h)
 	s.served.Store(sv)
-	s.runners = newRunners(t.Context(), &runnersConfig{Served: sv, Log: log})
 	s.images = images.New(&images.Config{Host: section(), Log: log, Profiles: sv.Profiles})
+	s.runners = newRunners(t.Context(), &runnersConfig{Served: sv, Images: s.images, Log: log})
 	return s
 }
 
@@ -206,8 +207,26 @@ func TestSupervisorReloadSwapsThePolicy(t *testing.T) {
 				t.Errorf("policy hash %s after the reload, want the new section's %s", after, egress.PolicyHash(tc.to))
 			}
 			if (s.net.gitHubStatus() == nil) != tc.to.Egress.Internet {
-				t.Errorf("resolver running %v, want %v", s.net.gitHubStatus() != nil, !tc.to.Egress.Internet)
+				t.Errorf("learning GitHub's addresses %v, want %v", s.net.gitHubStatus() != nil, !tc.to.Egress.Internet)
 			}
 		})
+	}
+}
+
+// A SIGHUP that closes an open host holds its starts while a runner started
+// before it still runs.
+func TestSupervisorReloadDrainsAHostItCloses(t *testing.T) {
+	open := section()
+	open.Egress.Open = true
+	s := reloadSupervisorOf(t, open, func() (*config.Config, error) { return lanConfig(section(), testProfile("small", 1)), nil })
+	s.runners.mu.Lock()
+	s.runners.ctrs["r1"] = &hostapi.Container{Name: "r1", State: docker.StateRunning}
+	s.runners.mu.Unlock()
+	if err := s.reload(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	st := s.runners.profileStatus()
+	if len(st) != 1 || st[0].Ready || st[0].Reason != hostapi.ReasonOpenDraining || !strings.Contains(st[0].Detail, "r1") {
+		t.Errorf("status %+v, want small not ready while r1 drains", st)
 	}
 }

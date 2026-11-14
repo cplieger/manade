@@ -27,10 +27,12 @@ type oomFile struct {
 // Its methods are safe for concurrent use.
 type OOMTotal struct {
 	path string
-	// base is the saved total at this run's start; written the total last
-	// saved.
+	// base is the saved total at this run's start, written the total last
+	// saved and seen the highest total answered, which a failed save can
+	// leave above written.
 	base    uint64
 	written uint64
+	seen    uint64
 	mu      sync.Mutex
 }
 
@@ -50,21 +52,22 @@ func LoadOOMTotal(ctx context.Context, path string) (*OOMTotal, error) {
 	if err := json.Unmarshal(b, &f); err != nil {
 		return t, fmt.Errorf("the saved OOM kill total %s: %w", path, err)
 	}
-	t.base, t.written = f.Total, f.Total
+	t.base, t.written, t.seen = f.Total, f.Total, f.Total
 	return t, nil
 }
 
 // Observe answers the total for this run's cgroup count, saving it
 // atomically when it grew past the last save. A count read before one
 // already observed answers and saves nothing lower, so the total never
-// falls. On a failed save the total is still right and the next Observe
-// saves again.
+// falls, a failed save's included. On a failed save the total is still
+// right and the next Observe saves again.
 func (t *OOMTotal) Observe(ctx context.Context, count uint64) (uint64, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	total := t.base + count
+	total := max(t.base+count, t.seen)
+	t.seen = total
 	if total <= t.written {
-		return t.written, nil
+		return total, nil
 	}
 	b, err := json.Marshal(oomFile{Total: total})
 	if err == nil {

@@ -158,3 +158,30 @@ func TestSetOOMScoreAdj(t *testing.T) {
 		t.Error("a missing process answered nil")
 	}
 }
+
+// A read older than one whose save failed answers that higher total and
+// saves it, never its own lower one.
+func TestOOMTotalNeverFallsAfterAFailedSave(t *testing.T) {
+	dir := t.TempDir()
+	block := filepath.Join(dir, "blocked")
+	path := filepath.Join(block, "oom-kills.json")
+	tot, err := LoadOOMTotal(t.Context(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(block, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := tot.Observe(t.Context(), 5); err == nil || got != 5 {
+		t.Fatalf("Observe(5) with the save failing = %d, %v, want 5 and an error", got, err)
+	}
+	if err := os.Remove(block); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := tot.Observe(t.Context(), 3); err != nil || got != 5 {
+		t.Errorf("Observe(3) after an answered 5 = %d, %v, want 5", got, err)
+	}
+	if f := readSaved(t, path); f.Total != 5 {
+		t.Errorf("saved %+v, want the answered 5, not the older read's 3", f)
+	}
+}

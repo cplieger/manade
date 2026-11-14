@@ -207,7 +207,6 @@ type wanted struct {
 	// Generate builds the rule set from what the host holds at the time, so
 	// a restore carries the learned addresses.
 	Generate func() (*egress.Ruleset, error)
-	Resolv   []byte
 	// IPv6Off holds IPv6 off in the namespace; BridgeNF6 holds
 	// bridge-nf-call-ip6tables at 1.
 	IPv6Off   bool
@@ -325,8 +324,8 @@ func (g *guard) settings() []setting {
 		},
 		{
 			what: restoredResolvConf, why: "resolv.conf was replaced", wanted: true,
-			holds: func() (bool, error) { return netsetup.ResolvConfHolds(r, w.Resolv) },
-			set:   func() error { return netsetup.WriteResolvConf(r, w.Resolv) },
+			holds: func() (bool, error) { return netsetup.ResolvConfHolds(r, netsetup.ResolvConf()) },
+			set:   func() error { return netsetup.WriteResolvConf(r, netsetup.ResolvConf()) },
 		},
 	}
 }

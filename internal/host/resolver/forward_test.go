@@ -116,7 +116,11 @@ func serve(t *testing.T, f *Forwarder) netip.AddrPort {
 func newForwarder(ups []netip.AddrPort, k *kernelSets) *Forwarder {
 	l := NewLearner(k.write, learnable(), slog.New(slog.DiscardHandler))
 	m := newMatcher(meta)
-	return NewForwarder(func() []netip.AddrPort { return ups }, func() *Matcher { return m }, l, slog.New(slog.DiscardHandler))
+	return NewForwarder(func() []netip.AddrPort { return ups }, learns(m, l), slog.New(slog.DiscardHandler))
+}
+
+func learns(m *Matcher, l *Learner) func() *Learning {
+	return func() *Learning { return &Learning{Match: m, Learner: l} }
 }
 
 func ask(t *testing.T, network string, at netip.AddrPort, q []byte) []byte {
@@ -179,7 +183,7 @@ func TestForwardWritesBeforeItAnswers(t *testing.T) {
 	}, learnable(), slog.New(slog.DiscardHandler))
 	m := newMatcher(meta)
 	up := upstream(t, answering(0, aRR("140.82.121.10", 60)))
-	at := serve(t, NewForwarder(func() []netip.AddrPort { return []netip.AddrPort{up} }, func() *Matcher { return m }, l, slog.New(slog.DiscardHandler)))
+	at := serve(t, NewForwarder(func() []netip.AddrPort { return []netip.AddrPort{up} }, learns(m, l), slog.New(slog.DiscardHandler)))
 	got := make(chan []byte, 1)
 	go func() {
 		c, err := net.Dial("udp", at.String())
@@ -232,6 +236,34 @@ func TestForwardLearnsNothing(t *testing.T) {
 				t.Errorf("writes = %v, want none", w)
 			}
 		})
+	}
+}
+
+func TestForwardWithLearningOffRelaysAListedName(t *testing.T) {
+	k := &kernelSets{}
+	var on atomic.Bool
+	on.Store(true)
+	l := NewLearner(k.write, learnable(), slog.New(slog.DiscardHandler))
+	m := newMatcher(meta)
+	up := upstream(t, answering(0, aRR("140.82.121.10", 60)))
+	at := serve(t, NewForwarder(func() []netip.AddrPort { return []netip.AddrPort{up} }, func() *Learning {
+		if !on.Load() {
+			return nil
+		}
+		return &Learning{Match: m, Learner: l}
+	}, slog.New(slog.DiscardHandler)))
+	on.Store(false)
+	q := query(7, "codeload.github.com", typeA)
+	if resp := ask(t, "udp", at, q); !slices.Equal(resp, response(q, 0, aRR("140.82.121.10", 60))) {
+		t.Errorf("answer = %x, want the upstream's answer relayed", resp)
+	}
+	if w := k.all(); len(w) != 0 {
+		t.Errorf("writes = %v, want none while learning is off", w)
+	}
+	on.Store(true)
+	ask(t, "udp", at, query(8, "codeload.github.com", typeA))
+	if w := k.all(); len(w) != 1 {
+		t.Errorf("writes = %v, want the answer learned once learning is on again", w)
 	}
 }
 
@@ -307,7 +339,7 @@ func TestForwardReadsItsUpstreamsAtEachQuery(t *testing.T) {
 	ups.Store(&old)
 	m := newMatcher(meta)
 	l := NewLearner((&kernelSets{}).write, learnable(), slog.New(slog.DiscardHandler))
-	at := serve(t, NewForwarder(func() []netip.AddrPort { return *ups.Load() }, func() *Matcher { return m }, l, slog.New(slog.DiscardHandler)))
+	at := serve(t, NewForwarder(func() []netip.AddrPort { return *ups.Load() }, learns(m, l), slog.New(slog.DiscardHandler)))
 	if rc := rcodeOf(ask(t, "udp", at, query(5, "github.com", typeA))); rc != 5 {
 		t.Errorf("rcode = %d, want the first upstream's", rc)
 	}

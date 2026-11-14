@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	resolvRendered = "nameserver 1.1.1.1\nnameserver 8.8.8.8\n"
+	resolvRendered = "nameserver 127.0.0.1\n"
 	disableAll     = "/proc/sys/net/ipv6/conf/all/disable_ipv6"
 	disableDefault = "/proc/sys/net/ipv6/conf/default/disable_ipv6"
 )
@@ -141,7 +141,7 @@ func guardFixture(t *testing.T) (*fakeIPT, platform.Root, *guard, *[]string) {
 	k := newFakeIPT(false)
 	r := tree(t, map[string]string{disableAll: "1\n", disableDefault: "1\n", "/etc/resolv.conf": resolvRendered})
 	l := &ruleLoader{Run: k.run, Kernel: iptKernel(), Root: r}
-	want := wanted{Generate: generateFor(t, section()), Resolv: []byte(resolvRendered), IPv6Off: true}
+	want := wanted{Generate: generateFor(t, section()), IPv6Off: true}
 	rs, _ := want.Generate()
 	if err := l.load(t.Context(), rs); err != nil {
 		t.Fatal(err)
@@ -259,29 +259,21 @@ func TestGuardRun(t *testing.T) {
 
 func TestGuardSwap(t *testing.T) {
 	t.Run("a new section is loaded and held", func(t *testing.T) {
-		k, r, g, _ := guardFixture(t)
+		k, _, g, _ := guardFixture(t)
 		h := section("10.0.0.50/32")
-		h.DNS = h.DNS[:1]
-		kept, fatal := g.swap(t.Context(), wanted{Generate: generateFor(t, h), Resolv: []byte("nameserver 1.1.1.1\n"), IPv6Off: true})
+		kept, fatal := g.swap(t.Context(), wanted{Generate: generateFor(t, h), IPv6Off: true})
 		if kept != nil || fatal != nil {
 			t.Fatalf("Swap = %v, %v", kept, fatal)
 		}
 		if !slices.ContainsFunc(k.chain(false, "filter", "MANADE-FWD"), func(r string) bool { return strings.Contains(r, "10.0.0.50/32") }) {
 			t.Error("the new allow entry is not loaded")
 		}
-		if readAt(t, r, "/etc/resolv.conf") != "nameserver 1.1.1.1\n" {
-			t.Errorf("resolv.conf = %q", readAt(t, r, "/etc/resolv.conf"))
-		}
-		writeAt(t, r, "/etc/resolv.conf", resolvRendered)
-		if err := g.check(t.Context()); err != nil || readAt(t, r, "/etc/resolv.conf") != "nameserver 1.1.1.1\n" {
-			t.Errorf("the guard holds the old resolv.conf: %v", err)
-		}
 	})
 	t.Run("a section the kernel took but did not read back is unloaded", func(t *testing.T) {
 		k, _, g, _ := guardFixture(t)
 		old := k.chain(false, "filter", "MANADE-FWD")
 		k.failOnce[platform.LegacyDir+"/iptables-save"] = errors.New("iptables-save: resource busy")
-		kept, fatal := g.swap(t.Context(), wanted{Generate: generateFor(t, section("10.0.0.50/32")), Resolv: []byte(resolvRendered), IPv6Off: true})
+		kept, fatal := g.swap(t.Context(), wanted{Generate: generateFor(t, section("10.0.0.50/32")), IPv6Off: true})
 		if kept == nil || fatal != nil {
 			t.Fatalf("Swap = %v, %v, want kept", kept, fatal)
 		}
@@ -292,7 +284,7 @@ func TestGuardSwap(t *testing.T) {
 	t.Run("a section that fails to load keeps the old rules", func(t *testing.T) {
 		k, r, g, _ := guardFixture(t)
 		old := k.chain(false, "filter", "MANADE-FWD")
-		bad := wanted{Generate: func() (*egress.Ruleset, error) { return nil, errors.New("no backend") }, Resolv: []byte("nameserver 9.9.9.9\n")}
+		bad := wanted{Generate: func() (*egress.Ruleset, error) { return nil, errors.New("no backend") }}
 		kept, fatal := g.swap(t.Context(), bad)
 		if kept == nil || fatal != nil {
 			t.Fatalf("Swap = %v, %v, want kept", kept, fatal)
@@ -315,7 +307,7 @@ func TestGuardLoadsUnderLoading(t *testing.T) {
 	lock := &heldLocker{}
 	var held []string
 	want := func(name string) wanted {
-		return wanted{Loading: lock, Resolv: []byte(resolvRendered), IPv6Off: true, Generate: func() (*egress.Ruleset, error) {
+		return wanted{Loading: lock, IPv6Off: true, Generate: func() (*egress.Ruleset, error) {
 			if lock.held {
 				held = append(held, name)
 			}
