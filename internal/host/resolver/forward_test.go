@@ -2,11 +2,14 @@ package resolver
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/netip"
 	"slices"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -286,6 +289,79 @@ func TestServeWaitsForALearnItsQueryLeft(t *testing.T) {
 	close(release)
 	if err := <-done; err != nil {
 		t.Fatal(err)
+	}
+}
+
+// askUDP is ask for a goroutine: it answers the failure instead of ending
+// the test.
+func askUDP(at netip.AddrPort, q []byte) ([]byte, error) {
+	c, err := net.Dial("udp", at.String())
+	if err != nil {
+		return nil, err
+	}
+	defer c.Close()
+	_ = c.SetDeadline(time.Now().Add(clientWait))
+	if _, err := c.Write(q); err != nil {
+		return nil, err
+	}
+	buf := make([]byte, maxMessage)
+	n, err := c.Read(buf)
+	return buf[:n], err
+}
+
+func TestQueriesDuringARuleLoadAreLearnedInOneWrite(t *testing.T) {
+	k := &kernelSets{}
+	l := NewLearner(k.write, learnable(), slog.New(slog.DiscardHandler))
+	up := upstream(t, func(q []byte) [][]byte {
+		id := binary.BigEndian.Uint16(q)
+		return answering(0, aRR(fmt.Sprintf("140.82.121.%d", id), 60))(q)
+	})
+	f := NewForwarder(func() []netip.AddrPort { return []netip.AddrPort{up} }, learns(newMatcher(meta), l), slog.New(slog.DiscardHandler))
+	f.budget = time.Second
+	at := serve(t, f)
+	const queries = 20
+	l.Loading().Lock()
+	var wg sync.WaitGroup
+	fails := make(chan error, queries)
+	for i := range queries {
+		wg.Go(func() {
+			resp, err := askUDP(at, query(uint16(i+1), "codeload.github.com", typeA))
+			if err == nil && rcodeOf(resp) != rcodeOK {
+				err = fmt.Errorf("rcode %d", rcodeOf(resp))
+			}
+			if err != nil {
+				fails <- err
+			}
+		})
+	}
+	wg.Wait()
+	close(fails)
+	for err := range fails {
+		t.Errorf("a query during the load was not answered: %v", err)
+	}
+	next := make(chan int, 1)
+	go func() {
+		l.Loading().Lock()
+		next <- len(k.all())
+		l.Loading().Unlock()
+	}()
+	l.Loading().Unlock()
+	if n := <-next; n > 1 {
+		t.Errorf("the next rule load waited behind %d learn writes, want at most 1", n)
+	}
+	got := map[netip.Addr]bool{}
+	for end := time.Now().Add(clientWait); len(got) < queries && time.Now().Before(end); time.Sleep(10 * time.Millisecond) {
+		for _, w := range k.all() {
+			for _, e := range w {
+				got[e.Addr] = true
+			}
+		}
+	}
+	if len(got) != queries {
+		t.Errorf("%d addresses written, want all %d answered", len(got), queries)
+	}
+	if w := k.all(); len(w) != 1 {
+		t.Errorf("%d writes, want the adds queued during the load merged into one", len(w))
 	}
 }
 

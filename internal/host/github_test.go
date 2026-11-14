@@ -105,6 +105,16 @@ func upNet(t *testing.T, f *upFixture, h *config.Host) *hostNet {
 	return n
 }
 
+// learn adds recs through l, running the drain when the add starts one,
+// and waits for their write.
+func learn(ctx context.Context, l *resolver.Learner, recs []resolver.Record) {
+	written, drain := l.Learn(recs)
+	if drain != nil {
+		drain(ctx)
+	}
+	<-written
+}
+
 // compact drops repeats in a row, the restores of one rule load.
 func compact(events []string) []string { return slices.Compact(slices.Clone(events)) }
 
@@ -112,13 +122,10 @@ func TestLearnedAddressesInTheRules(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newUpFixture(t)
 		n := upNet(t, f, closedSection())
-		err := n.gh.Load().learner.Learn(t.Context(), []resolver.Record{
+		learn(t.Context(), n.gh.Load().learner, []resolver.Record{
 			{Addr: netip.MustParseAddr("140.82.121.10"), TTL: time.Minute},
 			{Addr: netip.MustParseAddr("192.168.1.10"), TTL: time.Minute},
 		})
-		if err != nil {
-			t.Fatal(err)
-		}
 		_, ipset := f.kernel.payloads()
 		if last := ipset[len(ipset)-1]; last != "add manade-gh4 140.82.121.10 timeout 660\n" {
 			t.Errorf("learned payload = %q, want the public address with its TTL plus 10 minutes", last)
@@ -229,9 +236,7 @@ func TestReloadFiltersLearnedAddressesByTheNewSection(t *testing.T) {
 		t.Fatalf("Reload = %v, %v", k, fatal)
 	}
 	_, before := f.kernel.payloads()
-	if err := n.gh.Load().learner.Learn(t.Context(), []resolver.Record{{Addr: netip.MustParseAddr("2606:50c0:8000::154"), TTL: time.Minute}}); err != nil {
-		t.Fatal(err)
-	}
+	learn(t.Context(), n.gh.Load().learner, []resolver.Record{{Addr: netip.MustParseAddr("2606:50c0:8000::154"), TTL: time.Minute}})
 	if _, after := f.kernel.payloads(); len(after) != len(before) {
 		t.Errorf("an address in the new block6 was written: %q", after[len(before):])
 	}

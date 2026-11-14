@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
-	"errors"
 	"log/slog"
 	"net/netip"
 	"slices"
@@ -57,16 +56,23 @@ func newTestLearner(log *bytes.Buffer) (*Learner, *kernelSets) {
 
 func addr(s string) netip.Addr { return netip.MustParseAddr(s) }
 
+// learn adds recs through l, running the drain when the add starts one,
+// and waits for their write.
+func learn(ctx context.Context, l *Learner, recs []Record) {
+	written, drain := l.Learn(recs)
+	if drain != nil {
+		drain(ctx)
+	}
+	<-written
+}
+
 func TestLearnAddsWithTheTTLPlusTenMinutes(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		l, k := newTestLearner(&bytes.Buffer{})
-		err := l.Learn(t.Context(), []Record{
+		learn(t.Context(), l, []Record{
 			{Addr: addr("140.82.121.10"), TTL: time.Minute},
 			{Addr: addr("2606:50c0:8000::154"), TTL: 5 * time.Minute},
 		})
-		if err != nil {
-			t.Fatal(err)
-		}
 		want := []egress.Learned{
 			{Addr: addr("140.82.121.10"), Left: 11 * time.Minute},
 			{Addr: addr("2606:50c0:8000::154"), Left: 15 * time.Minute},
@@ -91,9 +97,9 @@ func TestLaterAnswerRenews(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		l, k := newTestLearner(&bytes.Buffer{})
 		a := addr("140.82.121.10")
-		_ = l.Learn(t.Context(), []Record{{Addr: a, TTL: time.Minute}})
+		learn(t.Context(), l, []Record{{Addr: a, TTL: time.Minute}})
 		time.Sleep(10 * time.Minute)
-		_ = l.Learn(t.Context(), []Record{{Addr: a, TTL: time.Minute}})
+		learn(t.Context(), l, []Record{{Addr: a, TTL: time.Minute}})
 		w := k.all()
 		if len(w) != 2 || w[1][0].Left != 11*time.Minute {
 			t.Errorf("writes = %v, want the renewal written with a full 11m", w)
@@ -111,7 +117,7 @@ func TestLaterAnswerRenews(t *testing.T) {
 
 func TestLearnSkipsWhatTheDropsTake(t *testing.T) {
 	l, k := newTestLearner(&bytes.Buffer{})
-	err := l.Learn(t.Context(), []Record{
+	learn(t.Context(), l, []Record{
 		{Addr: addr("192.168.1.10"), TTL: time.Minute},
 		{Addr: addr("100.64.0.1"), TTL: time.Minute},
 		{Addr: addr("127.0.0.1"), TTL: time.Minute},
@@ -119,26 +125,28 @@ func TestLearnSkipsWhatTheDropsTake(t *testing.T) {
 		{Addr: addr("2a01:e0a:1:2::3"), TTL: time.Minute},
 		{Addr: addr("2001:db8::1"), TTL: time.Minute},
 	})
-	if err != nil || len(k.all()) != 0 || len(l.Held()) != 0 {
-		t.Errorf("Learn = %v, writes %v, held %v, want nothing learned", err, k.all(), l.Held())
+	if len(k.all()) != 0 || len(l.Held()) != 0 {
+		t.Errorf("writes %v, held %v, want nothing learned", k.all(), l.Held())
 	}
 	t.Run("IPv6 on a host without ipv6", func(t *testing.T) {
 		h := closedHost()
 		h.Egress.IPv6 = false
 		k := &kernelSets{}
 		l := NewLearner(k.write, (&egress.Input{Host: h}).Learnable(), slog.New(slog.DiscardHandler))
-		_ = l.Learn(t.Context(), []Record{{Addr: addr("2606:50c0:8000::154"), TTL: time.Minute}})
+		learn(t.Context(), l, []Record{{Addr: addr("2606:50c0:8000::154"), TTL: time.Minute}})
 		if len(k.all()) != 0 {
 			t.Errorf("writes = %v, want none: the host has no IPv6 set", k.all())
 		}
 	})
 }
 
-func TestLearnAnswersTheWriteFailure(t *testing.T) {
-	l, k := newTestLearner(&bytes.Buffer{})
+func TestLearnLogsTheWriteFailure(t *testing.T) {
+	var log bytes.Buffer
+	l, k := newTestLearner(&log)
 	k.err = context.DeadlineExceeded
-	if err := l.Learn(t.Context(), []Record{{Addr: addr("140.82.121.10"), TTL: time.Minute}}); err != k.err {
-		t.Errorf("Learn = %v, want the write's error", err)
+	learn(t.Context(), l, []Record{{Addr: addr("140.82.121.10"), TTL: time.Minute}})
+	if !strings.Contains(log.String(), "level=WARN") || !strings.Contains(log.String(), k.err.Error()) {
+		t.Errorf("log = %q, want a WARN naming the write's error", log.String())
 	}
 	if len(l.Held()) != 1 {
 		t.Error("a failed write dropped the address from the record a reload loads")
@@ -154,9 +162,7 @@ func fill(t *testing.T, l *Learner, ttl time.Duration) {
 		binary.BigEndian.PutUint32(b[:], 0x0b000000+uint32(i))
 		recs[i] = Record{Addr: netip.AddrFrom4(b), TTL: ttl}
 	}
-	if err := l.Learn(t.Context(), recs); err != nil {
-		t.Fatal(err)
-	}
+	learn(t.Context(), l, recs)
 }
 
 func TestBound(t *testing.T) {
@@ -165,8 +171,8 @@ func TestBound(t *testing.T) {
 		l, k := newTestLearner(&log)
 		fill(t, l, time.Hour)
 		writes := len(k.all())
-		_ = l.Learn(t.Context(), []Record{{Addr: addr("140.82.121.10"), TTL: time.Minute}})
-		_ = l.Learn(t.Context(), []Record{{Addr: addr("140.82.121.11"), TTL: time.Minute}})
+		learn(t.Context(), l, []Record{{Addr: addr("140.82.121.10"), TTL: time.Minute}})
+		learn(t.Context(), l, []Record{{Addr: addr("140.82.121.11"), TTL: time.Minute}})
 		c := l.Counts()
 		if c.Held[IPv4] != egress.LearnedMax || c.Refused[IPv4] != 2 || c.Refused[IPv6] != 0 {
 			t.Errorf("Counts = %+v, want %d held and 2 refused IPv4", c, egress.LearnedMax)
@@ -177,21 +183,21 @@ func TestBound(t *testing.T) {
 		if n := strings.Count(log.String(), "level=WARN"); n != 1 {
 			t.Errorf("%d WARN lines, want 1 within the minute:\n%s", n, log.String())
 		}
-		_ = l.Learn(t.Context(), []Record{{Addr: addr("2606:50c0:8000::154"), TTL: time.Minute}})
+		learn(t.Context(), l, []Record{{Addr: addr("2606:50c0:8000::154"), TTL: time.Minute}})
 		if c := l.Counts(); c.Held[IPv6] != 1 {
 			t.Errorf("Counts = %+v, want the IPv6 family's own bound", c)
 		}
-		_ = l.Learn(t.Context(), []Record{{Addr: addr("11.0.0.5"), TTL: time.Hour}})
+		learn(t.Context(), l, []Record{{Addr: addr("11.0.0.5"), TTL: time.Hour}})
 		if w := k.all(); len(w) != writes+2 {
 			t.Errorf("a held address was refused at the bound; writes %d, want %d", len(w), writes+2)
 		}
 		time.Sleep(time.Minute)
-		_ = l.Learn(t.Context(), []Record{{Addr: addr("140.82.121.12"), TTL: time.Minute}})
+		learn(t.Context(), l, []Record{{Addr: addr("140.82.121.12"), TTL: time.Minute}})
 		if n := strings.Count(log.String(), "level=WARN"); n != 2 {
 			t.Errorf("%d WARN lines, want a second one a minute later", n)
 		}
 		time.Sleep(time.Hour + learnPad)
-		_ = l.Learn(t.Context(), []Record{{Addr: addr("140.82.121.13"), TTL: time.Minute}})
+		learn(t.Context(), l, []Record{{Addr: addr("140.82.121.13"), TTL: time.Minute}})
 		if c := l.Counts(); c.Held[IPv4] != 1 || c.Refused[IPv4] != 3 {
 			t.Errorf("Counts = %+v, want the expired set emptied and the add taken", c)
 		}
@@ -205,9 +211,10 @@ func TestTheWriteHoldsLoading(t *testing.T) {
 		<-release
 		return nil
 	}, learnable(), slog.New(slog.DiscardHandler))
-	done := make(chan error)
+	done := make(chan struct{})
 	go func() {
-		done <- l.Learn(context.Background(), []Record{{Addr: addr("140.82.121.10"), TTL: time.Minute}})
+		learn(context.Background(), l, []Record{{Addr: addr("140.82.121.10"), TTL: time.Minute}})
+		close(done)
 	}()
 	<-inWrite
 	if tryLock(l.load) {
@@ -217,9 +224,7 @@ func TestTheWriteHoldsLoading(t *testing.T) {
 		t.Error("the address is not recorded before its write, so a load after it would miss it")
 	}
 	close(release)
-	if err := <-done; err != nil {
-		t.Fatal(err)
-	}
+	<-done
 	if !tryLock(l.load) {
 		t.Error("Loading still held after the write")
 	}
@@ -235,19 +240,154 @@ func tryLock(k loadLock) bool {
 	}
 }
 
-func TestLearnWaitingOnALoadEndsWithItsContext(t *testing.T) {
-	l, k := newTestLearner(&bytes.Buffer{})
+func TestADrainWaitingOnALoadEndsWithItsContext(t *testing.T) {
+	var log bytes.Buffer
+	l, k := newTestLearner(&log)
 	l.Loading().Lock()
-	defer l.Loading().Unlock()
 	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
 	defer cancel()
-	err := l.Learn(ctx, []Record{{Addr: addr("140.82.121.10"), TTL: time.Minute}})
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Errorf("Learn = %v, want its context's end while the load runs", err)
+	written, drain := l.Learn([]Record{{Addr: addr("140.82.121.10"), TTL: time.Minute}})
+	drain(ctx)
+	select {
+	case <-written:
+	default:
+		t.Error("the batch's waiters were left waiting once its drain ended")
 	}
 	if len(l.Held()) != 0 || len(k.all()) != 0 {
 		t.Errorf("held %v, writes %v, want nothing recorded", l.Held(), k.all())
 	}
+	if !strings.Contains(log.String(), context.DeadlineExceeded.Error()) {
+		t.Errorf("log = %q, want the lost batch logged with its context's end", log.String())
+	}
+	l.Loading().Unlock()
+	written, drain = l.Learn([]Record{{Addr: addr("140.82.121.11"), TTL: time.Minute}})
+	if drain == nil {
+		t.Fatal("an add after a drain ended on its context started no drain")
+	}
+	drain(t.Context())
+	<-written
+	if w := k.all(); len(w) != 1 || w[0][0].Addr != addr("140.82.121.11") {
+		t.Errorf("writes = %v, want the later add written", w)
+	}
+}
+
+func TestAddsDuringAWriteJoinTheNextOne(t *testing.T) {
+	k := &kernelSets{}
+	inWrite, release := make(chan struct{}), make(chan struct{})
+	l := NewLearner(func(ctx context.Context, ls []egress.Learned) error {
+		inWrite <- struct{}{}
+		<-release
+		return k.write(ctx, ls)
+	}, learnable(), slog.New(slog.DiscardHandler))
+	first, drain := l.Learn([]Record{{Addr: addr("140.82.121.10"), TTL: time.Minute}})
+	if drain == nil {
+		t.Fatal("the first add started no drain")
+	}
+	drained := make(chan struct{})
+	go func() {
+		drain(t.Context())
+		close(drained)
+	}()
+	<-inWrite
+	second, d2 := l.Learn([]Record{{Addr: addr("140.82.121.11"), TTL: time.Minute}})
+	third, d3 := l.Learn([]Record{{Addr: addr("140.82.121.12"), TTL: time.Minute}})
+	if d2 != nil || d3 != nil {
+		t.Error("an add during a write started a second drain")
+	}
+	if second != third {
+		t.Error("two adds during one write went to different writes")
+	}
+	release <- struct{}{}
+	<-first
+	select {
+	case <-second:
+		t.Error("an add made during the first write was answered written with it")
+	default:
+	}
+	<-inWrite
+	release <- struct{}{}
+	<-second
+	<-drained
+	want := [][]netip.Addr{{addr("140.82.121.10")}, {addr("140.82.121.11"), addr("140.82.121.12")}}
+	got := make([][]netip.Addr, 0, 2)
+	for _, w := range k.all() {
+		var as []netip.Addr
+		for _, e := range w {
+			as = append(as, e.Addr)
+		}
+		got = append(got, as)
+	}
+	if !slices.EqualFunc(got, want, slices.Equal) {
+		t.Errorf("writes = %v, want %v", got, want)
+	}
+	if _, again := l.Learn(nil); again == nil {
+		t.Error("an add after the drain ended started no drain")
+	} else {
+		again(t.Context())
+	}
+}
+
+func TestAStuckWriterKeepsOneDrainAndLetsALoadIn(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var mu sync.Mutex
+		var writes int
+		got := map[netip.Addr]bool{}
+		l := NewLearner(func(ctx context.Context, ls []egress.Learned) error {
+			mu.Lock()
+			writes++
+			for _, e := range ls {
+				got[e.Addr] = true
+			}
+			mu.Unlock()
+			<-ctx.Done()
+			return ctx.Err()
+		}, learnable(), slog.New(slog.DiscardHandler))
+		var running, most int
+		var wg sync.WaitGroup
+		waited := make(chan time.Duration, 1)
+		start := time.Now()
+		const adds = 40
+		for i := range adds {
+			if i == adds/4 {
+				go func() {
+					at := time.Now()
+					l.Loading().Lock()
+					waited <- time.Since(at)
+					l.Loading().Unlock()
+				}()
+			}
+			_, drain := l.Learn([]Record{{Addr: netip.AddrFrom4([4]byte{140, 82, 121, byte(i)}), TTL: time.Minute}})
+			if drain != nil {
+				mu.Lock()
+				running++
+				most = max(most, running)
+				mu.Unlock()
+				wg.Go(func() {
+					drain(t.Context())
+					mu.Lock()
+					running--
+					mu.Unlock()
+				})
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		wg.Wait()
+		elapsed := time.Since(start)
+		if d := <-waited; d > learnTimeout {
+			t.Errorf("a rule load waited %v, want at most one write's %v", d, learnTimeout)
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if most != 1 {
+			t.Errorf("%d drains ran at once, want 1", most)
+		}
+		if limit := int(elapsed/learnTimeout) + 1; writes > limit {
+			t.Errorf("%d writes in %v, want at most %d of %v each", writes, elapsed, limit, learnTimeout)
+		}
+		if len(got) != adds {
+			t.Errorf("%d addresses written, want all %d", len(got), adds)
+		}
+	})
 }
 
 func TestLearnBoundsTheWrite(t *testing.T) {
@@ -259,9 +399,7 @@ func TestLearnBoundsTheWrite(t *testing.T) {
 		}
 		return nil
 	}, learnable(), slog.New(slog.DiscardHandler))
-	if err := l.Learn(t.Context(), []Record{{Addr: addr("140.82.121.10"), TTL: time.Minute}}); err != nil {
-		t.Fatal(err)
-	}
+	learn(t.Context(), l, []Record{{Addr: addr("140.82.121.10"), TTL: time.Minute}})
 	if left <= 0 || left > 2*time.Second {
 		t.Errorf("the write's time left = %v, want within the design's 2s", left)
 	}

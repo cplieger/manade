@@ -22,11 +22,12 @@ const (
 	// DeleteStopGrace is the longest stop grace DeleteRunner gives a
 	// runner before its kill: Docker's own default stop timeout.
 	DeleteStopGrace = 10 * time.Second
-	// deleteBound bounds a DELETE by the calls Backend.DeleteRunner may
-	// make: the inspect (a CallTimeout window when a cut create may still
-	// commit), the diag copy, the stop with its grace, the removal's
-	// inspect and removal, and the docker volume's removal.
-	deleteBound = DeleteStopGrace + 6*docker.CallTimeout + quickTimeout
+	// deleteBound bounds a DELETE by Backend.DeleteRunner's waits, one
+	// CallTimeout each: a refused start's own removal (its 2 s baseline
+	// read inside quickTimeout), the inspect (a window when a cut create may
+	// still commit), the diag copy, the stop past its grace, the removal's
+	// inspect and removal, and the docker volume's read and removal.
+	deleteBound = DeleteStopGrace + 8*docker.CallTimeout + quickTimeout
 	// eventsBound ends an events stream, after which the client reconnects
 	// and lists again.
 	eventsBound = time.Hour

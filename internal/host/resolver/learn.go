@@ -2,7 +2,6 @@ package resolver
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"net/netip"
 	"sync"
@@ -50,6 +49,9 @@ type Learner struct {
 	log     *slog.Logger
 	allowed atomic.Pointer[func(netip.Addr) bool]
 	held    map[netip.Addr]time.Time
+	// queued is the batch the next write takes; while it is set, draining
+	// is too, so one drain covers every queued batch.
+	queued *batch
 	// load is held from a learned address's record to its kernel write,
 	// and by Loading's holder from a rule set's generation to its load, so
 	// an address is in the loaded set or written after it.
@@ -57,12 +59,20 @@ type Learner struct {
 	warned  time.Time
 	refused [familyCount]atomic.Uint64
 	// n counts held's addresses per family, expired ones until pruned.
-	n  [familyCount]int
-	mu sync.Mutex
+	n        [familyCount]int
+	mu       sync.Mutex
+	draining bool
 }
 
-// loadLock is a mutex whose wait a context can end, so a learn never
-// waits out a whole rule load past its query's deadline.
+// batch is the records of every add made while a drain waits on the load
+// lock or writes the batch before it.
+type batch struct {
+	done chan struct{}
+	recs []Record
+}
+
+// loadLock is a mutex whose wait a context can end, so a drain stops
+// waiting out a rule load once its forwarder stops.
 type loadLock chan struct{}
 
 func (k loadLock) Lock() { k <- struct{}{} }
@@ -94,21 +104,73 @@ func (l *Learner) SetAllowed(allowed func(netip.Addr) bool) { l.allowed.Store(&a
 // Loading is held across a rule set's generation from Held and its load.
 func (l *Learner) Loading() sync.Locker { return l.load }
 
-// Learn records each allowed address of recs for its TTL plus learnPad and
-// writes them to the kernel within learnTimeout before it returns,
-// answering the write's error, or ctx's with nothing recorded when it ends
-// while a rule load runs. A new address past a family's bound is refused,
-// counted and logged at most once a minute; a held one is renewed whatever
-// the count.
-func (l *Learner) Learn(ctx context.Context, recs []Record) error {
-	if err := l.load.lock(ctx); err != nil {
-		return fmt.Errorf("waiting for the rule load: %w", err)
+// Learn queues recs for the next kernel write, answering a channel closed
+// once that write is done or failed (logged), and the drain the caller
+// runs under its context when none is in flight, else nil. The drain
+// records each allowed address for its TTL plus learnPad under the load
+// lock and writes each batch once within learnTimeout; adds made meanwhile
+// join the next batch, so a rule load waits behind at most one write. A new
+// address past a family's bound is refused, counted and logged at most once
+// a minute; a held one is renewed whatever the count.
+func (l *Learner) Learn(recs []Record) (written <-chan struct{}, drain func(context.Context)) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.queued == nil {
+		l.queued = &batch{done: make(chan struct{})}
 	}
-	defer l.load.Unlock()
-	now := time.Now()
+	l.queued.recs = append(l.queued.recs, recs...)
+	if !l.draining {
+		l.draining = true
+		drain = l.drain
+	}
+	return l.queued.done, drain
+}
+
+// drain writes the queued batches in turn until none is left; when ctx
+// ends while it waits on a rule load, the batch is failed unrecorded.
+func (l *Learner) drain(ctx context.Context) {
+	for {
+		if err := l.load.lock(ctx); err != nil {
+			l.mu.Lock()
+			b := l.take()
+			l.draining = false
+			l.mu.Unlock()
+			l.log.Warn("Learned GitHub addresses were not added: the resolver stopped during a rule load", "addresses", len(b.recs), "err", err)
+			close(b.done)
+			return
+		}
+		l.mu.Lock()
+		b := l.take()
+		ls := l.record(b.recs, time.Now())
+		l.mu.Unlock()
+		err := l.writeBounded(ctx, ls)
+		l.load.Unlock()
+		if err != nil {
+			l.log.Warn("Adding learned GitHub addresses to the rules failed; jobs' connections to them are dropped", "addresses", len(ls), "err", err)
+		}
+		close(b.done)
+		l.mu.Lock()
+		if l.queued == nil {
+			l.draining = false
+			l.mu.Unlock()
+			return
+		}
+		l.mu.Unlock()
+	}
+}
+
+// take answers the queued batch and empties the queue; l.mu is held.
+func (l *Learner) take() *batch {
+	b := l.queued
+	l.queued = nil
+	return b
+}
+
+// record holds each allowed address of recs, answering what to write;
+// l.mu is held.
+func (l *Learner) record(recs []Record, now time.Time) []egress.Learned {
 	allowed := *l.allowed.Load()
 	var ls []egress.Learned
-	l.mu.Lock()
 	for _, r := range recs {
 		a := r.Addr.Unmap()
 		if !allowed(a) {
@@ -125,7 +187,10 @@ func (l *Learner) Learn(ctx context.Context, recs []Record) error {
 		l.held[a] = now.Add(left)
 		ls = append(ls, egress.Learned{Addr: a, Left: left})
 	}
-	l.mu.Unlock()
+	return ls
+}
+
+func (l *Learner) writeBounded(ctx context.Context, ls []egress.Learned) error {
 	if len(ls) == 0 {
 		return nil
 	}

@@ -49,7 +49,7 @@ func TestMemoryStatus(t *testing.T) {
 func TestNoMemoryLimitWarnsWithTheFix(t *testing.T) {
 	var buf bytes.Buffer
 	s := &supervisor{log: slog.New(slog.NewTextHandler(&buf, nil))}
-	h := &config.Host{Name: "voyager", Capacity: config.Capacity{MilliCPUs: 2000, Memory: 3 << 30}}
+	h := &config.Host{Name: "nas", Capacity: config.Capacity{MilliCPUs: 2000, Memory: 3 << 30}}
 	sv := &served{Profiles: []*config.Profile{{Name: "small", MilliCPUs: 1000, Memory: 512 * mib}}}
 	s.warnNoMemoryLimit(h, sv, &platform.Cgroup{Memory: 2 << 30})
 	if buf.Len() != 0 {

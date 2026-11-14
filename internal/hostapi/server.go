@@ -31,8 +31,10 @@ type Backend interface {
 	// DeleteRunner stops and removes the runner's container and any orphan
 	// under it and drops its record; with diag it first copies the runner's
 	// _diag folder as a tar, nil when there is none. A runner with no
-	// container is no error. It makes at most six daemon calls, each within
-	// docker.CallTimeout, and gives the stop at most DeleteStopGrace.
+	// container is no error. It waits out a refused start's own removal,
+	// within one docker.CallTimeout and 2 s, then makes at most seven daemon
+	// calls, each within docker.CallTimeout, and gives the stop at most
+	// DeleteStopGrace.
 	DeleteRunner(ctx context.Context, name string, diag bool) ([]byte, error)
 	// Logs answers the runner's last tail lines, or ErrUnknownRunner.
 	Logs(ctx context.Context, name string, tail int) ([]byte, error)

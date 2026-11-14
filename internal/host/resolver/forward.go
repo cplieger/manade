@@ -67,7 +67,8 @@ type Forwarder struct {
 	upstreams func() []netip.AddrPort
 	learning  func() *Learning
 	log       *slog.Logger
-	// adds are the learns in flight, which may outlive their query.
+	// adds are the Learner drains this forwarder started, which may
+	// outlive the query that started them.
 	adds   sync.WaitGroup
 	budget time.Duration
 }
@@ -210,9 +211,10 @@ func (f *Forwarder) answer(ctx context.Context, network string, query []byte) []
 	return resp
 }
 
-// learn adds resp's addresses under ctx, the forwarder's run, waiting for
-// the add until budget, the query's, ends: an add past it still lands
-// after the rule load it waits for, and the job's connection retransmits.
+// learn has l add resp's addresses, waiting for the write covering them
+// until budget, the query's, ends: a write past it still lands after the
+// rule load it waits for, and the job's connection retransmits. A drain
+// it starts runs under ctx, the forwarder's run, so Serve waits for it.
 func (f *Forwarder) learn(ctx, budget context.Context, l *Learner, resp []byte) {
 	rq, err := parseQuestion(resp)
 	var recs []Record
@@ -223,15 +225,12 @@ func (f *Forwarder) learn(ctx, budget context.Context, l *Learner, resp []byte) 
 		f.log.Warn("An upstream answer for a GitHub name did not parse; nothing learned", "name", rq.name, "err", err)
 		return
 	}
-	done := make(chan struct{})
-	f.adds.Go(func() {
-		defer close(done)
-		if err := l.Learn(ctx, recs); err != nil {
-			f.log.Warn("Adding learned GitHub addresses to the rules failed; jobs' connections to them are dropped", "name", rq.name, "err", err)
-		}
-	})
+	written, drain := l.Learn(recs)
+	if drain != nil {
+		f.adds.Go(func() { drain(ctx) })
+	}
 	select {
-	case <-done:
+	case <-written:
 	case <-budget.Done():
 	}
 }
