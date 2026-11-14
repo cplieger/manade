@@ -66,7 +66,17 @@ var (
 	// catch a change the stream missed.
 	eventsRetry = 5 * time.Second
 	listEvery   = 30 * time.Second
+	// freeReads and freeReadGap are the tries at a space hold's baseline,
+	// so one failed statfs does not leave the hold without one.
+	freeReads   = 3
+	freeReadGap = time.Second
 )
+
+// spaceMargin is the free bytes past a space hold's baseline that lift it
+// with no runner running: room for one runner start, so the few KiB an idle
+// host's own writes and removals free never fund a start that fails again.
+// A served profile's disk above it raises it.
+const spaceMargin = 1 << 30
 
 // subscriberBuffer is how many changes a subscriber may lag by before its
 // channel is closed.
@@ -122,11 +132,24 @@ type runnerSet struct {
 type spaceHold struct {
 	at     time.Time
 	detail string
-	// free is the data volume's free bytes when the hold began; known is
-	// false until a read of them has succeeded, whose figure then stands.
-	free  uint64
-	known bool
+	// free is the data volume's free bytes read once the refused start's
+	// container was removed, the baseline a lift is measured from.
+	free uint64
+	base baseline
 }
+
+// baseline is how far a space hold's free-bytes reading got.
+type baseline int
+
+const (
+	// baselinePending is a hold whose refused start's container may still
+	// be on the volume, so no read yet stands for it.
+	baselinePending baseline = iota
+	baselineRead
+	// baselineUnread is a hold no read could measure: the end of a tidy
+	// pass with no runner running lifts it.
+	baselineUnread
+)
 
 // record is one accepted runner: its request, how far the host has taken
 // it, and the work in flight for it.
@@ -380,7 +403,7 @@ func (r *runnerSet) sync(ctx context.Context) {
 		return
 	}
 	r.publishAll()
-	r.checkFreed()
+	r.checkFreed(false)
 }
 
 func (r *runnerSet) publishAll() {
@@ -510,21 +533,55 @@ func (r *runnerSet) lift(why string) {
 	r.space = nil
 }
 
-// holdForSpace holds starts after a refusal for space, with the data
-// volume's free bytes then, and asks for a tidy pass at once.
-func (r *runnerSet) holdForSpace() {
+// holdForSpace holds starts after a refusal for space; measure then gives
+// the hold its baseline.
+func (r *runnerSet) holdForSpace() *spaceHold {
 	at := time.Now()
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	h := &spaceHold{at: at, detail: fmt.Sprintf("the data volume %s was full at %s; starts go on once a runner exits, once a runner's container is removed, "+
-		"or once a tidy pass or a list finds more free space than then with no runner running", dataRoot, at.UTC().Format(time.RFC3339))}
-	if free, err := r.dataFree(); err != nil {
-		r.log.Warn("Reading the data volume's free space failed; the next read that succeeds stands for the hold's start", "error", err)
-	} else {
-		h.free, h.known = free, true
+		"or once a tidy pass or a list finds %d MiB more free space than after the refused start's container was removed, with no runner running",
+		dataRoot, at.UTC().Format(time.RFC3339), r.spaceMargin()>>20)}
+	r.space = h
+	return h
+}
+
+// measure reads hold h's baseline, trying freeReads times, then asks for
+// a tidy pass. Run once the refused start's container is gone, so its
+// removal never counts as space a pass freed.
+func (r *runnerSet) measure(h *spaceHold) {
+	base := baselineUnread
+	var free uint64
+	for i := range freeReads {
+		var err error
+		if free, err = r.dataFree(); err == nil {
+			base = baselineRead
+			break
+		}
+		r.log.Warn("Reading the data volume's free space failed", "error", err)
+		if i < freeReads-1 && !sleep(r.base, freeReadGap) {
+			break
+		}
+	}
+	if base == baselineUnread {
+		r.log.Warn("The space hold has no free-space reading; the next tidy pass that ends with no runner running lifts it")
 	}
 	r.mu.Lock()
-	r.space = h
+	h.free, h.base = free, base
 	r.mu.Unlock()
 	r.images.Tidy()
+}
+
+// spaceMargin is the lift's margin for what the host serves now; r.mu is
+// held.
+func (r *runnerSet) spaceMargin() uint64 {
+	m := uint64(spaceMargin)
+	for _, p := range r.served.Profiles {
+		if p.Disk > 0 {
+			m = max(m, uint64(p.Disk))
+		}
+	}
+	return m
 }
 
 // tidied lists the containers after a tidy pass, then checks whether the
@@ -539,13 +596,14 @@ func (r *runnerSet) tidied() {
 	if err := r.refresh(r.base); err != nil {
 		r.log.Warn("Listing the host's runner containers after the tidy pass failed; the last list decides", "error", err)
 	}
-	r.checkFreed()
+	r.checkFreed(true)
 }
 
 // checkFreed lifts the space hold once no runner container runs and the
-// data volume has more free bytes than when the hold began, since no exit
-// is then left to lift it: a tidy pass freed space or the volume grew.
-func (r *runnerSet) checkFreed() {
+// data volume has spaceMargin more free bytes than its baseline, since no
+// exit is then left to lift it: a tidy pass freed space or the volume grew.
+// afterPass is a tidy pass's end, which alone lifts a hold no read measured.
+func (r *runnerSet) checkFreed(afterPass bool) {
 	r.mu.Lock()
 	h := r.space
 	r.mu.Unlock()
@@ -558,13 +616,17 @@ func (r *runnerSet) checkFreed() {
 	if r.space != h || r.anyRunning() {
 		return
 	}
-	switch {
-	case err != nil:
-		r.log.Warn("Reading the data volume's free space failed; the space hold stands", "error", err)
-	case !h.known:
-		h.free, h.known = free, true
-	case free > h.free:
-		r.lift("the data volume has more free space, with no runner running")
+	switch h.base {
+	case baselineUnread:
+		if afterPass {
+			r.lift("a tidy pass ended with no runner running, and the data volume's free space was never read")
+		}
+	case baselineRead:
+		if err != nil {
+			r.log.Warn("Reading the data volume's free space failed; the space hold stands", "error", err)
+		} else if free >= h.free+r.spaceMargin() {
+			r.lift("the data volume has more free space, with no runner running")
+		}
 	}
 }
 
@@ -880,21 +942,51 @@ func (r *runnerSet) build(ctx context.Context, rr *record, spec *jobspec.Host, r
 		return
 	}
 	r.setState(rr, hostapi.RecordStarting, "")
-	for {
-		res := r.daemon.Start(ctx, id)
+	for res := r.daemon.Start(ctx, id); ; res = r.daemon.Start(ctx, id) {
 		switch res.Outcome {
 		case docker.Done:
-			r.started(ctx, rr, id)
+			// The container may have exited already; a failed read is the
+			// next list's.
+			_, _, _ = r.inspect(ctx, id)
+			r.setState(rr, hostapi.RecordStarted, "")
 			return
 		case docker.Failed:
 			r.failed(ctx, rr, res, "start")
 			return
 		}
-		r.log.Warn("A runner's start has not answered; it is issued again", "runner", run.Name, "error", res.Err)
-		if !sleep(ctx, pendingRetry) {
+		r.log.Warn("A runner's start has not answered; it is issued again if its container has not started", "runner", run.Name, "error", res.Err)
+		if !r.awaitStart(ctx, rr, id) {
 			return
 		}
 	}
+}
+
+// awaitStart waits pendingRetry after a start whose fate is unknown, then
+// reads the container, answering true only for one still created, the one
+// state a start may be issued in again: the daemon starts any stopped
+// container, so a runner that ran and exited meanwhile would run again on
+// its spent JIT config. Any other state records the start done and a
+// container gone fails it, both answering false, as does ctx ending.
+func (r *runnerSet) awaitStart(ctx context.Context, rr *record, id string) bool {
+	for sleep(ctx, pendingRetry) {
+		state, found, err := r.inspect(ctx, id)
+		switch {
+		case err != nil:
+			r.log.Warn("Reading a runner's container after a start that has not answered failed; it is read again", "runner", rr.rec.Request.RunnerName, "error", err)
+		case !found:
+			r.mu.Lock()
+			r.drop(rr.rec.Request.RunnerName)
+			r.mu.Unlock()
+			r.setState(rr, hostapi.RecordFailed, "the start failed: the container is gone")
+			return false
+		case state != docker.StateCreated:
+			r.setState(rr, hostapi.RecordStarted, "")
+			return false
+		default:
+			return true
+		}
+	}
+	return false
 }
 
 // create makes rr's container until the daemon answers, answering its ID,
@@ -922,40 +1014,58 @@ func (r *runnerSet) create(ctx context.Context, rr *record, req *docker.CreateRe
 	}
 }
 
-// started records rr started and reads its container, which may have
-// exited already.
-func (r *runnerSet) started(ctx context.Context, rr *record, id string) {
+// inspect reads container id into the view unless a newer write landed,
+// answering its Docker state.
+func (r *runnerSet) inspect(ctx context.Context, id string) (state string, found bool, err error) {
 	begun := r.beginRead()
 	ctr, found, err := r.daemon.InspectContainer(ctx, id)
 	r.mu.Lock()
-	if err == nil && found {
-		if c, ok := fromDocker(&ctr); ok {
-			r.putNewer(c, begun)
-		}
+	defer r.mu.Unlock()
+	defer r.endRead(begun)
+	if err != nil || !found {
+		return "", false, err
 	}
-	r.endRead(begun)
-	r.mu.Unlock()
-	r.setState(rr, hostapi.RecordStarted, "")
+	if c, ok := fromDocker(&ctr); ok {
+		r.putNewer(c, begun)
+	}
+	return ctr.State.Status, true, nil
 }
 
 // failed fails rr for a create or start the daemon refused, removing any
 // container the call left; a refusal for space holds further starts and
-// runs the tidy pass at once.
+// runs the tidy pass at once. The record fails before the removal, so a
+// list in between shows the container as its orphan, never as exited.
 func (r *runnerSet) failed(ctx context.Context, rr *record, res docker.Result, call string) {
 	err := res.Err
+	var hold *spaceHold
 	if isNoSpace(err) {
 		err = fmt.Errorf("%w (%s): %w", errSpace, dataRoot, err)
-		r.holdForSpace()
-	}
-	if res.ID != "" {
-		r.mu.Lock()
-		rr.rec.RemovedBy = removedByFailed
-		r.mu.Unlock()
-		if rerr := r.daemon.RemoveOwned(ctx, res.ID); rerr != nil {
-			r.log.Warn("Removing a failed runner's container failed; it is listed as an orphan", "runner", rr.rec.Request.RunnerName, "error", rerr)
-		}
+		hold = r.holdForSpace()
 	}
 	r.setState(rr, hostapi.RecordFailed, "the "+call+" failed: "+err.Error())
+	if res.ID != "" {
+		r.removeFailed(ctx, rr, res.ID)
+	}
+	if hold != nil {
+		r.measure(hold)
+	}
+}
+
+// removeFailed removes failed runner rr's container id and drops its view,
+// so the end of rr's work releases what a list of it held; a container
+// left keeps its view.
+func (r *runnerSet) removeFailed(ctx context.Context, rr *record, id string) {
+	name := rr.rec.Request.RunnerName
+	r.mu.Lock()
+	rr.rec.RemovedBy = removedByFailed
+	r.mu.Unlock()
+	if err := r.daemon.RemoveOwned(ctx, id); err != nil {
+		r.log.Warn("Removing a failed runner's container failed; it is listed as an orphan", "runner", name, "error", err)
+		return
+	}
+	r.mu.Lock()
+	r.drop(name)
+	r.mu.Unlock()
 }
 
 // isNoSpace reports a daemon refusal for want of space, which Docker
