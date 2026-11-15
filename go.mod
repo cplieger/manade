@@ -11,7 +11,7 @@ require (
 	github.com/cplieger/go/health/v2 v2.0.0
 	github.com/cplieger/go/httpcache v1.1.0
 	github.com/cplieger/go/httpclient v1.2.0
-	github.com/cplieger/go/httpserver v1.5.0-dev.2
+	github.com/cplieger/go/httpserver v1.5.0-dev.3
 	github.com/cplieger/go/measure v1.3.0-dev.1
 	github.com/cplieger/go/pathinside v1.1.0
 	github.com/cplieger/go/scheduler v1.1.0
