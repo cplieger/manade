@@ -4,6 +4,7 @@ go 1.27.4
 
 require (
 	github.com/actions/scaleset v0.5.0
+	github.com/cplieger/bolttable v1.1.1
 	github.com/cplieger/forgeapi/v2 v2.0.0
 	github.com/cplieger/go/envx v1.1.0
 	github.com/cplieger/go/filesafe v1.1.0
@@ -27,4 +28,7 @@ require (
 	github.com/cplieger/go/urlform v1.2.0 // indirect
 	github.com/golang-jwt/jwt/v5 v5.3.1 // indirect
 	github.com/google/uuid v1.6.0 // indirect
+	go.etcd.io/bbolt v1.5.0 // indirect
+	golang.org/x/sync v0.25.0 // indirect
+	golang.org/x/sys v0.50.0 // indirect
 )
