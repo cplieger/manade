@@ -41,7 +41,7 @@ type Sweep interface {
 
 // Docker is the daemon side the pool drives.
 type Docker interface {
-	EnsureNetwork(ctx context.Context, spec docker.NetworkSpec) error
+	EnsureNetwork(ctx context.Context, spec docker.NetworkSpec) (bool, error)
 	CreateContainer(ctx context.Context, name string, req *docker.CreateRequest) (string, error)
 	StartContainer(ctx context.Context, id string) error
 	RemoveOwned(ctx context.Context, id string) error

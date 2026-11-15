@@ -69,6 +69,7 @@ const (
 	DockerList    DockerOp = "list"
 	DockerEvents  DockerOp = "events"
 	DockerArchive DockerOp = "archive"
+	DockerNetwork DockerOp = "network"
 )
 
 // Each list seeds its counter at 0, so the first failure shows in increase().
@@ -79,7 +80,7 @@ var (
 		GitHubSession, GitHubPoll, GitHubJIT, GitHubScaleSet, GitHubVisibility, GitHubInstallation, GitHubQueue,
 	}
 	dockerOps = []DockerOp{
-		DockerPull, DockerCreate, DockerStart, DockerInspect, DockerRemove, DockerList, DockerEvents, DockerArchive,
+		DockerPull, DockerCreate, DockerStart, DockerInspect, DockerRemove, DockerList, DockerEvents, DockerArchive, DockerNetwork,
 	}
 )
 

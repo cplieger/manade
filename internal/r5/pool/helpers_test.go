@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -83,6 +84,12 @@ func (c *calls) all() []string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return slices.Clone(c.list)
+}
+
+// acting is every call but the network checks each pass makes, so a test
+// can assert a pass took no action on GitHub or a container.
+func (c *calls) acting() []string {
+	return slices.DeleteFunc(c.all(), func(s string) bool { return strings.HasPrefix(s, "EnsureNetwork ") })
 }
 
 // fakeGitHub registers runners with rising IDs. jitGate, when set, holds
@@ -230,7 +237,10 @@ type fakeDocker struct {
 	inspectHook              func(b *fakeBox)
 	pullErr, imageInspectErr error
 	// diskErr refuses a create that sets a size limit.
-	networkErr, diskErr  error
+	networkErr, diskErr error
+	// networkGone makes the next EnsureNetwork find the network missing
+	// and create it, as after a docker system prune.
+	networkGone          bool
 	pullGate             chan struct{}
 	removeErr            map[string]error
 	registry, imgs       map[string]docker.Image
@@ -334,13 +344,18 @@ func (d *fakeDocker) ReadFile(_ context.Context, id, path string, _ int64) ([]by
 	return data, data != nil, nil
 }
 
-func (d *fakeDocker) EnsureNetwork(_ context.Context, spec docker.NetworkSpec) error {
+func (d *fakeDocker) EnsureNetwork(_ context.Context, spec docker.NetworkSpec) (bool, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.calls != nil {
 		d.calls.add("EnsureNetwork " + spec.Name)
 	}
-	return d.networkErr
+	if d.networkErr != nil {
+		return false, d.networkErr
+	}
+	gone := d.networkGone
+	d.networkGone = false
+	return gone, nil
 }
 
 func (d *fakeDocker) CreateContainer(_ context.Context, name string, req *docker.CreateRequest) (string, error) {

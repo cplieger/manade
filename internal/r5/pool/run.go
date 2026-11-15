@@ -85,7 +85,7 @@ func (p *Pool) boot(ctx context.Context) error {
 		return err
 	}
 	for _, n := range p.host.Networks() {
-		if err := p.dk.EnsureNetwork(ctx, n); err != nil {
+		if _, err := p.dk.EnsureNetwork(ctx, n); err != nil {
 			return fmt.Errorf("pool: job network %s: %w", n.Name, err)
 		}
 	}

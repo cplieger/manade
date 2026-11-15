@@ -64,20 +64,20 @@ func TestIntegrationNetwork(t *testing.T) {
 	t.Cleanup(func() {
 		_ = c.call(context.Background(), "network", http.MethodDelete, "/networks/"+spec.Name, nil, nil, nil, 0)
 	})
-	if err := c.EnsureNetwork(t.Context(), spec); err != nil {
+	if _, err := c.EnsureNetwork(t.Context(), spec); err != nil {
 		t.Fatalf("EnsureNetwork create: %v", err)
 	}
-	if err := c.EnsureNetwork(t.Context(), spec); err != nil {
+	if _, err := c.EnsureNetwork(t.Context(), spec); err != nil {
 		t.Errorf("EnsureNetwork on the network it created: %v", err)
 	}
 	other := spec
 	other.Bridge = pool + "9"
-	if err := c.EnsureNetwork(t.Context(), other); !errors.Is(err, errNetworkMismatch) {
+	if _, err := c.EnsureNetwork(t.Context(), other); !errors.Is(err, errNetworkMismatch) {
 		t.Errorf("EnsureNetwork with another bridge name = %v, want errNetworkMismatch", err)
 	}
 	other = spec
 	other.ICC = true
-	if err := c.EnsureNetwork(t.Context(), other); !errors.Is(err, errNetworkMismatch) {
+	if _, err := c.EnsureNetwork(t.Context(), other); !errors.Is(err, errNetworkMismatch) {
 		t.Errorf("EnsureNetwork with ICC on = %v, want errNetworkMismatch", err)
 	}
 }
