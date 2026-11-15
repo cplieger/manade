@@ -42,22 +42,22 @@ type networkWire struct {
 
 type ipamConfig struct{ Subnet string }
 
-// EnsureNetwork creates the network when it is missing, and otherwise checks
+// EnsureNetwork creates the network when it is missing, reporting created, and otherwise checks
 // that it has the spec's driver, subnet, bridge name, ICC setting and no
 // IPv6; a difference fails with errNetworkMismatch, because jobs on it would
 // sit on a network the config does not describe. The firewall rules key on
 // the bridge name and cover IPv4 only, so another name or IPv6 also puts
 // jobs outside them.
-func (c *Client) EnsureNetwork(ctx context.Context, spec NetworkSpec) error {
+func (c *Client) EnsureNetwork(ctx context.Context, spec NetworkSpec) (created bool, err error) {
 	var got networkWire
-	err := c.call(ctx, "network", http.MethodGet, "/networks/"+spec.Name, nil, nil, &got, jsonLimit)
+	err = c.call(ctx, "network", http.MethodGet, "/networks/"+spec.Name, nil, nil, &got, jsonLimit)
 	if errors.Is(err, errNotFound) {
-		return c.createNetwork(ctx, spec)
+		return true, c.createNetwork(ctx, spec)
 	}
 	if err != nil {
-		return err
+		return false, err
 	}
-	return checkNetwork(&got, spec)
+	return false, checkNetwork(&got, spec)
 }
 
 func (c *Client) createNetwork(ctx context.Context, spec NetworkSpec) error {

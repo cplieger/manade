@@ -120,6 +120,7 @@ func (p *Pool) dockerFailed(ctx context.Context, op obs.DockerOp) bool {
 // reports whether Docker answered the list, and whether every orphan was
 // adopted or removed.
 func (p *Pool) reconcile(ctx context.Context) (listed, settled bool) {
+	p.ensureNetworks(ctx)
 	known := p.created()
 	list, err := p.dk.ListContainers(ctx)
 	if err != nil {
@@ -160,6 +161,23 @@ func (p *Pool) reconcile(ctx context.Context) (listed, settled bool) {
 	p.tidyImages(ctx)
 	p.pruneDiag()
 	return true, settled
+}
+
+// ensureNetworks creates again a job network something outside the pool
+// removed: docker system prune deletes one no container is attached to,
+// and every start fails until it exists. A failure leaves it to the next pass.
+func (p *Pool) ensureNetworks(ctx context.Context) {
+	for _, n := range p.host.Networks() {
+		created, err := p.dk.EnsureNetwork(ctx, n)
+		switch {
+		case err != nil:
+			if p.dockerFailed(ctx, obs.DockerNetwork) {
+				p.log.Warn("Checking a job network failed, so the pass retries it", "network", n.Name, "error", err)
+			}
+		case created:
+			p.log.Warn("A job network was gone, so it was created again", "network", n.Name)
+		}
+	}
 }
 
 // removeProbes removes the leftover probes a pass found.

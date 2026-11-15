@@ -41,8 +41,8 @@ func networkDaemon(t *testing.T, existing map[string]any) (*fakeDaemon, *Client)
 
 func TestEnsureNetworkCreates(t *testing.T) {
 	d, c := networkDaemon(t, nil)
-	if err := c.EnsureNetwork(t.Context(), isolatedSpec()); err != nil {
-		t.Fatalf("EnsureNetwork: %v", err)
+	if created, err := c.EnsureNetwork(t.Context(), isolatedSpec()); err != nil || !created {
+		t.Fatalf("EnsureNetwork = %v, %v; want created", created, err)
 	}
 	reqs := d.seen(http.MethodPost, "/networks/create")
 	if len(reqs) != 1 {
@@ -77,8 +77,8 @@ func TestEnsureNetworkCreates(t *testing.T) {
 	t.Run("bridgeNetworkTurnsICCOn", func(t *testing.T) {
 		d, c := networkDaemon(t, nil)
 		spec := NetworkSpec{Name: "manade-bridge", Bridge: "manade1", Subnet: netip.MustParsePrefix("172.30.1.0/24"), ICC: true}
-		if err := c.EnsureNetwork(t.Context(), spec); err != nil {
-			t.Fatalf("EnsureNetwork: %v", err)
+		if created, err := c.EnsureNetwork(t.Context(), spec); err != nil || !created {
+			t.Fatalf("EnsureNetwork = %v, %v; want created", created, err)
 		}
 		if b := string(d.seen(http.MethodPost, "/networks/create")[0].body); !strings.Contains(b, `"`+optICC+`":"true"`) {
 			t.Errorf("create body = %s, want ICC true", b)
@@ -89,8 +89,8 @@ func TestEnsureNetworkCreates(t *testing.T) {
 func TestEnsureNetworkChecksAnExistingOne(t *testing.T) {
 	t.Run("aMatchingNetworkIsKept", func(t *testing.T) {
 		d, c := networkDaemon(t, networkAnswer())
-		if err := c.EnsureNetwork(t.Context(), isolatedSpec()); err != nil {
-			t.Errorf("EnsureNetwork = %v", err)
+		if created, err := c.EnsureNetwork(t.Context(), isolatedSpec()); err != nil || created {
+			t.Errorf("EnsureNetwork = %v, %v; want kept", created, err)
 		}
 		if n := len(d.seen(http.MethodPost, "/networks/create")); n != 0 {
 			t.Errorf("creates = %d, want 0", n)
@@ -99,7 +99,7 @@ func TestEnsureNetworkChecksAnExistingOne(t *testing.T) {
 	t.Run("aZeroICCOptionReadsAsOff", func(t *testing.T) {
 		got := networkAnswer()
 		got["Options"] = map[string]string{optICC: "0", optBridgeName: "manade0"}
-		if _, c := networkDaemon(t, got); c.EnsureNetwork(t.Context(), isolatedSpec()) != nil {
+		if _, c := networkDaemon(t, got); func() error { _, err := c.EnsureNetwork(t.Context(), isolatedSpec()); return err }() != nil {
 			t.Error("ICC 0 was not read as off")
 		}
 	})
@@ -122,7 +122,7 @@ func TestEnsureNetworkChecksAnExistingOne(t *testing.T) {
 			got := networkAnswer()
 			change(got)
 			_, c := networkDaemon(t, got)
-			if err := c.EnsureNetwork(t.Context(), isolatedSpec()); !errors.Is(err, errNetworkMismatch) || !strings.Contains(err.Error(), "manade-isolated") {
+			if _, err := c.EnsureNetwork(t.Context(), isolatedSpec()); !errors.Is(err, errNetworkMismatch) || !strings.Contains(err.Error(), "manade-isolated") {
 				t.Errorf("EnsureNetwork = %v, want errNetworkMismatch naming the network", err)
 			}
 		})
@@ -132,7 +132,7 @@ func TestEnsureNetworkChecksAnExistingOne(t *testing.T) {
 func TestEnsureNetworkPassesOtherErrors(t *testing.T) {
 	d := newDaemon(t, "1.51")
 	d.handle("GET /networks/{name}", func(w http.ResponseWriter, _ *http.Request) { writeError(w, http.StatusInternalServerError, "boom") })
-	if err := d.dial(t).EnsureNetwork(t.Context(), isolatedSpec()); err == nil || errors.Is(err, errNetworkMismatch) {
+	if _, err := d.dial(t).EnsureNetwork(t.Context(), isolatedSpec()); err == nil || errors.Is(err, errNetworkMismatch) {
 		t.Errorf("EnsureNetwork = %v, want the daemon's error", err)
 	}
 	if n := len(d.seen(http.MethodPost, "/networks/create")); n != 0 {

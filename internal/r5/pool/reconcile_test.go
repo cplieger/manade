@@ -364,8 +364,8 @@ func TestReconcileLeavesAStartInFlight(t *testing.T) {
 	if fx.dk.box(r.name) == nil || !fx.hasRecord(appDefault, r.name) {
 		t.Error("the pass touched a runner whose start is in flight")
 	}
-	if len(fx.calls.all()) != 0 {
-		t.Errorf("calls = %v, want none", fx.calls.all())
+	if got := fx.calls.acting(); len(got) != 0 {
+		t.Errorf("calls = %v, want none", got)
 	}
 }
 
@@ -460,8 +460,8 @@ func TestReconcileAdoptsOrphans(t *testing.T) {
 		if fx.dk.box("gone") == nil || fx.dk.box("probe") == nil {
 			t.Error("the pass removed a container of a scope the config does not name, or a probe")
 		}
-		if len(fx.calls.all()) != 0 {
-			t.Errorf("calls = %v, want none", fx.calls.all())
+		if got := fx.calls.acting(); len(got) != 0 {
+			t.Errorf("calls = %v, want none", got)
 		}
 	})
 }
@@ -505,8 +505,8 @@ func TestReconcileDrainsRunnersTheConfigDropped(t *testing.T) {
 			if got := slices.Contains(fx.gh.removed, 7); got != tc.unregistered {
 				t.Errorf("registration removed = %v, want %v", got, tc.unregistered)
 			}
-			if tc.noGitHubCalls && len(fx.calls.all()) != 0 {
-				t.Errorf("calls = %v, want none for a scope with no credentials", fx.calls.all())
+			if got := fx.calls.acting(); tc.noGitHubCalls && len(got) != 0 {
+				t.Errorf("calls = %v, want none for a scope with no credentials", got)
 			}
 			want, slots := int64(0), 4
 			if tc.held {
