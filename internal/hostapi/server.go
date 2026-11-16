@@ -461,7 +461,7 @@ func (s *Server) writeBackendError(w http.ResponseWriter, err error) {
 		status, body.Code = http.StatusGatewayTimeout, codeProbeTimeout
 	default:
 		status, body.Code = http.StatusInternalServerError, codeInternal
-		s.log.Warn("A host API request failed", "error", err)
+		s.log.Warn("A host API request failed", "error", textsafe.NewUntrusted(err.Error()))
 	}
 	s.writeJSON(w, status, &body)
 }

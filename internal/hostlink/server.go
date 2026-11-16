@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/cplieger/go/textsafe"
 	"github.com/cplieger/manade/internal/hostapi"
 )
 
@@ -139,13 +140,13 @@ func (s *Server) connect(w http.ResponseWriter, r *http.Request) {
 	}
 	conn, brw, err := http.NewResponseController(w).Hijack()
 	if err != nil {
-		s.log.Warn("A host's upgrade could not take its connection", "host", hello.Name, "error", err)
+		s.log.Warn("A host's upgrade could not take its connection", "host", textsafe.NewUntrusted(hello.Name), "error", err)
 		return
 	}
 	link, err := s.open(r.Context(), conn, brw.Reader.Buffered(), &hello)
 	if err != nil {
 		_ = conn.Close()
-		s.log.Warn("A host's connection failed during its upgrade", "host", hello.Name, "error", err)
+		s.log.Warn("A host's connection failed during its upgrade", "host", textsafe.NewUntrusted(hello.Name), "error", err)
 		return
 	}
 	s.register(link)
@@ -209,15 +210,15 @@ func (s *Server) register(l *Link) {
 	s.mu.Unlock()
 	go s.watch(l)
 	if old == nil {
-		s.log.Info("A host connected", "host", l.Name, "build", l.Build, "instance", l.Instance, "section", l.Section)
+		s.log.Info("A host connected", "host", textsafe.NewUntrusted(l.Name), "build", textsafe.NewUntrusted(l.Build), "instance", textsafe.NewUntrusted(l.Instance), "section", textsafe.NewUntrusted(l.Section))
 		return
 	}
 	_ = old.Close()
 	if warn {
 		s.log.Warn("A host connected under a name that was already connected, and the newer connection replaces the older; two hosts holding one identity make it flap",
-			"host", l.Name, "instance", l.Instance, "replaced_instance", old.Instance)
+			"host", textsafe.NewUntrusted(l.Name), "instance", textsafe.NewUntrusted(l.Instance), "replaced_instance", textsafe.NewUntrusted(old.Instance))
 	} else {
-		s.log.Debug("A host's newer connection replaced its older one", "host", l.Name, "instance", l.Instance)
+		s.log.Debug("A host's newer connection replaced its older one", "host", textsafe.NewUntrusted(l.Name), "instance", textsafe.NewUntrusted(l.Instance))
 	}
 }
 
@@ -233,7 +234,7 @@ func (s *Server) watch(l *Link) {
 	}
 	s.mu.Unlock()
 	if current {
-		s.log.Info("A host disconnected", "host", l.Name, "instance", l.Instance, "connected_for", time.Since(l.Since).Round(time.Second))
+		s.log.Info("A host disconnected", "host", textsafe.NewUntrusted(l.Name), "instance", textsafe.NewUntrusted(l.Instance), "connected_for", time.Since(l.Since).Round(time.Second))
 	}
 }
 

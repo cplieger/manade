@@ -241,6 +241,23 @@ func TestDeleteRunner(t *testing.T) {
 	})
 }
 
+func TestABackendFailureIsLoggedClean(t *testing.T) {
+	var logs bytes.Buffer
+	b := &fakeBackend{err: errors.New("disk\u202eon\x01fire\nnext")}
+	srv := httptest.NewServer(NewServer(b, "inst-1", slog.New(slog.NewJSONHandler(&logs, nil))).Handler())
+	t.Cleanup(srv.Close)
+	if resp, _ := do(t, http.MethodDelete, srv.URL+"/v1/runners/r1", ""); resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("answer %d, want 500", resp.StatusCode)
+	}
+	var rec struct{ Msg, Error string }
+	if err := json.Unmarshal(logs.Bytes(), &rec); err != nil || strings.Count(logs.String(), "\n") != 1 {
+		t.Fatalf("logs = %q (%v), want one JSON line", logs.String(), err)
+	}
+	if rec.Msg != "A host API request failed" || rec.Error != "disk on fire\nnext" {
+		t.Errorf("logged %+v, want the error with its unsafe runes replaced", rec)
+	}
+}
+
 func TestLogs(t *testing.T) {
 	t.Run("tail bounds", func(t *testing.T) {
 		srv := serve(t, &fakeBackend{logs: []byte("a\n")})

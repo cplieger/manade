@@ -12,6 +12,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -109,6 +111,54 @@ func TestUpgradeAnswers(t *testing.T) {
 			t.Error("a refused name holds a link")
 		}
 	})
+}
+
+// TestPeerTextIsLoggedClean sends a Hello whose fields hold the unsafe runes
+// a header can carry; a CR or LF it cannot, since the server refuses one in
+// a header value (RFC 9110 §5.5).
+func TestPeerTextIsLoggedClean(t *testing.T) {
+	var logs syncBuffer
+	r := &rig{srv: NewServer(slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))), path: filepath.Join(t.TempDir(), "hosts.sock")}
+	ln, err := ListenSocket(r.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.serve(t, ln)
+	const build, instance, section = "v1\u202egnp.exe", "i1\u0085forged", "7\u2028x"
+	a := upgradeAnswer(t, r, map[string]string{"Connection": "Upgrade", "Upgrade": protocol, headerName: "nas", headerBuild: build, headerInstance: instance, headerSection: section})
+	if a.status != http.StatusSwitchingProtocols {
+		t.Fatalf("answer = %d %+v", a.status, a.body)
+	}
+	l := r.link(t, "nas", instance)
+	_ = l.Close()
+	want := map[string]map[string]string{
+		"A host connected":    {"host": "nas", "build": "v1 gnp.exe", "instance": "i1 forged", "section": "7 x"},
+		"A host disconnected": {"host": "nas", "instance": "i1 forged"},
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for len(want) > 0 && time.Now().Before(deadline) {
+		for line := range strings.Lines(logs.String()) {
+			var rec map[string]any
+			if err := json.Unmarshal([]byte(line), &rec); err != nil {
+				t.Fatalf("log line %q: %v", line, err)
+			}
+			msg, _ := rec["msg"].(string)
+			fields, ok := want[msg]
+			if !ok {
+				continue
+			}
+			for k, v := range fields {
+				if rec[k] != v {
+					t.Errorf("%s: %s = %q, want %q", msg, k, rec[k], v)
+				}
+			}
+			delete(want, msg)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if len(want) > 0 {
+		t.Errorf("no log line for %v in:\n%s", slices.Collect(maps.Keys(want)), logs.String())
+	}
 }
 
 func TestUplinkReportsARefusal(t *testing.T) {

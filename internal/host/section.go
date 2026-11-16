@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"net/netip"
 	"path/filepath"
 	"reflect"
@@ -329,7 +330,7 @@ func (s *supervisor) deliverFirst(ctx context.Context, next *accepted) (hostapi.
 	s.phase.Store(phaseBooting)
 	s.publish()
 	s.arrived <- next
-	s.log.Info("The host received its first section and boots on it", "hash", next.hash, "revision", next.raw.Revision)
+	s.log.Info("The host received its first section and boots on it", "hash", next.hash, "revision", slog.Uint64Value(next.raw.Revision))
 	return s.answer(), nil
 }
 
@@ -462,7 +463,7 @@ func (s *supervisor) applyRow(ctx context.Context, next *accepted, r row) error 
 func (s *supervisor) applyNow(next *accepted) {
 	s.running = next
 	s.apply(next.cfg, next.host)
-	s.log.Info("The host applied its section", "hash", next.hash, "revision", next.raw.Revision)
+	s.log.Info("The host applied its section", "hash", next.hash, "revision", slog.Uint64Value(next.raw.Revision))
 }
 
 // wake wakes changes.
@@ -502,7 +503,7 @@ func (s *supervisor) applyPending(ctx context.Context) error {
 		return nil
 	}
 	if p.row == rowRestart {
-		s.log.Warn("The host is restarting to apply settings", "hash", p.next.hash, "revision", p.next.raw.Revision)
+		s.log.Warn("The host is restarting to apply settings", "hash", p.next.hash, "revision", slog.Uint64Value(p.next.raw.Revision))
 		close(s.restarting)
 		return ErrRestart
 	}

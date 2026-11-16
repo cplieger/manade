@@ -1,6 +1,7 @@
 package hostlink
 
 import (
+	"bytes"
 	"context"
 	"net"
 	"path/filepath"
@@ -239,4 +240,22 @@ func (f *freezer) last() *freezable {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.conns[len(f.conns)-1]
+}
+
+// syncBuffer is a bytes.Buffer a logger writes while the test reads it.
+type syncBuffer struct {
+	buf bytes.Buffer
+	mu  sync.Mutex
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }

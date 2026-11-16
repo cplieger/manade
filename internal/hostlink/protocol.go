@@ -60,7 +60,8 @@ func (h *Hello) header(hd http.Header) {
 	}
 }
 
-// helloFrom reads a host's Hello, refusing a name no host may have.
+// helloFrom reads a host's Hello, refusing a name no host may have. Every
+// field is the peer's text, which a log line tags with textsafe.NewUntrusted.
 func helloFrom(hd http.Header) (Hello, error) {
 	h := Hello{
 		Name: hd.Get(headerName), Build: hd.Get(headerBuild),

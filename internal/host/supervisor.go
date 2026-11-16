@@ -392,7 +392,7 @@ func (s *supervisor) bootSaved(ctx context.Context) {
 	s.running = next
 	s.phase.Store(phaseBooting)
 	s.publish()
-	s.log.Info("The host boots on the section it saved", "hash", next.hash, "revision", next.raw.Revision)
+	s.log.Info("The host boots on the section it saved", "hash", next.hash, "revision", slog.Uint64Value(next.raw.Revision))
 }
 
 // awaitSection answers the section the host boots on: bootSaved's, or else
