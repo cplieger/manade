@@ -39,6 +39,11 @@ func TestBuildDefaults(t *testing.T) {
 			t.Errorf("head_reserve_after = %v, want 2m", cfg.HeadReserveAfter)
 		}
 	})
+	t.Run("poolName", func(t *testing.T) {
+		if cfg.PoolName != "manade" {
+			t.Errorf("pool.name = %q, want manade", cfg.PoolName)
+		}
+	})
 	t.Run("profileHosts", func(t *testing.T) {
 		if got := profile(t, cfg, "p").Hosts; !slices.Equal(got, []string{"default"}) {
 			t.Errorf("hosts = %v, want [default]", got)
@@ -50,6 +55,25 @@ func TestBuildDefaults(t *testing.T) {
 			t.Errorf("scopes = %+v, want %+v", cfg.Scopes, want)
 		}
 	})
+}
+
+func TestParsePoolName(t *testing.T) {
+	cfg, err := Parse([]byte(object(jsonScopes, jsonHost, jsonProfile(""), `"pool": {"name": "ci-2"}`)), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.PoolName != "ci-2" {
+		t.Errorf("pool.name = %q, want ci-2", cfg.PoolName)
+	}
+}
+
+// Parse answers no model with its refusal.
+func TestParseRefusal(t *testing.T) {
+	cfg, err := Parse([]byte(`{"pool": {"name": ""}, "queue": {"head_reserve_after": "0s"}}`), nil, nil)
+	if cfg != nil {
+		t.Errorf("Parse = %+v, want no model", cfg)
+	}
+	wantErr(t, err, "queue.head_reserve_after")
 }
 
 // The control plane's document may leave a host's budget unset: a host
@@ -178,7 +202,11 @@ func TestBuildRefusals(t *testing.T) {
 		name, doc string
 		want      []string
 	}{
-		{"unknownTopLevel", withMember(`"pool": "x"`), []string{"pool: unknown key"}},
+		{"unknownTopLevel", withMember(`"orchestrator": "x"`), []string{"orchestrator: unknown key"}},
+		{"poolNameLong", withMember(`"pool": {"name": "a-fifteen-chars"}`), []string{"pool.name: want 1 to 14 lowercase letters"}},
+		{"poolNameUpper", withMember(`"pool": {"name": "Manade"}`), []string{"pool.name: want 1 to 14 lowercase letters"}},
+		{"poolNameDigitFirst", withMember(`"pool": {"name": "1pool"}`), []string{"pool.name: want 1 to 14 lowercase letters"}},
+		{"poolUnknown", withMember(`"pool": {"owner": "x"}`), []string{"pool.owner: unknown key"}},
 		{"topLevelCapacity", withMember(`"capacity": {"cpus": 1, "memory": "1GiB"}`), []string{"capacity: unknown key"}},
 		{"address", hosted(`"address": "https://nas:7464"`), []string{"hosts.h.address: refused: hosts dial the control plane"}},
 		{"registryAuth", hosted(`"registry_auth": "/auth.json"`), []string{"hosts.h.registry_auth: refused: set MANADE_REGISTRY_AUTH or MANADE_REGISTRY_AUTH_FILE"}},

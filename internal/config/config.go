@@ -26,7 +26,9 @@ type Config struct {
 	// Self is set on a runner host only.
 	Self *Self
 	// ceilings are the hosts' ceilings the rules check against, by name.
-	ceilings         map[string]*Ceiling
+	ceilings map[string]*Ceiling
+	// PoolName is the GitHub session owner and the runner names' prefix.
+	PoolName         string
 	Scopes           []Scope
 	Hosts            []Host
 	Profiles         []Profile
@@ -113,6 +115,16 @@ func (s Secret) Format(f fmt.State, _ rune) { _, _ = f.Write([]byte(s.String()))
 //
 //deadset:ignore DS1101 -- slog.LogValuer, reached by any slog attribute holding a Secret
 func (s Secret) LogValue() slog.Value { return slog.StringValue(s.String()) }
+
+// Parse validates settings document data into the model, answering
+// FieldErrors on a refusal. prev and reported are build's.
+func Parse(data []byte, prev *Config, reported map[string]*Ceiling) (*Config, error) {
+	cfg := &Config{}
+	if err := build(cfg, data, prev, reported); err != nil {
+		return nil, err
+	}
+	return cfg, nil
+}
 
 // build validates settings document data into cfg, which holds the
 // environment's settings. prev is the model data replaces, or nil for a

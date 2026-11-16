@@ -19,6 +19,9 @@ type document struct {
 	Queue    struct {
 		HeadReserveAfter scalar `json:"head_reserve_after"`
 	} `json:"queue"`
+	Pool struct {
+		Name string `json:"name"`
+	} `json:"pool"`
 	Images docImages  `json:"images"`
 	Scopes []docScope `json:"scopes"`
 }
@@ -75,11 +78,18 @@ const (
 
 var (
 	ownerRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]{0,38}$`)
-	repoRe  = regexp.MustCompile(`^[A-Za-z0-9._-]{1,100}$`)
+	// poolNameRe keeps a runner name, the pool name and a suffix, at most
+	// 60 bytes.
+	poolNameRe = regexp.MustCompile(`^[a-z][a-z0-9-]{0,13}$`)
+	repoRe     = regexp.MustCompile(`^[A-Za-z0-9._-]{1,100}$`)
 )
 
 func (d *document) apply(cfg *Config, p *problems) {
 	cfg.HeadReserveAfter = field(p, "queue.head_reserve_after", d.Queue.HeadReserveAfter, "2m", parseDuration)
+	cfg.PoolName = cmp.Or(d.Pool.Name, "manade")
+	if !poolNameRe.MatchString(cfg.PoolName) {
+		p.add("pool.name", invalid("want 1 to 14 lowercase letters, digits or dashes, starting with a letter", cfg.PoolName))
+	}
 	refresh := parseRefresh(p, "images.refresh", cmp.Or(string(d.Images.Refresh), "1h"))
 	cfg.Scopes = d.scopes(p)
 	cfg.Hosts = d.hosts(refresh, p)
