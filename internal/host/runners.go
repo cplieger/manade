@@ -589,7 +589,7 @@ func (r *runnerSet) holdForSpace() *spaceHold {
 	at := time.Now()
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	h := &spaceHold{at: at}
+	h := &spaceHold{at: at, base: baselinePending}
 	r.space = h
 	return h
 }
