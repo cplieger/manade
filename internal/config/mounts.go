@@ -23,11 +23,7 @@ func (c *Config) Protected(h *Host) []string {
 	if c.Self == nil || c.Self.Name != h.Name {
 		return append([]string{hostTLSDir}, fixedProtected...)
 	}
-	out := []string{c.Self.TLSDir}
-	if c.File != "" {
-		out = append(out, c.configDir())
-	}
-	out = append(out, fixedProtected...)
+	out := append([]string{c.Self.TLSDir, c.configDir()}, fixedProtected...)
 	if f := c.Self.RegistryAuth.File; f != "" {
 		out = append(out, f)
 	}

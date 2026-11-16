@@ -11,49 +11,49 @@
       "code": "DS1301",
       "symbol": "go://github.com/cplieger/manade/internal/config#Config.HeadReserveAfter",
       "path": "internal/config/config.go",
-      "reason": "staging: the pool on the store (revision 7 build batch b5) reads the queue settings; delete this entry there"
+      "reason": "staging: the control plane's job queue reads the head reservation delay; delete this entry when it does"
     },
     {
       "code": "DS1501",
       "symbol": "go://github.com/cplieger/manade/internal/config#ScopeRepo",
       "path": "internal/config/document.go",
-      "reason": "staging: the pool on the store (revision 7 build batch b5) registers each scope's scale sets from it; delete this entry there"
+      "reason": "staging: the control plane's scale-set registration reads each scope's target from it; delete this entry when it does"
     },
     {
       "code": "DS1501",
       "symbol": "go://github.com/cplieger/manade/internal/config#ScopeOrg",
       "path": "internal/config/document.go",
-      "reason": "staging: the pool on the store (revision 7 build batch b5) registers each scope's scale sets from it; delete this entry there"
+      "reason": "staging: the control plane's scale-set registration reads each scope's target from it; delete this entry when it does"
     },
     {
       "code": "DS1501",
       "symbol": "go://github.com/cplieger/manade/internal/config#ScopeEnterprise",
       "path": "internal/config/document.go",
-      "reason": "staging: the pool on the store (revision 7 build batch b5) registers each scope's scale sets from it; delete this entry there"
+      "reason": "staging: the control plane's scale-set registration reads each scope's target from it; delete this entry when it does"
     },
     {
       "code": "DS1301",
       "symbol": "go://github.com/cplieger/manade/internal/config#Scope.Owner",
       "path": "internal/config/document.go",
-      "reason": "staging: the pool on the store (revision 7 build batch b5) registers each scope's scale sets from it; delete this entry there"
+      "reason": "staging: the control plane's scale-set registration reads each scope's target from it; delete this entry when it does"
     },
     {
       "code": "DS1301",
       "symbol": "go://github.com/cplieger/manade/internal/config#Scope.Repo",
       "path": "internal/config/document.go",
-      "reason": "staging: the pool on the store (revision 7 build batch b5) registers each scope's scale sets from it; delete this entry there"
+      "reason": "staging: the control plane's scale-set registration reads each scope's target from it; delete this entry when it does"
     },
     {
       "code": "DS1301",
       "symbol": "go://github.com/cplieger/manade/internal/config#Scope.RunnerGroup",
       "path": "internal/config/document.go",
-      "reason": "staging: the pool on the store (revision 7 build batch b5) registers each scope's scale sets from it; delete this entry there"
+      "reason": "staging: the control plane's scale-set registration reads each scope's target from it; delete this entry when it does"
     },
     {
       "code": "DS1301",
       "symbol": "go://github.com/cplieger/manade/internal/config#Scope.InstallationID",
       "path": "internal/config/document.go",
-      "reason": "staging: the pool on the store (revision 7 build batch b5) registers each scope's scale sets from it; delete this entry there"
+      "reason": "staging: the control plane's scale-set registration reads each scope's target from it; delete this entry when it does"
     },
     {
       "code": "DS1102",

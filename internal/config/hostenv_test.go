@@ -94,6 +94,16 @@ func TestLoadHost(t *testing.T) {
 			t.Errorf("echo = %+v, %v; want the host's own", cfg, err)
 		}
 	})
+	// The host sizes its memory reserve from its own budget, so its own
+	// section must set one; another host's section need not.
+	t.Run("capacity", func(t *testing.T) {
+		d := withHosts("  nas: {}\n  default: {capacity: {cpus: 8, memory: 24GiB}}\n", "nas, default")
+		_, err := loadHost(t, d, map[string]string{"MANADE_HOST": "nas"})
+		wantErr(t, err, "hosts.nas.capacity: required on the host itself: set cpus and memory")
+		if _, err := loadHost(t, d, map[string]string{"MANADE_HOST": "default"}); err != nil {
+			t.Errorf("another host's section without capacity: err = %v", err)
+		}
+	})
 	tests := []struct {
 		name string
 		env  map[string]string

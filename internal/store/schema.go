@@ -14,40 +14,24 @@ const schemaName = "manade"
 // higher format.
 const format = 1
 
-// metaRow records who last opened the file. Fields are only ever added.
-type metaRow struct {
+// stamp is who last opened the file. Every open rewrites it whole, so it
+// holds the format and the build and nothing else.
+type stamp struct {
 	Build  string `json:"build,omitempty"`
 	Format int    `json:"format"`
 }
 
-var metaKey = []byte("store")
+// stampKey is the stamp's key in meta. Every other fact meta keeps has a key
+// of its own, which no open writes.
+var stampKey = []byte("store")
 
+// meta holds one row per fact, each decoded by the code that owns it, so a
+// write of one fact leaves every other byte for byte.
 var schema, meta = declare()
 
-// declare builds the whole schema. A table whose writer is not built yet is
-// declared with a raw JSON value: its digest is the same as with its row
-// type, which the writer's change gives it.
-func declare() (*bolttable.Schema, *bolttable.Table[[]byte, metaRow]) {
+func declare() (*bolttable.Schema, *bolttable.Table[[]byte, json.RawMessage]) {
 	s := bolttable.NewSchema(schemaName)
-	ns := func(name string) *bolttable.Namespace { return bolttable.Must(s.Namespace(name)) }
-	byName, seq := bolttable.BytesKey{}, bolttable.Uint64Key{}
-
-	m := bolttable.Must(bolttable.Define(ns("meta"), prefixMeta, "meta", byName, bolttable.JSON[metaRow](1), bolttable.TableOptions{}))
-	raw(ns("secrets"), prefixSecrets, "values", byName)
-	hosts := ns("hosts")
-	raw(hosts, prefixHosts, "identities", byName)
-	raw(hosts, prefixTombstones, "tombstones", byName)
-	raw(ns("github"), prefixScaleSets, "scalesets", byName)
-	raw(ns("journal"), prefixJournal, "entries", seq)
-	history := ns("history")
-	raw(history, prefixRuns, "runs", seq)
-	raw(history, prefixRunBlobs, "runblobs", seq)
-	raw(history, prefixHostEvents, "hostevents", seq)
-	raw(history, prefixProbes, "probes", seq)
-	raw(ns("rollups"), prefixRollups, "days", byName)
+	m := bolttable.Must(bolttable.Define(bolttable.Must(s.Namespace("meta")), prefixMeta, "meta",
+		bolttable.BytesKey{}, bolttable.JSON[json.RawMessage](1), bolttable.TableOptions{}))
 	return s, m
-}
-
-func raw[K any](n *bolttable.Namespace, prefix byte, name string, key bolttable.KeyCodec[K]) {
-	bolttable.Must(bolttable.Define(n, prefix, name, key, bolttable.JSON[json.RawMessage](1), bolttable.TableOptions{}))
 }

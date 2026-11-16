@@ -6,8 +6,10 @@ package store
 import (
 	"cmp"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 
 	"github.com/cplieger/bolttable"
@@ -35,62 +37,113 @@ type Store struct {
 }
 
 // Open opens or creates the file at path. Another holder of the file fails
-// it with an error matching bolttable.ErrLocked; a file a later format wrote,
-// or one whose namespaces this build neither reads nor retires, fails it
-// unchanged.
+// it with an error matching bolttable.ErrLocked. A file stamped by a later
+// store format fails it naming both builds, and one holding a namespace
+// this schema does not declare fails it with a *bolttable.FormatError;
+// either way Open writes nothing to the file.
 func Open(path string, o Options) (*Store, error) {
-	return open(path, &current, o)
-}
-
-func open(path string, l *layout, o Options) (*Store, error) {
 	log := cmp.Or(o.Log, slog.Default())
+	if err := checkStamp(path, o.Build); err != nil {
+		return nil, fmt.Errorf("store %s: %w", path, err)
+	}
 	lock, err := bolttable.LockPath(path, 0)
 	if err != nil {
 		return nil, fmt.Errorf("store %s: %w", path, err)
 	}
-	s, err := start(path, lock, l, o.Build, log)
+	s, err := start(path, lock, o.Build, log)
 	if err != nil {
 		return nil, errors.Join(fmt.Errorf("store %s: %w", path, err), lock.Release())
 	}
 	return s, nil
 }
 
-func start(path string, lock *bolttable.Lock, l *layout, build string, log *slog.Logger) (*Store, error) {
-	db, err := openFile(path, lock, l)
+// checkStamp refuses a file a later format stamped before anything opens it
+// for writing: bolttable.Open compacts and creates namespaces before any
+// transaction of ours runs. A file that is absent, or that this schema
+// cannot read, is left to Open.
+func checkStamp(path, build string) error {
+	db, err := bolttable.OpenReadOnly(path, schema, bolttable.ReadOptions{})
+	var fe *bolttable.FormatError
+	switch {
+	case errors.Is(err, fs.ErrNotExist), errors.As(err, &fe):
+		return nil
+	case err != nil:
+		return err
+	}
+	var last stamp
+	var found bool
+	err = db.View(context.Background(), func(r *bolttable.ReadTx) (verr error) {
+		last, found, verr = readStamp(r)
+		return verr
+	})
+	if err = errors.Join(err, db.Close()); err != nil || !found {
+		return err
+	}
+	return refuseLater(last, build)
+}
+
+func start(path string, lock *bolttable.Lock, build string, log *slog.Logger) (*Store, error) {
+	db, err := bolttable.Open(path, schema, bolttable.Options{Lock: lock, Compact: compaction})
 	if err != nil {
 		return nil, err
 	}
 	r := db.OpenReport()
-	switch {
-	case r.CompactErr != nil:
-		log.Warn("The store could not be compacted at open, so it keeps its free space until a later start", "error", r.CompactErr)
-	case r.Compacted:
-		log.Info("The store was compacted at open")
-	}
-	if len(r.Reset) > 0 {
-		dropped := make([]string, 0, len(r.Reset))
-		for _, n := range r.Reset {
-			dropped = append(dropped, n.Name)
-		}
-		log.Info("The store dropped namespaces an earlier build kept, after copying their rows", "namespaces", dropped, "kept", r.Kept)
-	}
-	if err := db.Update(context.Background(), func(tx *bolttable.Tx) error { return l.record(tx, build) }); err != nil {
+	logOpen(log, &r)
+	if err := db.Update(context.Background(), func(tx *bolttable.Tx) error { return record(tx, build) }); err != nil {
 		return nil, errors.Join(err, db.Close())
 	}
 	return &Store{db: db, lock: lock}, nil
 }
 
-// record refuses a file of a later format and records this build in it.
-func (l *layout) record(tx *bolttable.Tx, build string) error {
-	last, found, err := l.meta.Get(tx.Read(), metaKey)
+func logOpen(log *slog.Logger, r *bolttable.OpenReport) {
+	switch {
+	case r.CompactErr != nil && r.Compacted:
+		log.Warn("The store was compacted at open, but its directory did not sync, so a power loss may bring back the file as it was", "error", r.CompactErr)
+	case r.CompactErr != nil:
+		log.Warn("The store could not be compacted at open, so it keeps its free space until a later start", "error", r.CompactErr)
+	case r.Compacted:
+		log.Info("The store was compacted at open")
+	}
+}
+
+// record stamps the file with this build. It refuses a later format again:
+// another build may have opened the file between checkStamp and the lock.
+func record(tx *bolttable.Tx, build string) error {
+	last, found, err := readStamp(tx.Read())
 	if err != nil {
 		return err
 	}
-	if found && last.Format > format {
-		return fmt.Errorf("manade %s wrote this file in store format %d, and this build, %s, reads format %d: run %s or later",
-			cmp.Or(last.Build, "of an unknown build"), last.Format, cmp.Or(build, "unstamped"), format, cmp.Or(last.Build, "a newer build"))
+	if found {
+		if rerr := refuseLater(last, build); rerr != nil {
+			return rerr
+		}
 	}
-	return l.meta.Put(tx, metaKey, &metaRow{Format: format, Build: build})
+	v, err := json.Marshal(stamp{Format: format, Build: build})
+	if err != nil {
+		return err
+	}
+	raw := json.RawMessage(v)
+	return meta.Put(tx, stampKey, &raw)
+}
+
+func readStamp(r *bolttable.ReadTx) (stamp, bool, error) {
+	raw, found, err := meta.Get(r, stampKey)
+	if err != nil || !found {
+		return stamp{}, found, err
+	}
+	var st stamp
+	if err := json.Unmarshal(raw, &st); err != nil {
+		return stamp{}, true, fmt.Errorf("meta %s: %w", stampKey, err)
+	}
+	return st, true, nil
+}
+
+func refuseLater(last stamp, build string) error {
+	if last.Format <= format {
+		return nil
+	}
+	return fmt.Errorf("manade %s wrote this file in store format %d, and this build, %s, reads format %d: run %s or later",
+		cmp.Or(last.Build, "of an unknown build"), last.Format, cmp.Or(build, "unstamped"), format, cmp.Or(last.Build, "a newer build"))
 }
 
 // Close closes the file and releases its lock.

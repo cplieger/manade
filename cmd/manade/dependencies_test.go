@@ -10,8 +10,8 @@ import (
 )
 
 // allowedModules is the dependency rule: beyond the standard library and the
-// github.com/cplieger/ modules, the module links only these. A library's
-// entries are the modules it brings, as design-r7.md §18 lists them.
+// github.com/cplieger/ modules, the module links only these. A first-party
+// library's entries are the modules it brings, each commented with it.
 var allowedModules = []string{
 	"github.com/actions/scaleset",
 	"github.com/golang-jwt/jwt/v5", // actions/scaleset

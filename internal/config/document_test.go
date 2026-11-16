@@ -10,7 +10,7 @@ import (
 )
 
 func TestBuildDefaults(t *testing.T) {
-	cfg := mustBuild(t, &Config{}, withProfile(""))
+	cfg := mustBuildJSON(t, &Config{}, object(jsonScopes, jsonHost, jsonProfile("")))
 	h := host(t, cfg, "default")
 	t.Run("dns", func(t *testing.T) {
 		want := []netip.Addr{netip.MustParseAddr("1.1.1.1"), netip.MustParseAddr("8.8.8.8")}
@@ -52,10 +52,10 @@ func TestBuildDefaults(t *testing.T) {
 	})
 }
 
-// A host's budget is the pool's to learn from the host's first report, so a
-// host with none set builds with a zero budget.
+// The control plane's document may leave a host's budget unset: a host
+// with none builds with a zero budget.
 func TestBuildHostWithoutCapacity(t *testing.T) {
-	cfg := mustBuild(t, &Config{}, scopes+"hosts:\n  default: {}\nprofiles:\n  p: {}\n")
+	cfg := mustBuildJSON(t, &Config{}, object(jsonScopes, `"hosts": {"default": {}}`, jsonProfile("")))
 	if c := host(t, cfg, "default").Capacity; c != (Capacity{}) {
 		t.Errorf("capacity = %+v, want none", c)
 	}
@@ -63,32 +63,40 @@ func TestBuildHostWithoutCapacity(t *testing.T) {
 
 // A document with no scope is a first run's: nothing is served yet.
 func TestBuildWithoutScopes(t *testing.T) {
-	cfg := mustBuild(t, &Config{}, "hosts:\n  default: {}\nprofiles:\n  default: {}\n")
+	cfg := mustBuildJSON(t, &Config{}, `{"hosts": {"default": {}}, "profiles": {"default": {}}}`)
 	if len(cfg.Scopes) != 0 || profile(t, cfg, "default") == nil {
 		t.Errorf("scopes = %+v, want none", cfg.Scopes)
 	}
 }
 
 func TestBuildHosts(t *testing.T) {
-	doc := withHosts(`  default:
-    capacity: {cpus: 8, memory: 24GiB, disk: 100GiB, max_runners: 6}
-    images: {refresh: 30m}
-  nas:
-    capacity: {cpus: 2, memory: 3GiB}
-    dns: [10.0.0.53, "2001:db8::53"]
-    network: {subnet: 10.200.0.0/24}
-    egress:
-      ipv6: true
-      block6: ["2001:db8:1::/48"]
-      allow:
-        - {to: 10.0.0.50, ports: [5432]}
-        - {to: 192.168.2.0/24, ports: ["8000-8100", 9000], protocol: both}
-        - {to: "fd00::1", ports: [53], protocol: udp}
-  lan:
-    capacity: {cpus: 1.5, memory: 512MiB}
-    egress: {open: true}
-`, "nas, default")
-	cfg := mustBuild(t, &Config{}, "images: {refresh: 2h}\n"+doc)
+	const d = `{
+		"images": {"refresh": "2h"},
+		"scopes": [{"repo": "acme/app", "default_profile": "p"}],
+		"hosts": {
+			"default": {
+				"capacity": {"cpus": 8, "memory": "24GiB", "disk": "100GiB", "max_runners": 6},
+				"images": {"refresh": "30m"}
+			},
+			"nas": {
+				"capacity": {"cpus": 2, "memory": "3GiB"},
+				"dns": ["10.0.0.53", "2001:db8::53"],
+				"network": {"subnet": "10.200.0.0/24"},
+				"egress": {
+					"ipv6": true,
+					"block6": ["2001:db8:1::/48"],
+					"allow": [
+						{"to": "10.0.0.50", "ports": [5432]},
+						{"to": "192.168.2.0/24", "ports": ["8000-8100", 9000], "protocol": "both"},
+						{"to": "fd00::1", "ports": [53], "protocol": "udp"}
+					]
+				}
+			},
+			"lan": {"capacity": {"cpus": 1.5, "memory": "512MiB"}, "egress": {"open": true}}
+		},
+		"profiles": {"p": {"hosts": ["nas", "default"], "scopes": ["acme/app"], "cpus": 1, "memory": "512MiB"}}
+	}`
+	cfg := mustBuildJSON(t, &Config{}, d)
 	t.Run("sortedByName", func(t *testing.T) {
 		var names []string
 		for _, h := range cfg.Hosts {
@@ -151,68 +159,80 @@ func TestBuildHosts(t *testing.T) {
 	})
 }
 
+// onHosts is a document with the hosts members hosts and profile p on the
+// hosts names lists.
+func onHosts(hosts, names string) string {
+	return object(jsonScopes, `"hosts": {`+hosts+`}`,
+		`"profiles": {"p": {"hosts": [`+names+`], "scopes": ["acme/app"], "cpus": 1, "memory": "512MiB"}}`)
+}
+
 func TestBuildRefusals(t *testing.T) {
-	const h = "  h:\n    capacity: {cpus: 1, memory: 1GiB}\n"
-	hosted := func(section string) string { return withHosts(h+section, "h") }
+	hosted := func(section string) string {
+		return onHosts(`"h": {"capacity": {"cpus": 1, "memory": "1GiB"}, `+section+`}`, `"h"`)
+	}
+	withMember := func(member string) string { return object(jsonScopes, jsonHost, jsonProfile(""), member) }
+	scoped := func(rows string) string { return object(`"scopes": [`+rows+`]`, jsonHost, jsonProfile("")) }
+	profiled := func(body string) string { return object(jsonScopes, jsonHost, jsonProfile(body)) }
+	capacity := func(c string) string { return onHosts(`"h": {"capacity": {`+c+`}}`, `"h"`) }
 	tests := []struct {
 		name, doc string
 		want      []string
 	}{
-		{"unknownTopLevel", withProfile("") + "pool: x\n", []string{"pool: unknown key"}},
-		{"topLevelCapacity", withProfile("") + "capacity: {cpus: 1, memory: 1GiB}\n", []string{"capacity: unknown key"}},
-		{"address", hosted("    address: https://nas:7464\n"), []string{"hosts.h.address: refused: hosts dial the control plane"}},
-		{"registryAuth", hosted("    registry_auth: /auth.json\n"), []string{"hosts.h.registry_auth: refused: set MANADE_REGISTRY_AUTH or MANADE_REGISTRY_AUTH_FILE"}},
-		{"ipv6Echo", hosted("    egress: {ipv6: true, ipv6_echo: \"https://echo.example\"}\n"), []string{"hosts.h.egress.ipv6_echo: refused: set MANADE_IPV6_ECHO"}},
-		{"scopeNoTarget", strings.Replace(withProfile(""), "repo: acme/app", "runner_group: g", 1), []string{"scopes[0]: set exactly one of repo, org or enterprise"}},
-		{"scopeTwoTargets", strings.Replace(withProfile(""), "repo: acme/app", "repo: acme/app, org: acme", 1), []string{"scopes[0]: set exactly one"}},
-		{"scopeRepoShape", strings.Replace(withProfile(""), "acme/app", "acme", 1), []string{"scopes[0].repo: want owner/name"}},
-		{"scopeOrgShape", strings.Replace(withProfile(""), "repo: acme/app", "org: -acme", 1), []string{"scopes[0].org: want an organization name"}},
-		{"scopeEnterpriseShape", strings.Replace(withProfile(""), "repo: acme/app", "enterprise: a_b", 1), []string{"scopes[0].enterprise: want an enterprise slug"}},
-		{"scopeRepeated", strings.Replace(withProfile(""), "  - {repo: acme/app, default_profile: p}\n", "  - {repo: acme/app, default_profile: p}\n  - {repo: ACME/app, default_profile: p}\n", 1), []string{`scopes[1]: repeats scope "ACME/app"`}},
-		{"scopeInstallation", strings.Replace(withProfile(""), "default_profile: p", "default_profile: p, installation_id: 0", 1), []string{"scopes[0].installation_id: want a whole number from 1"}},
-		{"scopeState", strings.Replace(withProfile(""), "default_profile: p", "default_profile: p, state: paused", 1), []string{"scopes[0].state: want one of served, stopping"}},
-		{"scopeDefaultName", strings.Replace(withProfile(""), "default_profile: p", "default_profile: Big", 1), []string{"scopes[0].default_profile: want a name of 1 to 32"}},
-		{"topLevelNetwork", withProfile("") + "network: {subnet: 10.0.0.0/24}\n", []string{"network: unknown key"}},
-		{"profileNetwork", withProfile("network: host"), []string{"profiles.p.network: unknown key"}},
-		{"bridgeSubnet", hosted("    network: {bridge_subnet: 172.30.1.0/24}\n"), []string{"hosts.h.network.bridge_subnet: unknown key"}},
-		{"noProfiles", header, []string{"profiles: define at least one profile"}},
-		{"hostMemoryMissing", withHosts("  h: {capacity: {cpus: 1}}\n", "h"), []string{"hosts.h.capacity.memory: required"}},
-		{"hostCPUsMissing", withHosts("  h: {capacity: {memory: 1GiB}}\n", "h"), []string{"hosts.h.capacity.cpus: required"}},
-		{"hostMemoryBad", withHosts("  h: {capacity: {cpus: 1, memory: 1G}}\n", "h"), []string{"hosts.h.capacity.memory: want a whole number with a unit"}},
-		{"hostDiskBad", withHosts("  h: {capacity: {cpus: 1, memory: 1GiB, disk: 0}}\n", "h"), []string{"hosts.h.capacity.disk: want more than 0"}},
-		{"hostMaxRunnersBad", withHosts("  h: {capacity: {cpus: 1, memory: 1GiB, max_runners: 0}}\n", "h"), []string{"hosts.h.capacity.max_runners: want a whole number from 1"}},
-		{"dnsEmpty", hosted("    dns: []\n"), []string{"hosts.h.dns: list at least one resolver"}},
-		{"dnsLoopback", hosted("    dns: [127.0.0.1]\n"), []string{"hosts.h.dns[0]: want a unicast resolver"}},
-		{"dnsLinkLocal", hosted("    dns: [1.1.1.1, \"fe80::1\"]\n"), []string{"hosts.h.dns[1]: want a unicast resolver"}},
-		{"dnsName", hosted("    dns: [one.one.one.one]\n"), []string{"hosts.h.dns[0]"}},
-		{"subnetPublic", hosted("    network: {subnet: 8.8.0.0/16}\n"), []string{"hosts.h.network.subnet: want a private IPv4 subnet"}},
-		{"subnetNarrow", hosted("    network: {subnet: 10.0.0.0/29}\n"), []string{"hosts.h.network.subnet"}},
-		{"subnetUnmasked", hosted("    network: {subnet: 10.0.0.1/24}\n"), []string{"hosts.h.network.subnet"}},
-		{"subnetIPv6", hosted("    network: {subnet: \"fd00::/64\"}\n"), []string{"hosts.h.network.subnet"}},
-		{"topRefreshShort", "images: {refresh: 5m}\n" + withProfile(""), []string{"images.refresh: want at least 10m"}},
-		{"hostRefreshBad", hosted("    images: {refresh: soon}\n"), []string{"hosts.h.images.refresh: want a positive duration"}},
-		{"internetBad", hosted("    egress: {internet: yes}\n"), []string{"hosts.h.egress.internet: want true or false"}},
-		{"openBad", hosted("    egress: {open: 1}\n"), []string{"hosts.h.egress.open: want true or false"}},
-		{"ipv6Bad", hosted("    egress: {ipv6: on}\n"), []string{"hosts.h.egress.ipv6: want true or false"}},
-		{"block6IPv4", hosted("    egress: {ipv6: true, block6: [10.0.0.0/8]}\n"), []string{"hosts.h.egress.block6[0]: want an IPv6 prefix"}},
-		{"block6Unmasked", hosted("    egress: {ipv6: true, block6: [\"2001:db8::1/48\"]}\n"), []string{"hosts.h.egress.block6[0]"}},
-		{"allowNoTo", hosted("    egress: {allow: [{ports: [1]}]}\n"), []string{"hosts.h.egress.allow[0].to: required"}},
-		{"allowToName", hosted("    egress: {allow: [{to: db.lan, ports: [1]}]}\n"), []string{"hosts.h.egress.allow[0].to: want an IP address or a prefix"}},
-		{"allowNoPorts", hosted("    egress: {allow: [{to: 10.0.0.1}]}\n"), []string{"hosts.h.egress.allow[0].ports: required"}},
-		{"allowPortZero", hosted("    egress: {allow: [{to: 10.0.0.1, ports: [0]}]}\n"), []string{"hosts.h.egress.allow[0].ports[0]: want a port"}},
-		{"allowPortHigh", hosted("    egress: {allow: [{to: 10.0.0.1, ports: [1, 65536]}]}\n"), []string{"hosts.h.egress.allow[0].ports[1]"}},
-		{"allowRangeBackwards", hosted("    egress: {allow: [{to: 10.0.0.1, ports: [\"9-8\"]}]}\n"), []string{"hosts.h.egress.allow[0].ports[0]"}},
-		{"allowProtocol", hosted("    egress: {allow: [{to: 10.0.0.1, ports: [1], protocol: icmp}]}\n"), []string{"hosts.h.egress.allow[0].protocol: want tcp, udp or both"}},
-		{"headReserveBad", "queue: {head_reserve_after: 0s}\n" + withProfile(""), []string{"queue.head_reserve_after"}},
-		{"profileHostsEmpty", header + "profiles: {p: {hosts: []}}\n", []string{"profiles.p.hosts: list at least one host"}},
-		{"profileHostsRepeat", header + "profiles: {p: {hosts: [default, default]}}\n", []string{"profiles.p.hosts[1]: repeats host"}},
-		{"profileHostsBadName", header + "profiles: {p: {hosts: [Default]}}\n", []string{"profiles.p.hosts[0]: want a lowercase DNS label"}},
-		{"profileRuntime", withProfile("runtime: sysbox-runc"), []string{"profiles.p.runtime: want one of runc"}},
-		{"dockerImageUnprivileged", withProfile("runner_image: docker, allow_privilege_escalation: true, capabilities: docker-default, scopes: [acme/app]"), []string{"profiles.p.privileged: runner_image: docker needs privileged: true"}},
+		{"unknownTopLevel", withMember(`"pool": "x"`), []string{"pool: unknown key"}},
+		{"topLevelCapacity", withMember(`"capacity": {"cpus": 1, "memory": "1GiB"}`), []string{"capacity: unknown key"}},
+		{"address", hosted(`"address": "https://nas:7464"`), []string{"hosts.h.address: refused: hosts dial the control plane"}},
+		{"registryAuth", hosted(`"registry_auth": "/auth.json"`), []string{"hosts.h.registry_auth: refused: set MANADE_REGISTRY_AUTH or MANADE_REGISTRY_AUTH_FILE"}},
+		{"ipv6Echo", hosted(`"egress": {"ipv6": true, "ipv6_echo": "https://echo.example"}`), []string{"hosts.h.egress.ipv6_echo: refused: set MANADE_IPV6_ECHO"}},
+		{"scopeNoTarget", scoped(`{"runner_group": "g", "default_profile": "p"}`), []string{"scopes[0]: set exactly one of repo, org or enterprise"}},
+		{"scopeTwoTargets", scoped(`{"repo": "acme/app", "org": "acme", "default_profile": "p"}`), []string{"scopes[0]: set exactly one"}},
+		{"scopeRepoShape", scoped(`{"repo": "acme", "default_profile": "p"}`), []string{"scopes[0].repo: want owner/name"}},
+		{"scopeOrgShape", scoped(`{"org": "-acme", "default_profile": "p"}`), []string{"scopes[0].org: want an organization name"}},
+		{"scopeEnterpriseShape", scoped(`{"enterprise": "a_b", "default_profile": "p"}`), []string{"scopes[0].enterprise: want an enterprise slug"}},
+		{"scopeRepeated", scoped(`{"repo": "acme/app", "default_profile": "p"}, {"repo": "ACME/app", "default_profile": "p"}`), []string{`scopes[1]: repeats scope "ACME/app"`}},
+		{"scopeInstallation", scoped(`{"repo": "acme/app", "default_profile": "p", "installation_id": 0}`), []string{"scopes[0].installation_id: want a whole number from 1"}},
+		{"scopeState", scoped(`{"repo": "acme/app", "default_profile": "p", "state": "paused"}`), []string{"scopes[0].state: want one of served, stopping"}},
+		{"scopeDefaultName", scoped(`{"repo": "acme/app", "default_profile": "Big"}`), []string{"scopes[0].default_profile: want a name of 1 to 32"}},
+		{"topLevelNetwork", withMember(`"network": {"subnet": "10.0.0.0/24"}`), []string{"network: unknown key"}},
+		{"profileNetwork", profiled(`"network": "host"`), []string{"profiles.p.network: unknown key"}},
+		{"bridgeSubnet", hosted(`"network": {"bridge_subnet": "172.30.1.0/24"}`), []string{"hosts.h.network.bridge_subnet: unknown key"}},
+		{"noProfiles", object(jsonScopes, jsonHost), []string{"profiles: define at least one profile"}},
+		{"hostMemoryMissing", capacity(`"cpus": 1`), []string{"hosts.h.capacity.memory: required"}},
+		{"hostCPUsMissing", capacity(`"memory": "1GiB"`), []string{"hosts.h.capacity.cpus: required"}},
+		{"hostMemoryBad", capacity(`"cpus": 1, "memory": "1G"`), []string{"hosts.h.capacity.memory: want a whole number with a unit"}},
+		{"hostDiskBad", capacity(`"cpus": 1, "memory": "1GiB", "disk": 0`), []string{"hosts.h.capacity.disk: want more than 0"}},
+		{"hostMaxRunnersBad", capacity(`"cpus": 1, "memory": "1GiB", "max_runners": 0`), []string{"hosts.h.capacity.max_runners: want a whole number from 1"}},
+		{"dnsEmpty", hosted(`"dns": []`), []string{"hosts.h.dns: list at least one resolver"}},
+		{"dnsLoopback", hosted(`"dns": ["127.0.0.1"]`), []string{"hosts.h.dns[0]: want a unicast resolver"}},
+		{"dnsLinkLocal", hosted(`"dns": ["1.1.1.1", "fe80::1"]`), []string{"hosts.h.dns[1]: want a unicast resolver"}},
+		{"dnsName", hosted(`"dns": ["one.one.one.one"]`), []string{"hosts.h.dns[0]"}},
+		{"subnetPublic", hosted(`"network": {"subnet": "8.8.0.0/16"}`), []string{"hosts.h.network.subnet: want a private IPv4 subnet"}},
+		{"subnetNarrow", hosted(`"network": {"subnet": "10.0.0.0/29"}`), []string{"hosts.h.network.subnet"}},
+		{"subnetUnmasked", hosted(`"network": {"subnet": "10.0.0.1/24"}`), []string{"hosts.h.network.subnet"}},
+		{"subnetIPv6", hosted(`"network": {"subnet": "fd00::/64"}`), []string{"hosts.h.network.subnet"}},
+		{"topRefreshShort", withMember(`"images": {"refresh": "5m"}`), []string{"images.refresh: want at least 10m"}},
+		{"hostRefreshBad", hosted(`"images": {"refresh": "soon"}`), []string{"hosts.h.images.refresh: want a positive duration"}},
+		{"internetBad", hosted(`"egress": {"internet": "yes"}`), []string{"hosts.h.egress.internet: want true or false"}},
+		{"openBad", hosted(`"egress": {"open": 1}`), []string{"hosts.h.egress.open: want true or false"}},
+		{"ipv6Bad", hosted(`"egress": {"ipv6": "on"}`), []string{"hosts.h.egress.ipv6: want true or false"}},
+		{"block6IPv4", hosted(`"egress": {"ipv6": true, "block6": ["10.0.0.0/8"]}`), []string{"hosts.h.egress.block6[0]: want an IPv6 prefix"}},
+		{"block6Unmasked", hosted(`"egress": {"ipv6": true, "block6": ["2001:db8::1/48"]}`), []string{"hosts.h.egress.block6[0]"}},
+		{"allowNoTo", hosted(`"egress": {"allow": [{"ports": [1]}]}`), []string{"hosts.h.egress.allow[0].to: required"}},
+		{"allowToName", hosted(`"egress": {"allow": [{"to": "db.lan", "ports": [1]}]}`), []string{"hosts.h.egress.allow[0].to: want an IP address or a prefix"}},
+		{"allowNoPorts", hosted(`"egress": {"allow": [{"to": "10.0.0.1"}]}`), []string{"hosts.h.egress.allow[0].ports: required"}},
+		{"allowPortZero", hosted(`"egress": {"allow": [{"to": "10.0.0.1", "ports": [0]}]}`), []string{"hosts.h.egress.allow[0].ports[0]: want a port"}},
+		{"allowPortHigh", hosted(`"egress": {"allow": [{"to": "10.0.0.1", "ports": [1, 65536]}]}`), []string{"hosts.h.egress.allow[0].ports[1]"}},
+		{"allowRangeBackwards", hosted(`"egress": {"allow": [{"to": "10.0.0.1", "ports": ["9-8"]}]}`), []string{"hosts.h.egress.allow[0].ports[0]"}},
+		{"allowProtocol", hosted(`"egress": {"allow": [{"to": "10.0.0.1", "ports": [1], "protocol": "icmp"}]}`), []string{"hosts.h.egress.allow[0].protocol: want tcp, udp or both"}},
+		{"headReserveBad", withMember(`"queue": {"head_reserve_after": "0s"}`), []string{"queue.head_reserve_after"}},
+		{"profileHostsEmpty", profiled(`"hosts": []`), []string{"profiles.p.hosts: list at least one host"}},
+		{"profileHostsRepeat", profiled(`"hosts": ["default", "default"]`), []string{"profiles.p.hosts[1]: repeats host"}},
+		{"profileHostsBadName", profiled(`"hosts": ["Default"]`), []string{"profiles.p.hosts[0]: want a lowercase DNS label"}},
+		{"profileRuntime", profiled(`"runtime": "sysbox-runc"`), []string{"profiles.p.runtime: want one of runc"}},
+		{"dockerImageUnprivileged", profiled(`"runner_image": "docker", "allow_privilege_escalation": true, "capabilities": "docker-default", "scopes": ["acme/app"]`), []string{"profiles.p.privileged: runner_image: docker needs privileged: true"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			wantErr(t, buildDoc(&Config{}, tt.doc), tt.want...)
+			wantErr(t, build(&Config{}, []byte(tt.doc), nil), tt.want...)
 		})
 	}
 }
@@ -240,8 +260,8 @@ func TestHostNames(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(strings.NewReplacer("/", "slash", ".", "dot").Replace(tt.name), func(t *testing.T) {
-			doc := withHosts("  \""+tt.name+"\": {capacity: {cpus: 1, memory: 1GiB}}\n", "default")
-			err := buildDoc(&Config{}, doc)
+			d := onHosts(`"`+tt.name+`": {"capacity": {"cpus": 1, "memory": "1GiB"}}`, `"default"`)
+			err := build(&Config{}, []byte(d), nil)
 			refused := err != nil && (strings.Contains(err.Error(), "want a lowercase DNS label") || strings.Contains(err.Error(), "want a name other than ca and orchestrator"))
 			if refused == tt.ok {
 				t.Errorf("host %q: err = %v, want accepted %v", tt.name, err, tt.ok)
@@ -302,8 +322,8 @@ func TestDecodeScalars(t *testing.T) {
 
 // Every refusal of one document is reported, each at its own path.
 func TestBuildReportsEveryPath(t *testing.T) {
-	d := scopes + "hosts:\n  default: {capacity: {cpus: 0}, dns: [127.0.0.1]}\nprofiles:\n  p: {memory: 1MiB, user: root}\n"
-	got := paths(t, buildDoc(&Config{}, d))
+	d := object(jsonScopes, `"hosts": {"default": {"capacity": {"cpus": 0}, "dns": ["127.0.0.1"]}}`, jsonProfile(`"memory": "1MiB", "user": "root"`))
+	got := paths(t, build(&Config{}, []byte(d), nil))
 	want := []string{"hosts.default.capacity.memory", "hosts.default.capacity.cpus", "hosts.default.dns[0]", "profiles.p.user", "profiles.p.memory"}
 	if !slices.Equal(got, want) {
 		t.Errorf("paths = %q, want %q", got, want)

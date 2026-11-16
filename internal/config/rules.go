@@ -25,7 +25,7 @@ const registryPort = 443
 // and to the environment. Every field is parsed by then.
 func (c *Config) check(p *problems) {
 	for _, s := range c.secretPaths() {
-		if c.File != "" && c.underConfig(s.path, true) {
+		if c.underConfig(s.path) {
 			p.addf(s.key, "%s lies at or under the config file's directory %s, which every host on this machine mounts; give %s",
 				quote(s.path), quote(c.configDir()), s.remedy)
 		}
@@ -61,10 +61,10 @@ func (c *Config) checkDefault(s *Scope, p *problems) {
 		return
 	}
 	if slices.ContainsFunc(c.Profiles, func(o Profile) bool { return o.usable(s.Key) }) {
-		p.addf(at, "%s is this repository's default profile but %s may not use it; choose another", quote(pr.Name), quote(s.Key))
+		p.addf(at, "%s is this scope's default profile but %s may not use it; choose another", quote(pr.Name), quote(s.Key))
 		return
 	}
-	p.addf(s.path, "%s is the only profile %s may use: turn the repository off, or let it use another profile", quote(pr.Name), quote(s.Key))
+	p.addf(s.path, "%s is the only profile %s may use: turn the scope off, or let it use another profile", quote(pr.Name), quote(s.Key))
 }
 
 // checkDeleting refuses a profile prev holds as being deleted that c holds
@@ -97,18 +97,15 @@ func (c *Config) secretPaths() []secretPath {
 	return out
 }
 
-// underConfig reports whether p, unless empty, lies at or under the config
-// file's directory. A local p is a path of this process's own container, so
-// it is also compared with its and the directory's symlinks resolved; a path
-// that does not exist yet is compared as written.
-func (c *Config) underConfig(p string, local bool) bool {
+// underConfig reports whether p, a path of this host's own container unless
+// empty, lies at or under the settings document's directory, compared as
+// written and with its and the directory's symlinks resolved; a path that
+// does not exist yet is compared as written.
+func (c *Config) underConfig(p string) bool {
 	if p == "" {
 		return false
 	}
-	dirs, paths := []string{c.configDir()}, []string{p}
-	if local {
-		dirs, paths = withResolved(dirs[0]), withResolved(p)
-	}
+	dirs, paths := withResolved(c.configDir()), withResolved(p)
 	for _, d := range dirs {
 		if slices.ContainsFunc(paths, pathinside.Root(d).Contains) {
 			return true
@@ -215,8 +212,8 @@ func (c *Config) checkProfile(pr *Profile, p *problems) {
 }
 
 // checkFits refuses a profile one runner of which is larger than host h's
-// budget: its jobs could never be placed there. A host with no budget yet
-// (none reported) refuses nothing.
+// budget: its jobs could never be placed there. A host with no budget set
+// refuses nothing.
 func checkFits(pr *Profile, h *Host, at func(string) string, p *problems) {
 	c := h.Capacity
 	refuse := func(key string) {

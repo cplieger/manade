@@ -17,7 +17,7 @@ import (
 
 const controlPlaneUsage = "usage: manade control-plane"
 
-// runControlPlane runs `manade control-plane`, revision 7's control plane.
+// runControlPlane runs `manade control-plane`.
 func runControlPlane(args []string, stderr io.Writer) int {
 	if len(args) != 0 {
 		_, _ = fmt.Fprintln(stderr, controlPlaneUsage)

@@ -20,13 +20,7 @@ func mountDoc(lines, mounts string) string {
 
 // onHost is host h's own environment.
 func onHost() *Config {
-	return &Config{Self: &Self{Name: "h", TLSDir: "/tls", RegistryAuth: RegistryAuth{File: "/registry/auth.json"}}}
-}
-
-func buildAt(t *testing.T, cfg *Config, d string) error {
-	t.Helper()
-	cfg.File = "/config/config.json"
-	return buildDoc(cfg, d)
+	return &Config{File: "/config/config.json", Self: &Self{Name: "h", TLSDir: "/tls", RegistryAuth: RegistryAuth{File: "/registry/auth.json"}}}
 }
 
 func TestProtectedPaths(t *testing.T) {
@@ -44,7 +38,7 @@ func TestProtectedPaths(t *testing.T) {
 			t.Run(strings.ReplaceAll(prot, "/", "_")+"_"+tc.name, func(t *testing.T) {
 				t.Parallel()
 				mount := "{bind: " + tc.source + ", target: /m, read_only: true}"
-				err := buildAt(t, onHost(), mountDoc("", mount))
+				err := buildDoc(onHost(), mountDoc("", mount))
 				wantErr(t, err, `profiles.p.mounts[0].bind: "`+tc.source+`" reaches `, `which host "h" protects; mount another path, or give the profile an open host`)
 			})
 		}
@@ -62,7 +56,7 @@ func TestProtectedPathsAccepted(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			if err := buildAt(t, onHost(), mountDoc(tc.lines, tc.mounts)); err != nil {
+			if err := buildDoc(onHost(), mountDoc(tc.lines, tc.mounts)); err != nil {
 				t.Fatalf("err = %v", err)
 			}
 		})
@@ -73,15 +67,15 @@ func TestProtectedPathsAccepted(t *testing.T) {
 // which cannot see them, checks the default TLS_DIR alone.
 func TestProtectedTLSDir(t *testing.T) {
 	t.Parallel()
-	self := func() *Config { return &Config{Self: &Self{Name: "h", TLSDir: "/certs"}} }
+	self := func() *Config { return &Config{File: "/config/config.json", Self: &Self{Name: "h", TLSDir: "/certs"}} }
 	t.Run("hostsOwn", func(t *testing.T) {
 		t.Parallel()
-		err := buildAt(t, self(), mountDoc("", "{bind: /certs, target: /c}"))
+		err := buildDoc(self(), mountDoc("", "{bind: /certs, target: /c}"))
 		wantErr(t, err, `profiles.p.mounts[0].bind: "/certs" reaches /certs`)
 	})
 	t.Run("hostsDefaultFree", func(t *testing.T) {
 		t.Parallel()
-		if err := buildAt(t, self(), mountDoc("", "{bind: /tls, target: /c}")); err != nil {
+		if err := buildDoc(self(), mountDoc("", "{bind: /tls, target: /c}")); err != nil {
 			t.Fatalf("err = %v", err)
 		}
 	})
@@ -112,13 +106,13 @@ profiles:
 	t.Run("oneProfile", func(t *testing.T) {
 		t.Parallel()
 		doc := oneHost("", ", mounts: [{bind: /srv/data/a, target: /a, read_only: true}, {bind: /srv/data, target: /d}]")
-		wantErr(t, buildAt(t, &Config{}, doc),
+		wantErr(t, buildDoc(&Config{}, doc),
 			`profiles.p.mounts[1].bind: "/srv/data" is writable to jobs and an ancestor of "/srv/data/a", the source of profiles.p.mounts[0].bind, on host "h"`)
 	})
 	t.Run("twoProfiles", func(t *testing.T) {
 		t.Parallel()
 		doc := twoProfiles("h", "{bind: /srv, target: /s}", "{bind: /srv/data, target: /d, read_only: true}")
-		wantErr(t, buildAt(t, &Config{}, doc),
+		wantErr(t, buildDoc(&Config{}, doc),
 			`profiles.p.mounts[0].bind: "/srv" is writable to jobs and an ancestor of "/srv/data", the source of profiles.q.mounts[0].bind, on host "h"`)
 	})
 	for _, tc := range []struct{ name, hostsQ, p, q string }{
@@ -129,7 +123,7 @@ profiles:
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			if err := buildAt(t, &Config{}, twoProfiles(tc.hostsQ, tc.p, tc.q)); err != nil {
+			if err := buildDoc(&Config{}, twoProfiles(tc.hostsQ, tc.p, tc.q)); err != nil {
 				t.Fatalf("err = %v", err)
 			}
 		})
@@ -137,7 +131,7 @@ profiles:
 	t.Run("openHost", func(t *testing.T) {
 		t.Parallel()
 		doc := oneHost("    egress: {open: true}\n", ", mounts: [{bind: /srv, target: /s}, {bind: /srv/data, target: /d}]")
-		if err := buildAt(t, &Config{}, doc); err != nil {
+		if err := buildDoc(&Config{}, doc); err != nil {
 			t.Fatalf("err = %v", err)
 		}
 	})
@@ -149,7 +143,7 @@ profiles:
 profiles:
   p: {hosts: [h, g], scopes: [acme/app], mounts: [{bind: /srv, target: /s}, {bind: /srv/data, target: /d}]}
 `
-		err := buildAt(t, &Config{}, doc)
+		err := buildDoc(&Config{}, doc)
 		wantErr(t, err, "is writable to jobs")
 		if n := strings.Count(err.Error(), "is writable to jobs"); n != 1 {
 			t.Errorf("err = %v, want the pair once, got %d", err, n)

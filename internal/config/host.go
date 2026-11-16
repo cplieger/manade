@@ -79,8 +79,8 @@ type Host struct {
 	ImageRefresh time.Duration
 }
 
-// Capacity is a host's budget. Every field is 0 until the host's first
-// report sets it; Disk and MaxRunners are 0 when unset.
+// Capacity is a host's budget, all zero when its section sets none; Disk
+// and MaxRunners are 0 when unset.
 type Capacity struct {
 	MilliCPUs  int64
 	Memory     int64
@@ -96,7 +96,7 @@ type docHost struct {
 		Subnet scalar `json:"subnet"`
 	} `json:"network"`
 	Egress docEgress `json:"egress"`
-	// The keys revision 7 moved off the document, refused by name.
+	// Refused by name, so the refusal names what replaces each.
 	Address      jsontext.Value `json:"address"`
 	RegistryAuth jsontext.Value `json:"registry_auth"`
 }

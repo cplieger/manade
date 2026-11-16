@@ -58,7 +58,7 @@ type docEgress struct {
 	IPv6     scalar     `json:"ipv6"`
 	Allow    []docAllow `json:"allow"`
 	Block6   []string   `json:"block6"`
-	// IPv6Echo moved to the host's environment; it is refused by name.
+	// IPv6Echo is refused by name, so the refusal names MANADE_IPV6_ECHO.
 	IPv6Echo jsontext.Value `json:"ipv6_echo"`
 }
 

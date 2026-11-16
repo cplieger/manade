@@ -19,7 +19,10 @@ const scopes = `scopes:
 const header = scopes + "hosts:\n  default: {capacity: {cpus: 16, memory: 64GiB}}\n"
 
 // doc answers fixture y, written in YAML flow notation for brevity, as the
-// JSON document the parser reads. A fixture that is not YAML is a test bug.
+// JSON document the parser reads. The section rules' tables use it, since
+// they test what a value means, not how it is spelt; the decode and the
+// pool's state are tested on JSON literals. A fixture that is not YAML is a
+// test bug.
 func doc(y string) []byte {
 	var v any
 	if err := yaml.Unmarshal([]byte(y), &v); err != nil {
@@ -51,6 +54,27 @@ func withOpenProfile(body string) string {
 // and one plain profile "p" listing every host named in names.
 func withHosts(hosts, names string) string {
 	return scopes + "hosts:\n" + hosts + "profiles:\n  p: {hosts: [" + names + "], scopes: [acme/app], cpus: 1, memory: 512MiB}\n"
+}
+
+// object joins top-level members into one JSON document.
+func object(members ...string) string { return "{" + strings.Join(members, ", ") + "}" }
+
+// jsonScopes serves acme/app on profile p.
+const jsonScopes = `"scopes": [{"repo": "acme/app", "default_profile": "p"}]`
+
+// jsonHost is the one host, default.
+const jsonHost = `"hosts": {"default": {"capacity": {"cpus": 16, "memory": "64GiB"}}}`
+
+// jsonProfile is profile p holding body's members.
+func jsonProfile(body string) string { return `"profiles": {"p": {` + body + `}}` }
+
+// mustBuildJSON builds JSON document d into cfg with no previous model.
+func mustBuildJSON(t *testing.T, cfg *Config, d string) *Config {
+	t.Helper()
+	if err := build(cfg, []byte(d), nil); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	return cfg
 }
 
 func mustBuild(t *testing.T, cfg *Config, y string) *Config {

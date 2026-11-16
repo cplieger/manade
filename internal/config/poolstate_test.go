@@ -7,17 +7,20 @@ import (
 	"time"
 )
 
-// twoScopes serves acme/app on small and acme/web on build, both profiles on
-// the one host; state and body edit the scope rows and the profiles.
+// twoScopes serves acme/app and acme/web, on the one host, with the scope
+// rows' default_profile members app and web and the profiles' members small
+// and build.
 func twoScopes(app, web, small, build string) string {
-	return "scopes:\n  - {repo: acme/app, default_profile: " + app + "}\n  - {repo: acme/web, default_profile: " + web + "}\n" +
-		"hosts:\n  default: {}\n" +
-		"profiles:\n  small: {" + small + "}\n  build: {" + build + "}\n"
+	return `{"scopes": [{"repo": "acme/app", "default_profile": ` + app + `}, {"repo": "acme/web", "default_profile": ` + web + `}],
+		"hosts": {"default": {}},
+		"profiles": {"small": {` + small + `}, "build": {` + build + `}}}`
 }
+
+func buildJSON(prev *Config, d string) error { return build(&Config{}, []byte(d), prev) }
 
 func TestPoolStateParses(t *testing.T) {
 	t.Parallel()
-	cfg := mustBuild(t, &Config{}, twoScopes("small", "build, state: stopping", "retiring: [acme/web]", "deleting: true, retiring: [acme/web]"))
+	cfg := mustBuildJSON(t, &Config{}, twoScopes(`"small"`, `"build", "state": "stopping"`, `"retiring": ["acme/web"]`, `"deleting": true, "retiring": ["acme/web"]`))
 	if s := cfg.Scopes; s[0].Stopping || !s[1].Stopping {
 		t.Errorf("scopes = %+v, want acme/web stopping alone", s)
 	}
@@ -39,19 +42,25 @@ func TestPoolStateParses(t *testing.T) {
 
 func TestPoolStateRefusals(t *testing.T) {
 	t.Parallel()
+	org := func(profiles string) string {
+		return `{"scopes": [{"repo": "acme/app", "default_profile": "build"}, {"org": "acme", "default_profile": "small"}],
+			"hosts": {"default": {}}, "profiles": {` + profiles + `}}`
+	}
 	for _, tc := range []struct{ name, doc, want string }{
-		{"deletingWord", twoScopes("small", "build", "deleting: soon", ""), "profiles.small.deleting: want true or false"},
-		{"retiringRepeated", twoScopes("small", "build", "retiring: [acme/web, ACME/web]", ""), `profiles.small.retiring[1]: repeats scope "ACME/web"`},
-		{"retiringEmpty", twoScopes("small", "build", `retiring: [""]`, ""), "profiles.small.retiring[0]: want a scope key"},
-		{"defaultMissing", twoScopes("medium", "build", "", ""), `scopes[0].default_profile: names no profile "medium"`},
-		{"defaultDeleting", twoScopes("small", "build", "", "deleting: true"), `scopes[1].default_profile: "build" is being deleted; choose another default profile`},
-		{"defaultRetiring", twoScopes("small", "small", "retiring: [acme/web]", ""), `scopes[1].default_profile: "small" is this repository's default profile but "acme/web" may not use it; choose another`},
-		{"defaultNotAllowed", twoScopes("small", "small", "scopes: [acme/app]", ""), `scopes[1].default_profile: "small" is this repository's default profile but "acme/web" may not use it`},
-		{"onlyUsable", twoScopes("small", "build", "scopes: [acme/app]", "retiring: [acme/web]"), `scopes[1]: "build" is the only profile "acme/web" may use: turn the repository off, or let it use another profile`},
+		{"deletingWord", twoScopes(`"small"`, `"build"`, `"deleting": "soon"`, ""), "profiles.small.deleting: want true or false"},
+		{"retiringRepeated", twoScopes(`"small"`, `"build"`, `"retiring": ["acme/web", "ACME/web"]`, ""), `profiles.small.retiring[1]: repeats scope "ACME/web"`},
+		{"retiringEmpty", twoScopes(`"small"`, `"build"`, `"retiring": [""]`, ""), "profiles.small.retiring[0]: want a scope key"},
+		{"defaultMissing", twoScopes(`"medium"`, `"build"`, "", ""), `scopes[0].default_profile: names no profile "medium"`},
+		{"defaultDeleting", twoScopes(`"small"`, `"build"`, "", `"deleting": true`), `scopes[1].default_profile: "build" is being deleted; choose another default profile`},
+		{"defaultRetiring", twoScopes(`"small"`, `"small"`, `"retiring": ["acme/web"]`, ""), `scopes[1].default_profile: "small" is this scope's default profile but "acme/web" may not use it; choose another`},
+		{"defaultNotAllowed", twoScopes(`"small"`, `"small"`, `"scopes": ["acme/app"]`, ""), `scopes[1].default_profile: "small" is this scope's default profile but "acme/web" may not use it`},
+		{"onlyUsable", twoScopes(`"small"`, `"build"`, `"scopes": ["acme/app"]`, `"retiring": ["acme/web"]`), `scopes[1]: "build" is the only profile "acme/web" may use: turn the scope off, or let it use another profile`},
+		{"orgDefaultNotAllowed", org(`"small": {"scopes": ["acme/app"]}, "build": {}`), `scopes[1].default_profile: "small" is this scope's default profile but "acme" may not use it; choose another`},
+		{"orgOnlyUsable", org(`"small": {"retiring": ["acme"]}, "build": {"scopes": ["acme/app"]}`), `scopes[1]: "small" is the only profile "acme" may use: turn the scope off, or let it use another profile`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			wantErr(t, buildDoc(&Config{}, tc.doc), tc.want)
+			wantErr(t, buildJSON(nil, tc.doc), tc.want)
 		})
 	}
 }
@@ -60,23 +69,23 @@ func TestPoolStateRefusals(t *testing.T) {
 // is leaving or one being deleted.
 func TestStoppingScopeKeepsItsDefault(t *testing.T) {
 	t.Parallel()
-	mustBuild(t, &Config{}, twoScopes("small", "build, state: stopping", "scopes: [acme/app]", "deleting: true, retiring: [acme/web]"))
+	mustBuildJSON(t, &Config{}, twoScopes(`"small"`, `"build", "state": "stopping"`, `"scopes": ["acme/app"]`, `"deleting": true, "retiring": ["acme/web"]`))
 }
 
 func TestNewProfileUnderADeletingName(t *testing.T) {
 	t.Parallel()
-	prev := mustBuild(t, &Config{}, twoScopes("small", "small", "", "deleting: true, retiring: [acme/web]"))
+	prev := mustBuildJSON(t, &Config{}, twoScopes(`"small"`, `"small"`, "", `"deleting": true, "retiring": ["acme/web"]`))
 	for _, tc := range []struct {
 		name, build string
 		refused     bool
 	}{
-		{"recreated", "cpus: 4", true},
-		{"stillDeleting", "deleting: true, retiring: [acme/web]", false},
-		{"retirementCleared", "deleting: true", false},
+		{"recreated", `"cpus": 4`, true},
+		{"stillDeleting", `"deleting": true, "retiring": ["acme/web"]`, false},
+		{"retirementCleared", `"deleting": true`, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			err := build(&Config{}, doc(twoScopes("small", "small", "", tc.build)), prev)
+			err := buildJSON(prev, twoScopes(`"small"`, `"small"`, "", tc.build))
 			if !tc.refused {
 				if err != nil {
 					t.Fatalf("err = %v", err)
@@ -86,16 +95,20 @@ func TestNewProfileUnderADeletingName(t *testing.T) {
 			wantErr(t, err, `profiles.build: "build" is still being deleted; choose another name, or wait until it is gone`)
 		})
 	}
+	// The parser refuses only a deleting name that returns as an ordinary
+	// profile; whether a save may omit a deleting profile is the save's rule.
 	t.Run("gone", func(t *testing.T) {
 		t.Parallel()
-		d := "scopes:\n  - {repo: acme/app, default_profile: small}\nhosts:\n  default: {}\nprofiles:\n  small: {}\n"
-		if err := build(&Config{}, doc(d), prev); err != nil {
+		d := `{"scopes": [{"repo": "acme/app", "default_profile": "small"}], "hosts": {"default": {}}, "profiles": {"small": {}}}`
+		if err := buildJSON(prev, d); err != nil {
 			t.Fatalf("err = %v", err)
 		}
 	})
 	t.Run("firstDocument", func(t *testing.T) {
 		t.Parallel()
-		mustBuild(t, &Config{}, twoScopes("small", "small", "", "cpus: 4"))
+		if err := buildJSON(nil, twoScopes(`"small"`, `"small"`, "", `"cpus": 4`)); err != nil {
+			t.Fatalf("err = %v", err)
+		}
 	})
 }
 
@@ -112,12 +125,14 @@ func TestMaxLifetimeCap(t *testing.T) {
 	} {
 		t.Run(strings.NewReplacer(".", "dot").Replace(tc.raw), func(t *testing.T) {
 			t.Parallel()
-			err := buildDoc(&Config{}, withProfile("max_lifetime: "+tc.raw))
+			d := object(jsonScopes, jsonHost, jsonProfile(`"max_lifetime": "`+tc.raw+`"`))
+			cfg := &Config{}
+			err := build(cfg, []byte(d), nil)
 			if !tc.refused {
 				if err != nil {
 					t.Fatalf("err = %v", err)
 				}
-				if got := profile(t, mustBuild(t, &Config{}, withProfile("max_lifetime: "+tc.raw)), "p").MaxLifetime; got > 5*24*time.Hour {
+				if got := profile(t, cfg, "p").MaxLifetime; got > 5*24*time.Hour {
 					t.Errorf("max_lifetime = %v", got)
 				}
 				return
