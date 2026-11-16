@@ -4,7 +4,7 @@ USER root
 # renovate: datasource=node-version depName=node versioning=node
 ARG NODE_VERSION=26.13.1
 # renovate: datasource=npm depName=playwright
-ARG PLAYWRIGHT_VERSION=1.65.0
+ARG PLAYWRIGHT_VERSION=1.65.1
 ARG PKG_REFRESH=static
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # Playwright's install-deps is the one list of the browsers' system libraries,
