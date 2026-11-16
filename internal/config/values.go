@@ -2,6 +2,8 @@ package config
 
 import (
 	"cmp"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"math"
@@ -30,7 +32,7 @@ var (
 	cpusRe = regexp.MustCompile(`^(\d{1,6})(?:\.(\d{1,3}))?$`)
 )
 
-// problemError is a problem without its field path, which problems.add prefixes.
+// problemError is a problem without its field path, which problems.add records.
 type problemError string
 
 func (e problemError) Error() string { return string(e) }
@@ -114,13 +116,40 @@ func parsePositiveSize(raw string) (int64, error) {
 	return n, err
 }
 
+// scalar is a document value a section parser reads as text: a string, a
+// number or a boolean as written, or "" for null or an absent key.
+type scalar string
+
+// UnmarshalJSONFrom takes a string, a number or a boolean; json.Unmarshal
+// reports its refusal at the value's path.
+func (s *scalar) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
+	v, err := dec.ReadValue()
+	if err != nil {
+		return err
+	}
+	switch v.Kind() {
+	case '"':
+		var str string
+		if err := json.Unmarshal(v, &str); err != nil {
+			return err
+		}
+		*s = scalar(str)
+	case '0', 't', 'f':
+		*s = scalar(v)
+	case 'n':
+	default:
+		return errors.New("want a string, a number, true or false")
+	}
+	return nil
+}
+
 // field parses raw, or def when raw is empty, recording a failure under path.
 // With both empty it answers T's zero value: the field is unset.
-func field[T any](p *problems, path, raw, def string, parse func(string) (T, error)) T {
+func field[T any](p *problems, path string, raw scalar, def string, parse func(string) (T, error)) T {
 	var v T
-	if raw = cmp.Or(raw, def); raw != "" {
+	if r := cmp.Or(string(raw), def); r != "" {
 		var err error
-		v, err = parse(raw)
+		v, err = parse(r)
 		p.add(path, err)
 	}
 	return v
@@ -173,13 +202,12 @@ func parsePrefix(raw string) (netip.Prefix, error) {
 	return p, nil
 }
 
-// problems collects every validation failure, each prefixed with its field
-// path, into the one startup error.
-type problems struct{ errs []error }
+// problems collects every validation failure at its field path.
+type problems struct{ errs fieldErrors }
 
 func (p *problems) add(path string, err error) {
 	if err != nil {
-		p.errs = append(p.errs, fmt.Errorf("%s: %w", path, err))
+		p.errs = append(p.errs, fieldError{Path: path, Message: err.Error()})
 	}
 }
 
@@ -191,5 +219,5 @@ func (p *problems) err() error {
 	if len(p.errs) == 0 {
 		return nil
 	}
-	return fmt.Errorf("config: %w", errors.Join(p.errs...))
+	return p.errs
 }

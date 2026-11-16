@@ -63,7 +63,7 @@ type Input struct {
 
 // State is what the host learns while it runs.
 type State struct {
-	// Self64 is the machine's /64 as ipv6_echo showed it, or the zero
+	// Self64 is the machine's /64 as the echo endpoint showed it, or the zero
 	// Prefix: until it is learned, job IPv6 to the internet stays dropped.
 	Self64 netip.Prefix
 	// Own64 is the /64 of the host container's own IPv6 address when that
@@ -246,7 +246,7 @@ func (rs *Ruleset) build(in *Input) {
 	e := &in.Host.Egress
 	v6 := rs.ipv6
 	// Job IPv6 to the internet waits for the machine's /64; the host's own
-	// does not, since the learner asks ipv6_echo over it.
+	// does not, since the learner asks the echo endpoint over it.
 	jobs := destinations(in, v6, e.Internet && in.State.Self64.IsValid())
 	own := destinations(in, v6, e.Internet)
 	rs.chains = []chain{

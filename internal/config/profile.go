@@ -2,6 +2,7 @@ package config
 
 import (
 	"cmp"
+	"maps"
 	"math"
 	"regexp"
 	"slices"
@@ -10,42 +11,44 @@ import (
 	"time"
 )
 
-type fileProfile struct {
-	Capabilities             any         `yaml:"capabilities"`
-	Scopes                   *[]string   `yaml:"scopes"`
-	Hosts                    *[]string   `yaml:"hosts"`
-	RunnerImage              string      `yaml:"runner_image"`
-	Image                    string      `yaml:"image"`
-	User                     string      `yaml:"user"`
-	CPUs                     string      `yaml:"cpus"`
-	Memory                   string      `yaml:"memory"`
-	Swap                     string      `yaml:"swap"`
-	PIDs                     string      `yaml:"pids"`
-	Disk                     string      `yaml:"disk"`
-	ShmSize                  string      `yaml:"shm_size"`
-	MaxLifetime              string      `yaml:"max_lifetime"`
-	IdleTimeout              string      `yaml:"idle_timeout"`
-	MaxRunners               string      `yaml:"max_runners"`
-	AllowPrivilegeEscalation string      `yaml:"allow_privilege_escalation"`
-	AllowRoot                string      `yaml:"allow_root"`
-	Docker                   string      `yaml:"docker"`
-	Runtime                  string      `yaml:"runtime"`
-	Privileged               string      `yaml:"privileged"`
-	Command                  []string    `yaml:"command"`
-	Tmpfs                    []fileTmpfs `yaml:"tmpfs"`
-	Mounts                   []fileMount `yaml:"mounts"`
+type docProfile struct {
+	Capabilities             any        `json:"capabilities"`
+	Scopes                   *[]string  `json:"scopes"`
+	Hosts                    *[]string  `json:"hosts"`
+	RunnerImage              string     `json:"runner_image"`
+	Image                    string     `json:"image"`
+	User                     string     `json:"user"`
+	CPUs                     scalar     `json:"cpus"`
+	Memory                   scalar     `json:"memory"`
+	Swap                     scalar     `json:"swap"`
+	PIDs                     scalar     `json:"pids"`
+	Disk                     scalar     `json:"disk"`
+	ShmSize                  scalar     `json:"shm_size"`
+	MaxLifetime              scalar     `json:"max_lifetime"`
+	IdleTimeout              scalar     `json:"idle_timeout"`
+	MaxRunners               scalar     `json:"max_runners"`
+	AllowPrivilegeEscalation scalar     `json:"allow_privilege_escalation"`
+	AllowRoot                scalar     `json:"allow_root"`
+	Docker                   string     `json:"docker"`
+	Runtime                  string     `json:"runtime"`
+	Privileged               scalar     `json:"privileged"`
+	Deleting                 scalar     `json:"deleting"`
+	Command                  []string   `json:"command"`
+	Retiring                 []string   `json:"retiring"`
+	Tmpfs                    []docTmpfs `json:"tmpfs"`
+	Mounts                   []docMount `json:"mounts"`
 }
 
-type fileTmpfs struct {
-	Path string `yaml:"path"`
-	Size string `yaml:"size"`
+type docTmpfs struct {
+	Path string `json:"path"`
+	Size scalar `json:"size"`
 }
 
-type fileMount struct {
-	Volume   string `yaml:"volume"`
-	Bind     string `yaml:"bind"`
-	Target   string `yaml:"target"`
-	ReadOnly string `yaml:"read_only"`
+type docMount struct {
+	Volume   string `json:"volume"`
+	Bind     string `json:"bind"`
+	Target   string `json:"target"`
+	ReadOnly scalar `json:"read_only"`
 }
 
 // The vocabularies. A value outside one refuses the config.
@@ -116,6 +119,11 @@ var (
 	volumeRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]{1,254}$`)
 )
 
+const profileNameRule = "want a name of 1 to 32 lowercase letters, digits, dots, underscores or dashes"
+
+// defaultProfile is a scope's default profile when it names none.
+const defaultProfile = "default"
+
 // Profile is one validated runner shape. Sizes are bytes; 0 means unset.
 type Profile struct {
 	Name string
@@ -136,7 +144,11 @@ type Profile struct {
 	Scopes []string
 	// Hosts lists the hosts that may serve the profile, in order of
 	// preference.
-	Hosts                    []string
+	Hosts []string
+	// Retiring holds the scope keys the profile is leaving, and Deleting
+	// marks a profile being deleted: the pool's state, which it clears as
+	// each scope's scale set empties.
+	Retiring                 []string
 	Tmpfs                    []Tmpfs
 	Mounts                   []Mount
 	MilliCPUs                int64
@@ -152,10 +164,16 @@ type Profile struct {
 	DockerDefaultCaps        bool
 	AllowRoot                bool
 	Privileged               bool
+	Deleting                 bool
 }
 
-// defaultMaxLifetime is a profile's max_lifetime when the file sets none.
+// defaultMaxLifetime is a profile's max_lifetime when the document sets none.
 const defaultMaxLifetime = 2 * time.Hour
+
+// maxLifetimeCap is GitHub's limit on a job on a self-hosted runner
+// (https://docs.github.com/en/actions/administering-github-actions/usage-limits-billing-and-administration), so the run-duration
+// buckets hold every run.
+const maxLifetimeCap = 5 * 24 * time.Hour
 
 // Tmpfs is an in-memory mount, counted against the profile's memory.
 type Tmpfs struct {
@@ -171,10 +189,16 @@ type Mount struct {
 	ReadOnly bool
 }
 
-// Allowed reports whether the scope with key may use the profile. Keys match
+// allowed reports whether the scope with key may use the profile. Keys match
 // without case, as GitHub's owner and repository names do.
-func (p *Profile) Allowed(key string) bool {
+func (p *Profile) allowed(key string) bool {
 	return p.Scopes == nil || slices.ContainsFunc(p.Scopes, func(s string) bool { return strings.EqualFold(s, key) })
+}
+
+// usable reports whether new jobs of the scope with key may be routed to the
+// profile: allowed, not leaving the scope and not being deleted.
+func (p *Profile) usable(key string) bool {
+	return p.allowed(key) && !p.Deleting && !slices.ContainsFunc(p.Retiring, func(s string) bool { return strings.EqualFold(s, key) })
 }
 
 // Grants names each elevated field the profile sets away from its default,
@@ -204,27 +228,22 @@ func profilePath(name string) string {
 	return "profiles." + name
 }
 
-func (f *fileConfig) profiles(p *problems) []Profile {
-	if len(f.Profiles) == 0 {
+func (d *document) profiles(p *problems) []Profile {
+	if len(d.Profiles) == 0 {
 		p.addf("profiles", "define at least one profile")
 	}
-	names := make([]string, 0, len(f.Profiles))
-	for name := range f.Profiles {
-		names = append(names, name)
-	}
-	slices.Sort(names)
-	out := make([]Profile, 0, len(names))
-	for _, name := range names {
-		fp := f.Profiles[name]
-		out = append(out, fp.parse(name, p))
+	out := make([]Profile, 0, len(d.Profiles))
+	for _, name := range slices.Sorted(maps.Keys(d.Profiles)) {
+		dp := d.Profiles[name]
+		out = append(out, dp.parse(name, p))
 	}
 	return out
 }
 
-func (fp *fileProfile) parse(name string, p *problems) Profile {
+func (fp *docProfile) parse(name string, p *problems) Profile {
 	path := profilePath(name)
 	if !profileNameRe.MatchString(name) {
-		p.addf(path, "want a name of 1 to 32 lowercase letters, digits, dots, underscores or dashes")
+		p.addf(path, profileNameRule)
 	}
 	at := func(key string) string { return path + "." + key }
 	pr := Profile{Name: name}
@@ -248,11 +267,29 @@ func (fp *fileProfile) parse(name string, p *problems) Profile {
 	if fp.Hosts != nil {
 		pr.Hosts = fp.hosts(at("hosts"), p)
 	}
+	pr.Deleting = field(p, at("deleting"), fp.Deleting, "", parseBool)
+	pr.Retiring = retiring(p, at("retiring"), fp.Retiring)
 	ownRules(&pr, at, p)
 	return pr
 }
 
-func (fp *fileProfile) image(pr *Profile, at func(string) string, p *problems) {
+// retiring parses the scope keys a profile is leaving, none twice.
+func retiring(p *problems, path string, keys []string) []string {
+	var out []string
+	for i, k := range keys {
+		switch {
+		case k == "":
+			p.addf(path+"["+strconv.Itoa(i)+"]", "want a scope key")
+		case slices.ContainsFunc(out, func(s string) bool { return strings.EqualFold(s, k) }):
+			p.addf(path+"["+strconv.Itoa(i)+"]", "repeats scope %s", quote(k))
+		default:
+			out = append(out, k)
+		}
+	}
+	return out
+}
+
+func (fp *docProfile) image(pr *Profile, at func(string) string, p *problems) {
 	switch {
 	case fp.Image != "" && fp.RunnerImage != "":
 		p.addf(at("image"), "set image or runner_image, not both")
@@ -283,7 +320,7 @@ func (fp *fileProfile) image(pr *Profile, at func(string) string, p *problems) {
 	}
 }
 
-func (fp *fileProfile) resources(pr *Profile, at func(string) string, p *problems) {
+func (fp *docProfile) resources(pr *Profile, at func(string) string, p *problems) {
 	pr.MilliCPUs = field(p, at("cpus"), fp.CPUs, "2", parseCPUs)
 	pr.Memory = field(p, at("memory"), fp.Memory, "4GiB", parseMemory)
 	pr.Swap = field(p, at("swap"), fp.Swap, "0", parseSize)
@@ -295,6 +332,9 @@ func (fp *fileProfile) resources(pr *Profile, at func(string) string, p *problem
 	pr.Disk = field(p, at("disk"), fp.Disk, "", parsePositiveSize)
 	pr.ShmSize = field(p, at("shm_size"), fp.ShmSize, "", parsePositiveSize)
 	pr.MaxLifetime = field(p, at("max_lifetime"), fp.MaxLifetime, defaultMaxLifetime.String(), parseDuration)
+	if pr.MaxLifetime > maxLifetimeCap {
+		p.addf(at("max_lifetime"), "want at most 120h (5 days), GitHub's limit on a job on a self-hosted runner, got %s", quote(string(fp.MaxLifetime)))
+	}
 	pr.IdleTimeout = field(p, at("idle_timeout"), fp.IdleTimeout, "10m", parseDuration)
 	pr.MaxRunners = int(field(p, at("max_runners"), fp.MaxRunners, "", positive(10000)))
 }
@@ -332,7 +372,7 @@ func capabilities(p *problems, path string, raw any) (caps []string, dockerDefau
 
 // mounts parses the mounts and tmpfs. Docker refuses a repeated or root
 // target at create.
-func (fp *fileProfile) mounts(pr *Profile, at func(string) string, p *problems) {
+func (fp *docProfile) mounts(pr *Profile, at func(string) string, p *problems) {
 	absPath := func(path, raw string) string {
 		v, err := parseHostPath(raw)
 		p.add(path, err)
@@ -358,7 +398,7 @@ func (fp *fileProfile) mounts(pr *Profile, at func(string) string, p *problems) 
 		tp := at("tmpfs[" + strconv.Itoa(i) + "]")
 		t := Tmpfs{Path: absPath(tp+".path", ft.Path)}
 		var err error
-		t.Size, err = parsePositiveSize(ft.Size)
+		t.Size, err = parsePositiveSize(string(ft.Size))
 		p.add(tp+".size", err)
 		pr.Tmpfs = append(pr.Tmpfs, t)
 	}
@@ -366,7 +406,7 @@ func (fp *fileProfile) mounts(pr *Profile, at func(string) string, p *problems) 
 
 // hosts parses the profile's host list, which names at least one host and
 // none twice.
-func (fp *fileProfile) hosts(path string, p *problems) []string {
+func (fp *docProfile) hosts(path string, p *problems) []string {
 	if len(*fp.Hosts) == 0 {
 		p.addf(path, "list at least one host, or leave hosts out for %s", defaultHost)
 	}

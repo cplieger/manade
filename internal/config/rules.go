@@ -25,18 +25,58 @@ const registryPort = 443
 // and to the environment. Every field is parsed by then.
 func (c *Config) check(p *problems) {
 	for _, s := range c.secretPaths() {
-		if c.underConfig(s.path, true) {
+		if c.underConfig(s.path) {
 			p.addf(s.key, "%s lies at or under the config file's directory %s, which every host on this machine mounts; give %s",
 				quote(s.path), quote(c.configDir()), s.remedy)
 		}
 	}
 	for i := range c.Hosts {
-		c.checkHost(&c.Hosts[i], p)
+		checkHost(&c.Hosts[i], p)
 	}
 	for i := range c.Profiles {
 		c.checkProfile(&c.Profiles[i], p)
 	}
+	for i := range c.Scopes {
+		c.checkDefault(&c.Scopes[i], p)
+	}
 	c.checkNesting(p)
+}
+
+// checkDefault refuses a served scope whose default profile its new jobs
+// could not be routed to: the runner variable would name a dead label.
+func (c *Config) checkDefault(s *Scope, p *problems) {
+	if s.Stopping {
+		return
+	}
+	at := s.path + ".default_profile"
+	pr, ok := c.Profile(s.DefaultProfile)
+	switch {
+	case !ok:
+		p.addf(at, "names no profile %s; define it or choose another", quote(s.DefaultProfile))
+		return
+	case pr.usable(s.Key):
+		return
+	case pr.Deleting:
+		p.addf(at, "%s is being deleted; choose another default profile", quote(pr.Name))
+		return
+	}
+	if slices.ContainsFunc(c.Profiles, func(o Profile) bool { return o.usable(s.Key) }) {
+		p.addf(at, "%s is this scope's default profile but %s may not use it; choose another", quote(pr.Name), quote(s.Key))
+		return
+	}
+	p.addf(s.path, "%s is the only profile %s may use: turn the scope off, or let it use another profile", quote(pr.Name), quote(s.Key))
+}
+
+// checkDeleting refuses a profile prev holds as being deleted that c holds
+// as an ordinary one: only the pool ends a deletion, by removing the
+// profile once its queue is empty.
+func (c *Config) checkDeleting(prev *Config, p *problems) {
+	for i := range prev.Profiles {
+		old := &prev.Profiles[i]
+		if pr, ok := c.Profile(old.Name); ok && old.Deleting && !pr.Deleting {
+			p.addf(profilePath(old.Name), "%s is still being deleted; choose another name, or wait until it is gone", quote(old.Name))
+		}
+	}
 }
 
 func (c *Config) configDir() string { return path.Dir(c.File) }
@@ -45,30 +85,27 @@ func (c *Config) configDir() string { return path.Dir(c.File) }
 // refusal asks the operator to give.
 type secretPath struct{ key, path, remedy string }
 
-// secretPaths answers this role's own secret paths from the environment.
+// secretPaths answers a host's own secret paths from its environment.
 func (c *Config) secretPaths() []secretPath {
-	const tls = "the TLS files a mount of their own"
-	switch {
-	case c.Self != nil:
-		return []secretPath{{"TLS_DIR", c.Self.TLSDir, tls}}
-	case c.Orchestrator != nil:
-		return append([]secretPath{{"TLS_DIR", c.Orchestrator.TLSDir, tls}}, c.Orchestrator.secretFiles...)
+	if c.Self == nil {
+		return nil
 	}
-	return nil
+	out := []secretPath{{"TLS_DIR", c.Self.TLSDir, "the TLS files a mount of their own"}}
+	if f := c.Self.RegistryAuth.File; f != "" {
+		out = append(out, secretPath{"MANADE_REGISTRY_AUTH_FILE", f, "the file a mount of its own"})
+	}
+	return out
 }
 
-// underConfig reports whether p, unless empty, lies at or under the config
-// file's directory. A local p is a path of this process's own container, so
-// it is also compared with its and the directory's symlinks resolved; a path
-// that does not exist yet is compared as written.
-func (c *Config) underConfig(p string, local bool) bool {
+// underConfig reports whether p, a path of this host's own container unless
+// empty, lies at or under the settings document's directory, compared as
+// written and with its and the directory's symlinks resolved; a path that
+// does not exist yet is compared as written.
+func (c *Config) underConfig(p string) bool {
 	if p == "" {
 		return false
 	}
-	dirs, paths := []string{c.configDir()}, []string{p}
-	if local {
-		dirs, paths = withResolved(dirs[0]), withResolved(p)
-	}
+	dirs, paths := withResolved(c.configDir()), withResolved(p)
 	for _, d := range dirs {
 		if slices.ContainsFunc(paths, pathinside.Root(d).Contains) {
 			return true
@@ -85,7 +122,7 @@ func withResolved(p string) []string {
 	return []string{p}
 }
 
-func (c *Config) checkHost(h *Host, p *problems) {
+func checkHost(h *Host, p *problems) {
 	at := func(key string) string { return hostPath(h.Name) + "." + key }
 	checkEgress(&h.Egress, at, p)
 	checkSubnet(h, at, p)
@@ -95,11 +132,6 @@ func (c *Config) checkHost(h *Host, p *problems) {
 				p.addf(at("dns"), "%s is IPv6, which needs egress.ipv6: true: without it the host turns IPv6 off in its own network", r)
 			}
 		}
-	}
-	own := c.Self != nil && c.Self.Name == h.Name
-	if c.underConfig(h.RegistryAuth, own) {
-		p.addf(at("registry_auth"), "%s lies at or under the config file's directory %s, which every host on this machine mounts; give the file a mount of its own",
-			quote(h.RegistryAuth), quote(c.configDir()))
 	}
 }
 
@@ -115,16 +147,8 @@ func checkEgress(e *Egress, at func(string) string, p *problems) {
 			}
 		}
 	}
-	switch {
-	case !e.IPv6:
-		if len(e.Block6) > 0 {
-			p.addf(at("egress.block6"), "needs egress.ipv6: true")
-		}
-		if e.ipv6EchoSet {
-			p.addf(at("egress.ipv6_echo"), "needs egress.ipv6: true")
-		}
-	case e.ipv6EchoSet && !e.Internet:
-		p.addf(at("egress.ipv6_echo"), "refused beside egress.internet: false, where no /64 is learned")
+	if !e.IPv6 && len(e.Block6) > 0 {
+		p.addf(at("egress.block6"), "needs egress.ipv6: true")
 	}
 	for i, a := range e.Allow {
 		checkAllow(a.To, e.IPv6, at("egress.allow["+strconv.Itoa(i)+"].to"), p)
@@ -175,6 +199,7 @@ func (c *Config) checkProfile(pr *Profile, p *problems) {
 		if why := h.elevated(); why != "" && pr.Scopes == nil {
 			p.addf(at("scopes"), "required: host %s %s, so every profile it serves lists its scopes", quote(name), why)
 		}
+		checkFits(pr, h, at, p)
 		if h.Egress.Open {
 			continue
 		}
@@ -183,6 +208,25 @@ func (c *Config) checkProfile(pr *Profile, p *problems) {
 		if !h.Egress.Internet {
 			checkRegistry(pr, h, at, p)
 		}
+	}
+}
+
+// checkFits refuses a profile one runner of which is larger than host h's
+// budget: its jobs could never be placed there. A host with no budget set
+// refuses nothing.
+func checkFits(pr *Profile, h *Host, at func(string) string, p *problems) {
+	c := h.Capacity
+	refuse := func(key string) {
+		p.addf(at(key), "never fits hosts.%s.capacity.%s; raise it or list another host", h.Name, key)
+	}
+	if c.MilliCPUs > 0 && pr.MilliCPUs > c.MilliCPUs {
+		refuse("cpus")
+	}
+	if c.Memory > 0 && pr.Memory > c.Memory {
+		refuse("memory")
+	}
+	if c.Disk > 0 && pr.Disk > c.Disk {
+		refuse("disk")
 	}
 }
 
@@ -266,7 +310,8 @@ func Registry(ref string) (name string, port uint16) {
 	return name, port
 }
 
-// show prints a single-address prefix as its address, as the file wrote it.
+// show prints a single-address prefix as its address, as the document wrote
+// it.
 func show(pfx netip.Prefix) string {
 	if pfx.IsSingleIP() {
 		return pfx.Addr().String()

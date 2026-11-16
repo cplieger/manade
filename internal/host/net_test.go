@@ -143,6 +143,7 @@ func (f *upFixture) platform() *seams {
 		},
 		Upstreams: resolver.Upstreams,
 		Echo:      f.echo,
+		EchoURL:   "https://echo.example/trace",
 		Log:       slog.New(slog.DiscardHandler),
 	}
 }

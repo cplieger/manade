@@ -1,53 +1,42 @@
 package config
 
 import (
-	"crypto/rand"
-	"crypto/rsa"
-	"crypto/x509"
-	"encoding/pem"
+	"encoding/json"
+	"errors"
 	"strings"
-	"sync"
 	"testing"
 
-	"github.com/cplieger/forgeapi/v2/creds"
+	"go.yaml.in/yaml/v4"
 )
 
+// scopes serves one repository on profile p, the profile every fixture
+// defines.
 const scopes = `scopes:
-  - repo: acme/app
-  - repo: acme/web
-  - org: acme
+  - {repo: acme/app, default_profile: p}
 `
 
-// header is a valid file without profiles: three scopes and one host.
-const header = scopes + "capacity: {cpus: 16, memory: 64GiB}\n"
+// header is a document without profiles: one scope and one host, default.
+const header = scopes + "hosts:\n  default: {capacity: {cpus: 16, memory: 64GiB}}\n"
 
-// testPEM is a throwaway App key generated per test binary, so no key is
-// ever committed.
-var testPEM = sync.OnceValue(func() []byte {
-	k, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		panic(err)
+// doc answers fixture y, written in YAML flow notation for brevity, as the
+// JSON document the parser reads. The section rules' tables use it, since
+// they test what a value means, not how it is spelt; the decode and the
+// pool's state are tested on JSON literals. A fixture that is not YAML is a
+// test bug.
+func doc(y string) []byte {
+	var v any
+	if err := yaml.Unmarshal([]byte(y), &v); err != nil {
+		panic("fixture: " + err.Error())
 	}
-	der, err := x509.MarshalPKCS8PrivateKey(k)
+	b, err := json.Marshal(v)
 	if err != nil {
-		panic(err)
+		panic("fixture: " + err.Error())
 	}
-	return pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})
-})
-
-// tokenEnv is the environment's part of an orchestrator's Config under a PAT.
-func tokenEnv() *Config {
-	return &Config{Orchestrator: &Orchestrator{GitHub: GitHub{Token: newSecret("test-token")}, PoolName: "manade"}}
+	return b
 }
 
-func appEnv(t *testing.T) *Config {
-	t.Helper()
-	key, err := creds.ParseAppKeyPEM("Iv1.test", testPEM())
-	if err != nil {
-		t.Fatal(err)
-	}
-	return &Config{Orchestrator: &Orchestrator{GitHub: GitHub{AppKey: key}, PoolName: "manade"}}
-}
+// buildDoc builds fixture y into cfg with no previous model.
+func buildDoc(cfg *Config, y string) error { return build(cfg, doc(y), nil) }
 
 // withProfile builds header plus one profile "p" whose body is the flow
 // mapping's contents.
@@ -64,12 +53,33 @@ func withOpenProfile(body string) string {
 // withHosts builds scopes, the hosts block hosts (indented under hosts:)
 // and one plain profile "p" listing every host named in names.
 func withHosts(hosts, names string) string {
-	return scopes + "hosts:\n" + hosts + "profiles:\n  p: {hosts: [" + names + "], scopes: [acme/app]}\n"
+	return scopes + "hosts:\n" + hosts + "profiles:\n  p: {hosts: [" + names + "], scopes: [acme/app], cpus: 1, memory: 512MiB}\n"
 }
 
-func mustBuild(t *testing.T, cfg *Config, doc string) *Config {
+// object joins top-level members into one JSON document.
+func object(members ...string) string { return "{" + strings.Join(members, ", ") + "}" }
+
+// jsonScopes serves acme/app on profile p.
+const jsonScopes = `"scopes": [{"repo": "acme/app", "default_profile": "p"}]`
+
+// jsonHost is the one host, default.
+const jsonHost = `"hosts": {"default": {"capacity": {"cpus": 16, "memory": "64GiB"}}}`
+
+// jsonProfile is profile p holding body's members.
+func jsonProfile(body string) string { return `"profiles": {"p": {` + body + `}}` }
+
+// mustBuildJSON builds JSON document d into cfg with no previous model.
+func mustBuildJSON(t *testing.T, cfg *Config, d string) *Config {
 	t.Helper()
-	if err := build(cfg, []byte(doc)); err != nil {
+	if err := build(cfg, []byte(d), nil); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	return cfg
+}
+
+func mustBuild(t *testing.T, cfg *Config, y string) *Config {
+	t.Helper()
+	if err := buildDoc(cfg, y); err != nil {
 		t.Fatalf("build: %v", err)
 	}
 	return cfg
@@ -86,6 +96,23 @@ func wantErr(t *testing.T, err error, subs ...string) {
 			t.Errorf("err = %q, want it to contain %q", err, s)
 		}
 	}
+}
+
+// paths answers the field paths err refuses, in order, or nil for none.
+func paths(t *testing.T, err error) []string {
+	t.Helper()
+	if err == nil {
+		return nil
+	}
+	var fe fieldErrors
+	if !errors.As(err, &fe) {
+		t.Fatalf("err = %v, want field errors", err)
+	}
+	out := make([]string, len(fe))
+	for i, e := range fe {
+		out[i] = e.Path
+	}
+	return out
 }
 
 func profile(t *testing.T, cfg *Config, name string) *Profile {

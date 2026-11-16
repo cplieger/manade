@@ -24,8 +24,6 @@ func TestHostEgressRules(t *testing.T) {
 		{"openBesideIPv6", "    egress: {open: true, ipv6: false}\n", []string{"hosts.h.egress.ipv6: refused beside egress.open: true"}},
 		{"openBesideBlock6", "    egress: {open: true, block6: [\"2001:db8:1::/48\"]}\n", []string{"hosts.h.egress.block6: refused beside egress.open: true", "hosts.h.egress.block6: needs egress.ipv6: true"}},
 		{"block6WithoutIPv6", "    egress: {block6: [\"2001:db8:1::/48\"]}\n", []string{"hosts.h.egress.block6: needs egress.ipv6: true"}},
-		{"echoWithoutIPv6", "    egress: {ipv6_echo: \"https://echo.example/ip\"}\n", []string{"hosts.h.egress.ipv6_echo: needs egress.ipv6: true"}},
-		{"echoBesideInternetOff", "    egress: {ipv6: true, internet: false, ipv6_echo: \"https://echo.example/ip\"}\n", []string{"hosts.h.egress.ipv6_echo: refused beside egress.internet: false"}},
 		{"allowIPv6WithoutIPv6", "    egress: {allow: [{to: \"fd00::5\", ports: [22]}]}\n", []string{"hosts.h.egress.allow[0].to: fd00::5 is IPv6, which needs egress.ipv6: true"}},
 		{"allowPublic", "    egress: {allow: [{to: 10.0.0.5, ports: [22]}, {to: 8.8.8.8, ports: [53]}]}\n", []string{"hosts.h.egress.allow[1].to: 8.8.8.8 is not private", "192.168.0.0/16"}},
 		{"allowStraddlesPrivate", "    egress: {allow: [{to: 172.0.0.0/8, ports: [22]}]}\n", []string{"hosts.h.egress.allow[0].to: 172.0.0.0/8 is not private"}},
@@ -35,13 +33,10 @@ func TestHostEgressRules(t *testing.T) {
 		{"subnetOverlapsAllow", "    network: {subnet: 10.20.5.0/24}\n    egress: {allow: [{to: 10.20.0.0/16, ports: [22]}]}\n", []string{"hosts.h.network.subnet: 10.20.5.0/24 overlaps 10.20.0.0/16 of hosts.h.egress.allow[0]"}},
 		{"subnetInsideAllow", "    network: {subnet: 10.20.0.0/16}\n    egress: {allow: [{to: 10.20.5.7, ports: [22]}]}\n", []string{"hosts.h.network.subnet: 10.20.0.0/16 overlaps 10.20.5.7 of hosts.h.egress.allow[0]"}},
 		{"dnsIPv6WithoutIPv6", "    dns: [1.1.1.1, \"2606:4700:4700::1111\"]\n", []string{"hosts.h.dns: 2606:4700:4700::1111 is IPv6, which needs egress.ipv6: true"}},
-		{"registryAuthUnderConfig", "    registry_auth: /config/registry/auth.json\n", []string{`hosts.h.registry_auth: "/config/registry/auth.json" lies at or under the config file's directory "/config"`, "a mount of its own"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			cfg := tokenEnv()
-			cfg.File = "/config/config.yaml"
-			wantErr(t, build(cfg, []byte(oneHost(tc.lines, ""))), tc.want...)
+			wantErr(t, buildDoc(&Config{}, oneHost(tc.lines, "")), tc.want...)
 		})
 	}
 }
@@ -53,20 +48,15 @@ func TestHostEgressAccepted(t *testing.T) {
 		{"openFalseBesideInternet", "    egress: {open: false, internet: false}\n"},
 		{"allowEveryPrivateRange", "    egress: {allow: [{to: 10.0.0.0/8, ports: [1]}, {to: 100.64.0.0/10, ports: [1]}, {to: 169.254.169.254, ports: [80]}, {to: 172.16.0.0/12, ports: [1]}, {to: 192.168.1.0/24, ports: [1]}]}\n"},
 		{"allowIPv6", "    egress: {ipv6: true, allow: [{to: \"fd00::/8\", ports: [22]}, {to: \"2001:db8:5::7\", ports: [443]}]}\n"},
-		{"echoWithIPv6", "    egress: {ipv6: true, ipv6_echo: \"https://echo.example/ip\"}\n"},
 		{"ipv6InternetOffNoEcho", "    egress: {ipv6: true, internet: false}\n"},
 		{"block6WithIPv6", "    egress: {ipv6: true, block6: [\"2001:db8:1::/48\"]}\n"},
 		{"subnetBesideResolverAndAllow", "    dns: [10.20.1.53]\n    network: {subnet: 10.20.0.0/24}\n    egress: {allow: [{to: 10.20.2.0/24, ports: [22]}]}\n"},
 		{"dnsIPv6WithIPv6", "    dns: [\"2606:4700:4700::1111\"]\n    egress: {ipv6: true}\n"},
 		{"dnsIPv6OnOpenHost", "    dns: [\"2606:4700:4700::1111\"]\n    egress: {open: true}\n"},
-		{"registryAuthOwnMount", "    registry_auth: /registry/auth.json\n"},
-		{"registryAuthBesideConfigDir", "    registry_auth: /configs/auth.json\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			cfg := tokenEnv()
-			cfg.File = "/config/config.yaml"
-			mustBuild(t, cfg, oneHost(tc.lines, ""))
+			mustBuild(t, &Config{}, oneHost(tc.lines, ""))
 		})
 	}
 }
@@ -84,8 +74,8 @@ func TestHostTLSDirUnderConfig(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			cfg := &Config{File: "/config/config.yaml", Self: &Self{Name: "h", TLSDir: tc.tls}}
-			err := build(cfg, []byte(oneHost("", "")))
+			cfg := &Config{File: "/config/config.json", Self: &Self{Name: "h", TLSDir: tc.tls}}
+			err := buildDoc(cfg, oneHost("", ""))
 			if !tc.refused {
 				if err != nil {
 					t.Fatalf("err = %v", err)
@@ -113,7 +103,7 @@ profiles:
   build: {hosts: [dev]}
   scoped: {hosts: [lan, dev], scopes: [acme/app]}
 `
-	err := build(tokenEnv(), []byte(doc))
+	err := buildDoc(&Config{}, doc)
 	wantErr(t, err,
 		`profiles.integration.scopes: required: host "lan" has allow entries`,
 		`profiles.build.scopes: required: host "dev" is open`)
@@ -129,12 +119,43 @@ func TestProfileHostsMustExist(t *testing.T) {
 	t.Run("named", func(t *testing.T) {
 		t.Parallel()
 		doc := scopes + "hosts:\n  h: {capacity: {cpus: 1, memory: 1GiB}}\nprofiles:\n  p: {hosts: [h, nas]}\n"
-		wantErr(t, build(tokenEnv(), []byte(doc)), `profiles.p.hosts: names no host "nas"`)
+		wantErr(t, buildDoc(&Config{}, doc), `profiles.p.hosts: names no host "nas"`)
 	})
 	t.Run("defaultLeftOut", func(t *testing.T) {
 		t.Parallel()
 		doc := scopes + "hosts:\n  h: {capacity: {cpus: 1, memory: 1GiB}}\nprofiles:\n  p: {}\n"
-		wantErr(t, build(tokenEnv(), []byte(doc)), `profiles.p.hosts: names no host "default"`)
+		wantErr(t, buildDoc(&Config{}, doc), `profiles.p.hosts: names no host "default"`)
+	})
+}
+
+func TestProfileMustFitItsHosts(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ name, body, want string }{
+		{"cpus", ", cpus: 5", "profiles.p.cpus: never fits hosts.h.capacity.cpus; raise it or list another host"},
+		{"memory", ", memory: 9GiB", "profiles.p.memory: never fits hosts.h.capacity.memory"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			wantErr(t, buildDoc(&Config{}, oneHost("", tc.body)), tc.want)
+		})
+	}
+	t.Run("disk", func(t *testing.T) {
+		t.Parallel()
+		d := scopes + "hosts:\n  h: {capacity: {cpus: 4, memory: 8GiB, disk: 10GiB}}\nprofiles:\n  p: {hosts: [h], memory: 1GiB, disk: 11GiB}\n"
+		wantErr(t, buildDoc(&Config{}, d), "profiles.p.disk: never fits hosts.h.capacity.disk")
+	})
+	t.Run("equalFits", func(t *testing.T) {
+		t.Parallel()
+		mustBuild(t, &Config{}, oneHost("", ", cpus: 4, memory: 8GiB"))
+	})
+	t.Run("noBudgetYet", func(t *testing.T) {
+		t.Parallel()
+		mustBuild(t, &Config{}, scopes+"hosts:\n  h: {}\nprofiles:\n  p: {hosts: [h], cpus: 64, memory: 1TiB}\n")
+	})
+	t.Run("eachHostOfTheProfile", func(t *testing.T) {
+		t.Parallel()
+		d := scopes + "hosts:\n  big: {capacity: {cpus: 8, memory: 16GiB}}\n  nas: {capacity: {cpus: 2, memory: 4GiB}}\nprofiles:\n  p: {hosts: [nas, big], cpus: 4, memory: 2GiB}\n"
+		wantErr(t, buildDoc(&Config{}, d), "profiles.p.cpus: never fits hosts.nas.capacity.cpus")
 	})
 }
 
@@ -150,7 +171,7 @@ func TestConfinedHostRefusals(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			wantErr(t, build(tokenEnv(), []byte(oneHost("", tc.body))), tc.want)
+			wantErr(t, buildDoc(&Config{}, oneHost("", tc.body)), tc.want)
 		})
 	}
 	for _, tc := range []struct{ name, body string }{
@@ -159,13 +180,13 @@ func TestConfinedHostRefusals(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			mustBuild(t, tokenEnv(), oneHost("", tc.body))
+			mustBuild(t, &Config{}, oneHost("", tc.body))
 		})
 	}
 	t.Run("openHostTakesAll", func(t *testing.T) {
 		t.Parallel()
 		body := ", privileged: true, docker: host-socket, capabilities: [SYS_ADMIN], mounts: [{bind: /var/run/docker.sock, target: /var/run/docker.sock}]"
-		mustBuild(t, tokenEnv(), oneHost("    egress: {open: true}\n", body))
+		mustBuild(t, &Config{}, oneHost("    egress: {open: true}\n", body))
 	})
 	t.Run("eachHostOfTheProfile", func(t *testing.T) {
 		t.Parallel()
@@ -175,7 +196,7 @@ func TestConfinedHostRefusals(t *testing.T) {
 profiles:
   p: {hosts: [dev, h], scopes: [acme/app], privileged: true}
 `
-		wantErr(t, build(tokenEnv(), []byte(doc)), "profiles.p.privileged: privileged: true "+remedy)
+		wantErr(t, buildDoc(&Config{}, doc), "profiles.p.privileged: privileged: true "+remedy)
 	})
 }
 
@@ -200,7 +221,7 @@ func TestInternetOffRegistry(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			wantErr(t, build(tokenEnv(), []byte(oneHost(tc.lines, ", image: \""+tc.image+"\""))), tc.want)
+			wantErr(t, buildDoc(&Config{}, oneHost(tc.lines, ", image: \""+tc.image+"\"")), tc.want)
 		})
 	}
 	for _, tc := range []struct{ name, lines, image string }{
@@ -215,16 +236,16 @@ func TestInternetOffRegistry(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			mustBuild(t, tokenEnv(), oneHost(tc.lines, ", image: \""+tc.image+"\""))
+			mustBuild(t, &Config{}, oneHost(tc.lines, ", image: \""+tc.image+"\""))
 		})
 	}
 	t.Run("shippedImage", func(t *testing.T) {
 		t.Parallel()
-		mustBuild(t, tokenEnv(), oneHost(off, ", runner_image: build"))
+		mustBuild(t, &Config{}, oneHost(off, ", runner_image: build"))
 	})
 	t.Run("registryPortOutOfRange", func(t *testing.T) {
 		t.Parallel()
-		wantErr(t, build(tokenEnv(), []byte(oneHost("", ", image: \"10.0.0.5:70000/runner\""))), "profiles.p.image: want a registry port from 1 to 65535")
+		wantErr(t, buildDoc(&Config{}, oneHost("", ", image: \"10.0.0.5:70000/runner\"")), "profiles.p.image: want a registry port from 1 to 65535")
 	})
 }
 
@@ -259,42 +280,31 @@ func TestRegistry(t *testing.T) {
 	}
 }
 
-// The example of the configuration reference parses as written.
-func TestConfigExample(t *testing.T) {
+// A document in the settings' own JSON parses as written.
+func TestJSONDocument(t *testing.T) {
 	t.Parallel()
-	const doc = `scopes:
-  - repo: acme/app
-  - repo: acme/infra
-
-hosts:
-  default:
-    capacity: {cpus: 8, memory: 24GiB}
-  nas:
-    address: https://nas.example:7464
-    capacity: {cpus: 2, memory: 3GiB}
-  lan:
-    capacity: {cpus: 2, memory: 4GiB}
-    egress:
-      allow:
-        - {to: 10.0.0.50, ports: [5432]}
-
-profiles:
-  small:
-    cpus: 1
-    memory: 1536MiB
-    hosts: [nas, default]
-  medium:
-    cpus: 2
-    memory: 4GiB
-  large:
-    cpus: 4
-    memory: 8GiB
-  integration:
-    hosts: [lan]
-    scopes: [acme/infra]
-`
-	cfg := mustBuild(t, tokenEnv(), doc)
-	if len(cfg.Hosts) != 3 || len(cfg.Profiles) != 4 {
-		t.Errorf("hosts %d, profiles %d; want 3 and 4", len(cfg.Hosts), len(cfg.Profiles))
+	const d = `{
+  "scopes": [
+    {"repo": "acme/app", "default_profile": "medium"},
+    {"repo": "acme/infra", "default_profile": "integration"}
+  ],
+  "hosts": {
+    "default": {"capacity": {"cpus": 8, "memory": "24GiB"}},
+    "nas": {"capacity": {"cpus": 2, "memory": "3GiB"}},
+    "lan": {"capacity": {"cpus": 2, "memory": "4GiB"}, "egress": {"allow": [{"to": "10.0.0.50", "ports": [5432]}]}}
+  },
+  "profiles": {
+    "small": {"cpus": 1, "memory": "1536MiB", "hosts": ["nas", "default"]},
+    "medium": {"cpus": 2, "memory": "2GiB", "hosts": ["nas", "default"]},
+    "large": {"cpus": 4, "memory": "8GiB"},
+    "integration": {"hosts": ["lan"], "scopes": ["acme/infra"]}
+  }
+}`
+	cfg := &Config{}
+	if err := build(cfg, []byte(d), nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Hosts) != 3 || len(cfg.Profiles) != 4 || len(cfg.Scopes) != 2 {
+		t.Errorf("hosts %d, profiles %d, scopes %d; want 3, 4 and 2", len(cfg.Hosts), len(cfg.Profiles), len(cfg.Scopes))
 	}
 }

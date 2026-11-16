@@ -1,12 +1,6 @@
 {
-  "description": "Staging entries for revision 6 packages whose production reader a later build step adds. Each reason names that step; the step deletes the entry, and a stale entry fails the run.",
+  "description": "Staging entries for symbols whose production reader is not built yet. Each reason names the code that will read the symbol; that change deletes the entry, and a stale entry fails the run.",
   "ignore": [
-    {
-      "code": "DS1101",
-      "symbol": "go://github.com/cplieger/manade/internal/config#Secret.LogValue",
-      "path": "internal/config/config.go",
-      "reason": "staging: slog reaches LogValue once the orchestrator (build plan item 7, batch 4) logs the GitHub token it holds; delete this entry there and give LogValue and String the DS1102 directives a reachable Secret needs"
-    },
     {
       "code": "DS1501",
       "symbol": "go://github.com/cplieger/manade/internal/hostapi#EventType",
@@ -14,106 +8,52 @@
       "reason": "staging: the orchestrator (build plan item 7) reads the events stream; delete this entry there"
     },
     {
-      "code": "DS1501",
-      "symbol": "go://github.com/cplieger/manade/internal/config#RoleOrchestrator",
-      "path": "internal/config/config.go",
-      "reason": "staging: the orchestrator (build plan items 7 and 8, batch 4) reads the orchestrator role, its scopes and its GitHub credentials; delete this entry there"
-    },
-    {
-      "code": "DS1301",
-      "symbol": "go://github.com/cplieger/manade/internal/config#Config.Scopes",
-      "path": "internal/config/config.go",
-      "reason": "staging: the orchestrator (build plan items 7 and 8, batch 4) reads the orchestrator role, its scopes and its GitHub credentials; delete this entry there"
-    },
-    {
       "code": "DS1301",
       "symbol": "go://github.com/cplieger/manade/internal/config#Config.HeadReserveAfter",
       "path": "internal/config/config.go",
-      "reason": "staging: the orchestrator (build plan items 7 and 8, batch 4) reads the orchestrator role, its scopes and its GitHub credentials; delete this entry there"
-    },
-    {
-      "code": "DS1102",
-      "symbol": "go://github.com/cplieger/manade/internal/config#Secret.Reveal",
-      "path": "internal/config/config.go",
-      "reason": "staging: the orchestrator (build plan items 7 and 8, batch 4) reads the orchestrator role, its scopes and its GitHub credentials; delete this entry there"
-    },
-    {
-      "code": "DS1301",
-      "symbol": "go://github.com/cplieger/manade/internal/config#Orchestrator.MetricsListenAddr",
-      "path": "internal/config/env.go",
-      "reason": "staging: the orchestrator (build plan items 7 and 8, batch 4) reads the orchestrator role, its scopes and its GitHub credentials; delete this entry there"
-    },
-    {
-      "code": "DS1301",
-      "symbol": "go://github.com/cplieger/manade/internal/config#Orchestrator.DiagDir",
-      "path": "internal/config/env.go",
-      "reason": "staging: the orchestrator (build plan items 7 and 8, batch 4) reads the orchestrator role, its scopes and its GitHub credentials; delete this entry there"
-    },
-    {
-      "code": "DS1301",
-      "symbol": "go://github.com/cplieger/manade/internal/config#Orchestrator.DiagRetention",
-      "path": "internal/config/env.go",
-      "reason": "staging: the orchestrator (build plan items 7 and 8, batch 4) reads the orchestrator role, its scopes and its GitHub credentials; delete this entry there"
-    },
-    {
-      "code": "DS1301",
-      "symbol": "go://github.com/cplieger/manade/internal/config#GitHub.Proxy",
-      "path": "internal/config/env.go",
-      "reason": "staging: the orchestrator (build plan items 7 and 8, batch 4) reads the orchestrator role, its scopes and its GitHub credentials; delete this entry there"
-    },
-    {
-      "code": "DS1301",
-      "symbol": "go://github.com/cplieger/manade/internal/config#GitHub.Token",
-      "path": "internal/config/env.go",
-      "reason": "staging: the orchestrator (build plan items 7 and 8, batch 4) reads the orchestrator role, its scopes and its GitHub credentials; delete this entry there"
+      "reason": "staging: the control plane's job queue reads the head reservation delay; delete this entry when it does"
     },
     {
       "code": "DS1501",
       "symbol": "go://github.com/cplieger/manade/internal/config#ScopeRepo",
-      "path": "internal/config/file.go",
-      "reason": "staging: the orchestrator (build plan items 7 and 8, batch 4) reads the orchestrator role, its scopes and its GitHub credentials; delete this entry there"
+      "path": "internal/config/document.go",
+      "reason": "staging: the control plane's scale-set registration reads each scope's target from it; delete this entry when it does"
     },
     {
       "code": "DS1501",
       "symbol": "go://github.com/cplieger/manade/internal/config#ScopeOrg",
-      "path": "internal/config/file.go",
-      "reason": "staging: the orchestrator (build plan items 7 and 8, batch 4) reads the orchestrator role, its scopes and its GitHub credentials; delete this entry there"
+      "path": "internal/config/document.go",
+      "reason": "staging: the control plane's scale-set registration reads each scope's target from it; delete this entry when it does"
     },
     {
       "code": "DS1501",
       "symbol": "go://github.com/cplieger/manade/internal/config#ScopeEnterprise",
-      "path": "internal/config/file.go",
-      "reason": "staging: the orchestrator (build plan items 7 and 8, batch 4) reads the orchestrator role, its scopes and its GitHub credentials; delete this entry there"
+      "path": "internal/config/document.go",
+      "reason": "staging: the control plane's scale-set registration reads each scope's target from it; delete this entry when it does"
     },
     {
       "code": "DS1301",
       "symbol": "go://github.com/cplieger/manade/internal/config#Scope.Owner",
-      "path": "internal/config/file.go",
-      "reason": "staging: the orchestrator (build plan items 7 and 8, batch 4) reads the orchestrator role, its scopes and its GitHub credentials; delete this entry there"
+      "path": "internal/config/document.go",
+      "reason": "staging: the control plane's scale-set registration reads each scope's target from it; delete this entry when it does"
     },
     {
       "code": "DS1301",
       "symbol": "go://github.com/cplieger/manade/internal/config#Scope.Repo",
-      "path": "internal/config/file.go",
-      "reason": "staging: the orchestrator (build plan items 7 and 8, batch 4) reads the orchestrator role, its scopes and its GitHub credentials; delete this entry there"
+      "path": "internal/config/document.go",
+      "reason": "staging: the control plane's scale-set registration reads each scope's target from it; delete this entry when it does"
     },
     {
       "code": "DS1301",
       "symbol": "go://github.com/cplieger/manade/internal/config#Scope.RunnerGroup",
-      "path": "internal/config/file.go",
-      "reason": "staging: the orchestrator (build plan items 7 and 8, batch 4) reads the orchestrator role, its scopes and its GitHub credentials; delete this entry there"
+      "path": "internal/config/document.go",
+      "reason": "staging: the control plane's scale-set registration reads each scope's target from it; delete this entry when it does"
     },
     {
       "code": "DS1301",
       "symbol": "go://github.com/cplieger/manade/internal/config#Scope.InstallationID",
-      "path": "internal/config/file.go",
-      "reason": "staging: the orchestrator (build plan items 7 and 8, batch 4) reads the orchestrator role, its scopes and its GitHub credentials; delete this entry there"
-    },
-    {
-      "code": "DS1102",
-      "symbol": "go://github.com/cplieger/manade/internal/config#Profile.Allowed",
-      "path": "internal/config/profile.go",
-      "reason": "staging: the orchestrator (build plan items 7 and 8, batch 4) reads the orchestrator role, its scopes and its GitHub credentials; delete this entry there"
+      "path": "internal/config/document.go",
+      "reason": "staging: the control plane's scale-set registration reads each scope's target from it; delete this entry when it does"
     },
     {
       "code": "DS1102",
@@ -222,18 +162,6 @@
       "symbol": "go://github.com/cplieger/manade/internal/hostapi#Event",
       "path": "internal/hostapi/types.go",
       "reason": "staging: the orchestrator (build plan item 7, batch 4) calls the host API through this client and reads its answers; delete this entry there"
-    },
-    {
-      "code": "DS1501",
-      "symbol": "go://github.com/cplieger/manade/internal/config#Secret.Reveal",
-      "path": "internal/config/config.go",
-      "reason": "staging: the orchestrator (build plan items 7 and 8, batch 4) reads the orchestrator role, its scopes and its GitHub credentials; delete this entry there"
-    },
-    {
-      "code": "DS1501",
-      "symbol": "go://github.com/cplieger/manade/internal/config#Profile.Allowed",
-      "path": "internal/config/profile.go",
-      "reason": "staging: the orchestrator (build plan items 7 and 8, batch 4) reads the orchestrator role, its scopes and its GitHub credentials; delete this entry there"
     },
     {
       "code": "DS1501",

@@ -1,9 +1,9 @@
 package config
 
 import (
+	"encoding/json/jsontext"
 	"net"
 	"net/netip"
-	"net/url"
 	"regexp"
 	"slices"
 	"strconv"
@@ -52,16 +52,13 @@ func hostPath(name string) string {
 	return "hosts." + name
 }
 
-// apiPort is the host API's TCP port when an address names none.
-const apiPort = "7464"
-
 // hostTLSDir is a host's TLS_DIR when its environment names none.
 const hostTLSDir = "/tls"
 
 const schemeHTTPS = "https"
 
-// Address is where a host API is reached or served: exactly one of Socket, a
-// Unix socket path, and HostPort, a TCP address served with mutual TLS.
+// Address is where a host API is served: exactly one of Socket, a Unix
+// socket path, and HostPort, a TCP address served with mutual TLS.
 type Address struct {
 	Socket   string
 	HostPort string
@@ -71,14 +68,10 @@ type Address struct {
 
 // Host is one validated hosts entry.
 type Host struct {
-	Address Address
 	// Subnet is the job network's IPv4 subnet; the zero Prefix lets the host
 	// pick one.
 	Subnet netip.Prefix
 	Name   string
-	// RegistryAuth is the path of a Docker client config inside the host's
-	// container, or "".
-	RegistryAuth string
 	// DNS is never empty.
 	DNS          []netip.Addr
 	Egress       Egress
@@ -86,7 +79,8 @@ type Host struct {
 	ImageRefresh time.Duration
 }
 
-// Capacity is a host's budget. Disk and MaxRunners are 0 when unset.
+// Capacity is a host's budget, all zero when its section sets none; Disk
+// and MaxRunners are 0 when unset.
 type Capacity struct {
 	MilliCPUs  int64
 	Memory     int64
@@ -94,71 +88,74 @@ type Capacity struct {
 	MaxRunners int
 }
 
-type fileHost struct {
-	Capacity *fileCapacity `yaml:"capacity"`
-	DNS      *[]string     `yaml:"dns"`
-	Images   fileImages    `yaml:"images"`
+type docHost struct {
+	Capacity *docCapacity `json:"capacity"`
+	DNS      *[]string    `json:"dns"`
+	Images   docImages    `json:"images"`
 	Network  struct {
-		Subnet string `yaml:"subnet"`
-	} `yaml:"network"`
-	Address      string     `yaml:"address"`
-	RegistryAuth string     `yaml:"registry_auth"`
-	Egress       fileEgress `yaml:"egress"`
+		Subnet scalar `json:"subnet"`
+	} `json:"network"`
+	Egress docEgress `json:"egress"`
+	// Refused by name, so each refusal says what replaces the key or why it is gone.
+	Address      jsontext.Value `json:"address"`
+	RegistryAuth jsontext.Value `json:"registry_auth"`
 }
 
-type fileCapacity struct {
-	CPUs       string `yaml:"cpus"`
-	Memory     string `yaml:"memory"`
-	Disk       string `yaml:"disk"`
-	MaxRunners string `yaml:"max_runners"`
+type docCapacity struct {
+	CPUs       scalar `json:"cpus"`
+	Memory     scalar `json:"memory"`
+	Disk       scalar `json:"disk"`
+	MaxRunners scalar `json:"max_runners"`
 }
 
-type fileImages struct {
-	Refresh string `yaml:"refresh"`
+type docImages struct {
+	Refresh scalar `json:"refresh"`
 }
 
-// parse parses the section at path; capPath is where its capacity sits,
-// which for the one host of a config without hosts is the top level.
-func (fh *fileHost) parse(name, path, capPath string, refresh time.Duration, p *problems) Host {
+// parse parses the section at path.
+func (dh *docHost) parse(name, path string, refresh time.Duration, p *problems) Host {
 	at := func(key string) string { return path + "." + key }
 	h := Host{Name: name, ImageRefresh: refresh}
-	h.Address = field(p, at("address"), fh.Address, "unix://"+defaultSocket(name), parseAddress)
-	h.Capacity = fh.Capacity.parse(capPath, p)
-	if fh.Images.Refresh != "" {
-		h.ImageRefresh = parseRefresh(p, at("images.refresh"), fh.Images.Refresh)
+	if dh.Address != nil {
+		p.addf(at("address"), "refused: hosts dial the control plane, so a host has no address to set")
 	}
-	h.RegistryAuth = field(p, at("registry_auth"), fh.RegistryAuth, "", parseHostPath)
-	h.Subnet = field(p, at("network.subnet"), fh.Network.Subnet, "", parseSubnet)
-	h.Egress = fh.Egress.parse(at("egress"), p)
+	if dh.RegistryAuth != nil {
+		p.addf(at("registry_auth"), "refused: set MANADE_REGISTRY_AUTH or MANADE_REGISTRY_AUTH_FILE on the host's machine instead")
+	}
+	h.Capacity = dh.Capacity.parse(at("capacity"), p)
+	if dh.Images.Refresh != "" {
+		h.ImageRefresh = parseRefresh(p, at("images.refresh"), string(dh.Images.Refresh))
+	}
+	h.Subnet = field(p, at("network.subnet"), dh.Network.Subnet, "", parseSubnet)
+	h.Egress = dh.Egress.parse(at("egress"), p)
 	h.DNS = DefaultDNS
-	if fh.DNS != nil {
-		h.DNS = parseDNS(p, at("dns"), *fh.DNS)
+	if dh.DNS != nil {
+		h.DNS = parseDNS(p, at("dns"), *dh.DNS)
 	}
 	return h
 }
 
-func (fc *fileCapacity) parse(path string, p *problems) Capacity {
-	if fc == nil {
-		p.addf(path, "required: set cpus and memory")
+func (dc *docCapacity) parse(path string, p *problems) Capacity {
+	if dc == nil {
 		return Capacity{}
 	}
-	if fc.CPUs == "" {
+	if dc.CPUs == "" {
 		p.addf(path+".cpus", "required")
 	}
-	if fc.Memory == "" {
+	if dc.Memory == "" {
 		p.addf(path+".memory", "required")
 	}
 	return Capacity{
-		MilliCPUs:  field(p, path+".cpus", fc.CPUs, "", parseCPUs),
-		Memory:     field(p, path+".memory", fc.Memory, "", parsePositiveSize),
-		Disk:       field(p, path+".disk", fc.Disk, "", parsePositiveSize),
-		MaxRunners: int(field(p, path+".max_runners", fc.MaxRunners, "", positive(10000))),
+		MilliCPUs:  field(p, path+".cpus", dc.CPUs, "", parseCPUs),
+		Memory:     field(p, path+".memory", dc.Memory, "", parsePositiveSize),
+		Disk:       field(p, path+".disk", dc.Disk, "", parsePositiveSize),
+		MaxRunners: int(field(p, path+".max_runners", dc.MaxRunners, "", positive(10000))),
 	}
 }
 
 // parseRefresh parses an idle image check interval, at least 10 minutes.
 func parseRefresh(p *problems, path, raw string) time.Duration {
-	d := field(p, path, raw, "", parseDuration)
+	d := field(p, path, scalar(raw), "", parseDuration)
 	if d > 0 && d < 10*time.Minute {
 		p.addf(path, "want at least 10m, got %s", quote(raw))
 	}
@@ -181,33 +178,12 @@ func parseDNS(p *problems, path string, raws []string) []netip.Addr {
 	return out
 }
 
-// parseAddress parses a hosts entry's address: unix://<absolute path> or
-// https://<host>[:port].
-func parseAddress(raw string) (Address, error) {
-	if path, ok := strings.CutPrefix(raw, "unix://"); ok {
-		if _, err := parseHostPath(path); err != nil {
-			return Address{}, err
-		}
-		return Address{Socket: path}, nil
-	}
-	u, err := url.Parse(raw)
-	if err != nil || u.Scheme != schemeHTTPS || u.Host == "" || u.User != nil ||
-		(u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
-		return Address{}, invalid("want unix:///path/api.sock or https://host:port", raw)
-	}
-	hp := u.Host
-	if u.Port() == "" {
-		hp = net.JoinHostPort(u.Hostname(), apiPort)
-	}
-	return parseHostPort(hp, false)
-}
-
-// parseHostPort accepts host:port with a port from 1 to 65535; a listen
-// address may leave the host empty.
-func parseHostPort(raw string, listen bool) (Address, error) {
+// parseHostPort accepts a listen address, host:port with a port from 1 to
+// 65535 and the host possibly empty.
+func parseHostPort(raw string) (Address, error) {
 	host, port, err := net.SplitHostPort(raw)
 	n, perr := strconv.ParseUint(port, 10, 16)
-	if err != nil || perr != nil || n < 1 || (host == "" && !listen) || strings.ContainsAny(host, "/@") {
+	if err != nil || perr != nil || n < 1 || strings.ContainsAny(host, "/@") {
 		return Address{}, invalid("want host:port", raw)
 	}
 	return Address{HostPort: raw, Port: uint16(n)}, nil

@@ -10,13 +10,16 @@ import (
 )
 
 // allowedModules is the dependency rule: beyond the standard library and the
-// github.com/cplieger/ modules, the module links only actions/scaleset, its
-// two dependencies and go-yaml.
+// github.com/cplieger/ modules, the module links only these. A first-party
+// library's entries are the modules it brings, each commented with it.
 var allowedModules = []string{
 	"github.com/actions/scaleset",
-	"github.com/golang-jwt/jwt/v5",
-	"github.com/google/uuid",
+	"github.com/golang-jwt/jwt/v5", // actions/scaleset
+	"github.com/google/uuid",       // actions/scaleset
 	"go.yaml.in/yaml/v4",
+	"go.etcd.io/bbolt",  // bolttable
+	"golang.org/x/sync", // bolttable
+	"golang.org/x/sys",  // bolttable
 }
 
 func TestNoThirdPartyModuleBeyondTheAllowedSet(t *testing.T) {

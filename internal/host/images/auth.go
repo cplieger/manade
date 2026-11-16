@@ -14,24 +14,26 @@ import (
 	"github.com/cplieger/manade/internal/config"
 )
 
-// authLimit caps the registry_auth file, a Docker client config.
+// authLimit caps the registry credentials file, a Docker client config.
 const authLimit = 1 << 20
 
 // hubKeys are the registries a Docker client config files Docker Hub's
 // credentials under, the CLI's own (https://index.docker.io/v1/) first.
 var hubKeys = []string{"index.docker.io", "docker.io", "registry-1.docker.io"}
 
-// errAuth is a registry_auth file the host cannot use. Its text never
-// quotes the file.
-var errAuth = errors.New("registry_auth")
+// errAuth is registry credentials the host cannot use. Its text never
+// quotes them.
+var errAuth = errors.New("registry credentials")
 
 // auth answers the X-Registry-Auth value for ref's registry from the host's
-// registry_auth file, read at each call so a rotated file takes effect, or
-// "" when the host has none or it names no entry for that registry.
+// registry credentials, a file read at each call so a rotated file takes
+// effect, or "" when the host has none or they name no entry for that
+// registry.
 func (m *Manager) auth(ctx context.Context, ref string) (string, error) {
-	m.mu.Lock()
-	path := m.host.RegistryAuth
-	m.mu.Unlock()
+	if v := m.regAuth.Value.Reveal(); v != "" {
+		return encodeAuth([]byte(v), ref, "MANADE_REGISTRY_AUTH")
+	}
+	path := m.regAuth.File
 	if path == "" {
 		return "", nil
 	}

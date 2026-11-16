@@ -116,7 +116,6 @@ func v6Fixture(t *testing.T, e *echoes) *upFixture {
 func v6Section() *config.Host {
 	h := section()
 	h.Egress.IPv6 = true
-	h.Egress.IPv6Echo = "https://echo.example/trace"
 	return h
 }
 
@@ -196,7 +195,7 @@ func TestHoldLearns64(t *testing.T) {
 			t.Errorf("Hold = %v", err)
 		}
 		if !slices.Equal(slices.Compact(slices.Clone(e.urls)), []string{"https://echo.example/trace"}) {
-			t.Errorf("asked %q, want the section's ipv6_echo", e.urls)
+			t.Errorf("asked %q, want MANADE_IPV6_ECHO", e.urls)
 		}
 	})
 }
@@ -215,7 +214,7 @@ func TestHoldEndsWhenA64CannotLoad(t *testing.T) {
 func TestNoEchoWithoutIPv6AndInternet(t *testing.T) {
 	f := newUpFixture(t)
 	f.echo = func(context.Context, string) ([]byte, error) {
-		t.Error("an IPv4 host asked its ipv6_echo")
+		t.Error("an IPv4 host asked its echo endpoint")
 		return nil, errors.New("no")
 	}
 	n := upNet(t, f, section())
@@ -235,11 +234,10 @@ func (e *echoes) asked() int {
 	return len(e.urls)
 }
 
-// closedV6Section is v6Section with internet off, so with no ipv6_echo.
+// closedV6Section is v6Section with internet off, where nothing is learned.
 func closedV6Section() *config.Host {
 	h := v6Section()
 	h.Egress.Internet = false
-	h.Egress.IPv6Echo = ""
 	return h
 }
 
@@ -265,7 +263,7 @@ func TestAChangeOfInternetRebuildsThe64(t *testing.T) {
 			time.Sleep(2 * echoInterval)
 			synctest.Wait()
 			if got := e.asked(); got != 0 {
-				t.Errorf("an internet: false host asked its ipv6_echo %d times", got)
+				t.Errorf("an internet: false host asked its echo endpoint %d times", got)
 			}
 			at := time.Now()
 			if failed, fatal := n.change(t.Context(), v6Section()); failed != nil || fatal != nil {
