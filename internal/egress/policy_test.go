@@ -75,6 +75,47 @@ func scenarios() []scenario {
 		{name: "ipv6-internet-off", in: Input{Host: v6Host(false), Job6: job6, State: off6State}},
 		{name: "open", in: Input{Host: &config.Host{Name: "open", DNS: config.DefaultDNS, Egress: config.Egress{Open: true, Internet: true}}}},
 		{name: "block6", in: block6Input()},
+		{name: "enrolled", in: enrolledInput()},
+		{name: "enrolled-ipv6-target", in: Input{
+			Host: &config.Host{Name: "offline", DNS: config.DefaultDNS},
+			ControlPlane: &ControlPlane{
+				Newest:   Target{Addrs: []netip.Addr{addr("2001:db8:7::77")}, Port: 7464},
+				LastGood: Target{Addrs: []netip.Addr{addr("2001:db8:7::77")}, Port: 7464},
+				Join:     Target{Addrs: []netip.Addr{addr("198.51.100.7")}, Port: 8443},
+			},
+			KeepIPv6: true,
+			State:    offState,
+		}},
+		{name: "enrolled-ipv6", in: Input{
+			Host:   v6Host(true),
+			Job6:   job6,
+			Block6: []netip.Prefix{pfx("2001:db8:9::/48")},
+			ControlPlane: &ControlPlane{
+				Newest:   Target{Addrs: []netip.Addr{addr("203.0.113.10"), addr("2001:db8:7::10")}, Port: 7464},
+				LastGood: Target{Addrs: []netip.Addr{addr("203.0.113.10")}, Port: 7464},
+				Join:     Target{Addrs: []netip.Addr{addr("2001:db8:7::20"), addr("203.0.113.20")}, Port: 7465},
+			},
+			State: learned,
+		}},
+	}
+}
+
+// enrolledInput is an enrolled host with ipv6 off whose control plane is on
+// the LAN, with an allow entry for the /24 that holds it, no join token and
+// a newest address that repeats one in another family's form.
+func enrolledInput() Input {
+	return Input{
+		Host: &config.Host{
+			Name: "remote",
+			DNS:  config.DefaultDNS,
+			Egress: config.Egress{Internet: true, Allow: []config.Allow{
+				{To: pfx("192.168.1.0/24"), Protocol: config.ProtocolTCP, Ports: ports([2]uint16{7464, 7464})},
+			}},
+		},
+		ControlPlane: &ControlPlane{
+			Newest:   Target{Addrs: []netip.Addr{addr("192.168.1.80"), addr("::ffff:192.168.1.80")}, Port: 7464},
+			LastGood: Target{Addrs: []netip.Addr{addr("192.168.1.77")}, Port: 7464},
+		},
 	}
 }
 

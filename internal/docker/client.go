@@ -64,6 +64,9 @@ var (
 	// ErrImageMissing is a create the daemon refused because its image is
 	// not in the cache.
 	ErrImageMissing = errors.New("docker: no such image")
+	// ErrNetworkMissing is a start the daemon refused because the
+	// container's network is gone; the create never checks it.
+	ErrNetworkMissing = errors.New("docker: no such network")
 )
 
 // errAPIVersion is returned by Dial for a daemon whose API range does not
@@ -83,8 +86,9 @@ func (e *daemonError) Error() string {
 	return "docker " + e.Op + ": status " + strconv.Itoa(e.Code) + ": " + e.Message
 }
 
-// Is matches errNotFound for a 404, ErrConflict for a 409 and
-// ErrImageMissing for a 404 naming a missing image.
+// Is matches errNotFound for a 404, ErrConflict for a 409, ErrImageMissing
+// for a 404 naming a missing image and ErrNetworkMissing for a 404 naming a
+// missing network.
 func (e *daemonError) Is(target error) bool {
 	switch target {
 	case errNotFound:
@@ -93,6 +97,10 @@ func (e *daemonError) Is(target error) bool {
 		return e.Code == http.StatusConflict
 	case ErrImageMissing:
 		return e.Code == http.StatusNotFound && strings.Contains(strings.ToLower(e.Message), "no such image")
+	case ErrNetworkMissing:
+		// libnetwork's ErrNoSuchNetwork: "network <name> not found".
+		m := strings.ToLower(e.Message)
+		return e.Code == http.StatusNotFound && strings.Contains(m, "network ") && strings.Contains(m, " not found")
 	}
 	return false
 }

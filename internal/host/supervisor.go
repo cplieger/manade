@@ -303,12 +303,13 @@ func (s *supervisor) build(ctx context.Context, h *config.Host, sv *served, cg *
 			return fmt.Errorf("the host's cpuset %q: %w", cg.CPUSet, err)
 		}
 	}
-	s.runners = newRunners(ctx, &runnersConfig{Daemon: s.dk, Images: s.images, Served: sv, Log: s.log, CPUs: cpus, DataFree: dataFree})
+	jobs := &jobDaemon{Client: s.dk, network: jobNetworkSpec(s.net.Subnet, s.net.Job6), log: s.log}
+	s.runners = newRunners(ctx, &runnersConfig{Daemon: jobs, Images: s.images, Served: sv, Log: s.log, CPUs: cpus, DataFree: dataFree})
 	if err := s.runners.load(ctx); err != nil {
 		return err
 	}
 	s.prober = probe.NewRunner(&probe.Config{
-		Daemon: s.dk, Attach: func(ctx context.Context, id string) (probe.Stream, error) { return s.dk.Attach(ctx, id) },
+		Daemon: jobs, Attach: func(ctx context.Context, id string) (probe.Stream, error) { return s.dk.Attach(ctx, id) },
 		Sets: &probeSets{rules: s.net.rules, guard: s.net.rulesGuard, ipv6: h.Egress.IPv6}, Image: s.images,
 		Spec: func() *jobspec.Host { return s.served.Load().Spec }, Host: s.probeHost,
 		Log: s.log, Network: jobNetwork, Started: time.Now(),

@@ -282,6 +282,12 @@
       "symbol": "go://github.com/cplieger/manade/internal/hostapi#Client.Events",
       "path": "internal/hostapi/client.go",
       "reason": "staging: the orchestrator (build plan item 7, batch 4) calls the host API through this client and reads its answers; delete this entry there"
+    },
+    {
+      "code": "DS1102",
+      "symbol": "go://github.com/cplieger/manade/internal/egress#ReplaceTarget",
+      "path": "internal/egress/refresh.go",
+      "reason": "staging: an enrolled host's re-resolution of its dial targets (enrolment, design section 19 batch 4) loads this payload; delete this entry there"
     }
   ]
 }

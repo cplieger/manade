@@ -28,6 +28,33 @@ func Refresh(b Backend, ls []Learned) string {
 	return w.String()
 }
 
+// ReplaceTarget answers the payload that makes addrs the elements of dial
+// target d's two exception sets, with no moment in which either is empty:
+// for NFTables one `nft -f` transaction that flushes each set and adds its
+// elements, for IPTables an `ipset restore -exist` payload that fills a
+// temporary set and swaps it in. It changes no rule, so the 5-second check
+// reads the same listing before and after.
+func ReplaceTarget(b Backend, d DialTarget, addrs []netip.Addr) string {
+	set4, set6 := d.sets()
+	v4s, v6s := splitFamilies(addrs)
+	var w strings.Builder
+	for _, s := range []set{{name: set4, family: ipv4, addrs: v4s}, {name: set6, family: ipv6, addrs: v6s}} {
+		if b == IPTables {
+			w.WriteString(s.ipsetSwap())
+			continue
+		}
+		w.WriteString(setCommand(b, "flush", s.name, netip.Addr{}))
+		if len(s.addrs) > 0 {
+			elems := make([]string, len(s.addrs))
+			for i, a := range s.addrs {
+				elems[i] = a.String()
+			}
+			fmt.Fprintf(&w, "add element inet %s %s { %s }\n", nftTable, s.name, strings.Join(elems, ", "))
+		}
+	}
+	return w.String()
+}
+
 // The probe's set pairs, sources then target, by family.
 var probeSets = [2][2]string{{setProbe4, setTarget4}, {setProbe6, setTarget6}}
 

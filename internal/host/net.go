@@ -239,8 +239,7 @@ func (n *hostNet) startDaemon(ctx context.Context, p *seams) error {
 	if err != nil {
 		return fail(err)
 	}
-	spec := &docker.NetworkSpec{Name: jobNetwork, Bridge: jobBridge, Subnet: n.Subnet, Subnet6: n.Job6}
-	err = c.EnsureNetwork(ctx, spec)
+	err = c.EnsureNetwork(ctx, jobNetworkSpec(n.Subnet, n.Job6))
 	c.Close()
 	if err != nil {
 		return fail(fmt.Errorf("creating the job network: %w", err))

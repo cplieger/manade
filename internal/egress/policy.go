@@ -29,7 +29,73 @@ const (
 	setProbe6  = "manade-probe6"
 	setTarget6 = "manade-target6"
 	setGitHub4 = "manade-gh4"
+	setCP4     = "manade-cp4"
+	setCP6     = "manade-cp6"
+	setLast4   = "manade-cplast4"
+	setLast6   = "manade-cplast6"
+	setJoin4   = "manade-cpjoin4"
+	setJoin6   = "manade-cpjoin6"
 )
+
+// Mark is the socket mark of the supervisor's control-plane dials, which
+// the output chain's exception accepts match: ASCII "MN", clear of every
+// mark a process in the host container's namespace sets (moby's swarm load
+// balancer and encrypted overlay marks and bridge-accept-fwmark, none of
+// which the host's daemon runs).
+const Mark = 0x4d4e
+
+// DialTarget is one of an enrolled host's dial targets, each with its own
+// pair of exception sets.
+type DialTarget int
+
+// The dial targets; the zero DialTarget is none of them.
+const (
+	// TargetNewest is the newest address, or MANADE_CONTROL_PLANE.
+	TargetNewest DialTarget = iota + 1
+	// TargetLastGood is the address the last successful upgrade went over.
+	TargetLastGood
+	// TargetJoin is an unspent join token's address.
+	TargetJoin
+)
+
+var dialTargets = []DialTarget{TargetNewest, TargetLastGood, TargetJoin}
+
+// sets answers the target's IPv4 and IPv6 exception sets.
+func (d DialTarget) sets() (v4, v6 string) {
+	switch d {
+	case TargetNewest:
+		return setCP4, setCP6
+	case TargetLastGood:
+		return setLast4, setLast6
+	case TargetJoin:
+		return setJoin4, setJoin6
+	}
+	return "", ""
+}
+
+// Target is one dial target as the rules hold it: its TCP port, or 0 for a
+// target the host does not hold at this start, whose sets stay empty and
+// get no accept, and the addresses its name resolved to.
+type Target struct {
+	Addrs []netip.Addr
+	Port  uint16
+}
+
+// ControlPlane is an enrolled host's dial targets. Two targets may hold
+// the same addresses.
+type ControlPlane struct {
+	Newest, LastGood, Join Target
+}
+
+func (cp *ControlPlane) target(d DialTarget) *Target {
+	switch d {
+	case TargetNewest:
+		return &cp.Newest
+	case TargetLastGood:
+		return &cp.LastGood
+	}
+	return &cp.Join
+}
 
 // LearnedMax bounds the learned set, in the kernel and in the host's own
 // record, as ipset's default maxelem does.
@@ -62,7 +128,14 @@ type Input struct {
 	// every accept the section controls, so no allow entry or resolver
 	// reopens them.
 	Block6 []netip.Prefix
-	State  State
+	// ControlPlane is an enrolled host's dial targets, nil on a socket host,
+	// which has no exception.
+	ControlPlane *ControlPlane
+	State        State
+	// KeepIPv6 says a host with ipv6 off keeps IPv6 in its namespace for a
+	// dial target, so its output chain accepts neighbour discovery ahead of
+	// the IPv6 drop; it needs ControlPlane.
+	KeepIPv6 bool
 }
 
 // State is what the host learns while it runs.
@@ -166,16 +239,21 @@ const (
 // rule is one rule in backend-neutral form. A rule whose daddr holds several
 // prefixes matches any of them.
 type rule struct {
-	saddrSet, daddrSet string
-	ct                 string
-	iif, oif           iface
-	saddr              netip.Prefix
-	daddr              []netip.Prefix
-	dports             []config.PortRange
-	proto              config.Protocol
-	family             family
-	action             action
-	notDaddr           bool
+	daddrSet string
+	ct       string
+	iif, oif iface
+	saddr    netip.Prefix
+	daddr    []netip.Prefix
+	dports   []config.PortRange
+	proto    config.Protocol
+	family   family
+	action   action
+	// probe is the family of a counting rule's probe sets, matched after
+	// the rule's own matches; anyFamily for a rule that is no counter.
+	probe    family
+	notDaddr bool
+	// mark matches the sockets carrying Mark.
+	mark bool
 	// nd matches ICMPv6 neighbour solicitations and advertisements.
 	nd bool
 	// after marks a counting rule that follows the chain's drops, which a
@@ -190,10 +268,14 @@ type chain struct {
 }
 
 type set struct {
-	name    string
-	elems   []Learned
-	family  family
-	timeout bool
+	name  string
+	elems []Learned
+	// addrs are an exception set's elements, which have no timeout and are
+	// replaced whole.
+	addrs     []netip.Addr
+	family    family
+	timeout   bool
+	exception bool
 }
 
 const (
@@ -235,6 +317,7 @@ func (in *Input) check() error {
 			errs = append(errs, fmt.Errorf("egress: %s %s is not an IPv6 /64", name, p))
 		}
 	}
+	errs = append(errs, in.checkControlPlane()...)
 	if in.Host.Egress.IPv6 {
 		if !in.Job6.IsValid() || !ula.Contains(in.Job6.Addr()) {
 			errs = append(errs, fmt.Errorf("egress: the job network's IPv6 prefix %s is not a /64 inside %s", in.Job6, ula))
@@ -244,6 +327,22 @@ func (in *Input) check() error {
 		sixty4("own prefix", in.State.Own64)
 	}
 	return errors.Join(errs...)
+}
+
+func (in *Input) checkControlPlane() []error {
+	if in.ControlPlane == nil {
+		if in.KeepIPv6 {
+			return []error{errors.New("egress: IPv6 kept for a dial target on a host with none")}
+		}
+		return nil
+	}
+	var errs []error
+	for _, d := range dialTargets {
+		if t := in.ControlPlane.target(d); t.Port == 0 && len(t.Addrs) > 0 {
+			errs = append(errs, fmt.Errorf("egress: dial target %d has addresses and no port", d))
+		}
+	}
+	return errs
 }
 
 func (rs *Ruleset) build(in *Input) {
@@ -257,9 +356,10 @@ func (rs *Ruleset) build(in *Input) {
 	if v6 && len(in.Block6) > 0 {
 		block = []rule{{daddr: outermost(in.Block6), action: drop}}
 	}
+	cp := in.exceptions(v6)
 	rs.chains = []chain{
-		{hook: hookForward, rules: counted(forward(block, jobs, v6), v6)},
-		{hook: hookOutput, rules: counted(output(in.Host.DNS, block, own, v6), v6)},
+		{hook: hookForward, rules: counted(forward(cp.drops, block, jobs, v6), v6)},
+		{hook: hookOutput, rules: counted(output(&outputIn{dns: in.Host.DNS, marked: cp.accepts, block: block, dest: own, v6: v6, nd: v6 || in.KeepIPv6}), v6)},
 		{hook: hookInput, rules: counted(input(v6), v6)},
 	}
 	rs.sets = []set{{name: setProbe4, family: ipv4}, {name: setTarget4, family: ipv4}}
@@ -270,6 +370,59 @@ func (rs *Ruleset) build(in *Input) {
 	if !e.Internet {
 		rs.sets = append(rs.sets, set{name: setGitHub4, family: ipv4, timeout: true, elems: in.learned()})
 	}
+	rs.sets = append(rs.sets, cp.sets...)
+}
+
+// exceptionRules are an enrolled host's exception sets and the rules that
+// use them; a socket host has none.
+type exceptionRules struct {
+	sets    []set
+	accepts []rule
+	drops   []rule
+}
+
+// exceptions answers the six exception sets, each target's marked output
+// accepts on its port, and the forward drops of every set of a family the
+// host's jobs have: without ipv6 the forward chain already drops all IPv6.
+func (in *Input) exceptions(v6 bool) exceptionRules {
+	var ex exceptionRules
+	if in.ControlPlane == nil {
+		return ex
+	}
+	for _, d := range dialTargets {
+		t := in.ControlPlane.target(d)
+		set4, set6 := d.sets()
+		v4s, v6s := splitFamilies(t.Addrs)
+		ex.sets = append(ex.sets, set{name: set4, family: ipv4, addrs: v4s, exception: true}, set{name: set6, family: ipv6, addrs: v6s, exception: true})
+		for _, name := range []string{set4, set6} {
+			if t.Port != 0 {
+				port := []config.PortRange{{First: t.Port, Last: t.Port}}
+				ex.accepts = append(ex.accepts, rule{mark: true, daddrSet: name, proto: config.ProtocolTCP, dports: port, action: accept})
+			}
+		}
+		ex.drops = append(ex.drops, rule{daddrSet: set4, action: drop})
+		if v6 {
+			ex.drops = append(ex.drops, rule{daddrSet: set6, action: drop})
+		}
+	}
+	return ex
+}
+
+// splitFamilies answers addrs unmapped, sorted and without repeats, split
+// by family.
+func splitFamilies(addrs []netip.Addr) (v4, v6 []netip.Addr) {
+	for _, a := range addrs {
+		if a = a.Unmap(); a.Is4() {
+			v4 = append(v4, a)
+		} else if a.IsValid() {
+			v6 = append(v6, a)
+		}
+	}
+	for _, s := range []*[]netip.Addr{&v4, &v6} {
+		slices.SortFunc(*s, netip.Addr.Compare)
+		*s = slices.Compact(*s)
+	}
+	return v4, v6
 }
 
 // learned answers the learned addresses that still have time left and pass
@@ -334,15 +487,15 @@ func destinations(in *Input, v6, global6 bool) []rule {
 	return rs
 }
 
-// forward is the forward chain: block, the MANADE_BLOCK6 drops, comes
-// ahead of the allow accepts that open dest.
-func forward(block, dest []rule, v6 bool) []rule {
+// forward is the forward chain: the exception sets' drops cp and block,
+// the MANADE_BLOCK6 drops, come ahead of the allow accepts that open dest.
+func forward(cp, block, dest []rule, v6 bool) []rule {
 	rs := []rule{{iif: jobBridges, oif: jobBridges, action: drop}}
 	if !v6 {
 		rs = append(rs, rule{family: ipv6, action: drop})
 	}
 	rs = append(rs, rule{ct: ctEstablished, action: accept})
-	all := slices.Concat(block, dest)
+	all := slices.Concat(cp, block, dest)
 	for i := range all {
 		r := all[i]
 		r.iif = jobBridges
@@ -351,26 +504,41 @@ func forward(block, dest []rule, v6 bool) []rule {
 	return append(rs, rule{oif: jobBridges, ct: ctNew, action: drop})
 }
 
-// output is the output chain: block, the MANADE_BLOCK6 drops, comes ahead
-// of the resolver accepts and dest's allow accepts.
-func output(dns []netip.Addr, block, dest []rule, v6 bool) []rule {
-	rs := []rule{{oif: loopback, action: accept}, {ct: ctEstablished, action: accept}}
-	if v6 {
+// outputIn is what the output chain is built from.
+type outputIn struct {
+	dns []netip.Addr
+	// marked are the exception sets' marked accepts, ahead of the IPv6 drop
+	// so an IPv6 dial target stays reachable on a host without ipv6.
+	marked []rule
+	// block are the MANADE_BLOCK6 drops, ahead of the resolver accepts and
+	// dest's allow accepts.
+	block, dest []rule
+	v6          bool
+	// nd is the neighbour discovery accept: the kernel sends it unmarked
+	// and untracked from its own socket, so only this accept passes it.
+	nd bool
+}
+
+// output is the output chain.
+func output(o *outputIn) []rule {
+	rs := slices.Concat([]rule{{oif: loopback, action: accept}, {ct: ctEstablished, action: accept}}, o.marked)
+	if o.nd {
 		rs = append(rs, rule{nd: true, action: accept})
-	} else {
+	}
+	if !o.v6 {
 		rs = append(rs, rule{family: ipv6, action: drop})
 	}
-	for i := range block {
-		r := block[i]
+	for i := range o.block {
+		r := o.block[i]
 		r.oif = iface{name: jobBridges.name, glob: true, not: true}
 		rs = append(rs, r)
 	}
 	var r4, r6 []netip.Prefix
-	for _, a := range dns {
+	for _, a := range o.dns {
 		p := netip.PrefixFrom(a, a.BitLen())
 		if a.Is4() {
 			r4 = append(r4, p)
-		} else if v6 {
+		} else if o.v6 {
 			r6 = append(r6, p)
 		}
 	}
@@ -380,8 +548,8 @@ func output(dns []netip.Addr, block, dest []rule, v6 bool) []rule {
 			rs = append(rs, rule{daddr: rr, proto: config.ProtocolBoth, dports: dns53, action: accept})
 		}
 	}
-	for i := range dest {
-		r := dest[i]
+	for i := range o.dest {
+		r := o.dest[i]
 		if r.action == drop {
 			r.oif = iface{name: jobBridges.name, glob: true, not: true}
 		}
@@ -422,13 +590,13 @@ func counted(rules []rule, v6 bool) []rule {
 }
 
 func (r *rule) families(v6 bool) []family {
-	switch {
-	case r.family == anyFamily && len(r.daddr) == 0:
+	switch r.matchFamily() {
+	case anyFamily:
 		if v6 {
 			return []family{ipv4, ipv6}
 		}
 		return []family{ipv4}
-	case r.matchFamily() == ipv6:
+	case ipv6:
 		if v6 {
 			return []family{ipv6}
 		}
@@ -440,12 +608,7 @@ func (r *rule) families(v6 bool) []family {
 // counter answers a counting rule with r's matches for family f.
 func (r *rule) counter(f family) rule {
 	c := *r
-	c.family, c.action = f, count
-	if f == ipv4 {
-		c.saddrSet, c.daddrSet = setProbe4, setTarget4
-	} else {
-		c.saddrSet, c.daddrSet = setProbe6, setTarget6
-	}
+	c.family, c.action, c.probe = f, count, f
 	return c
 }
 
@@ -460,10 +623,16 @@ func (r *rule) matchFamily() family {
 		return familyOf(r.saddr.Addr())
 	case len(r.daddr) > 0:
 		return familyOf(r.daddr[0].Addr())
-	case r.daddrSet == setGitHub4:
-		return ipv4
+	case r.daddrSet != "":
+		return setFamily[r.daddrSet]
 	}
 	return anyFamily
+}
+
+// setFamily is the family of each set a rule matches as its own.
+var setFamily = map[string]family{
+	setGitHub4: ipv4, setCP4: ipv4, setLast4: ipv4, setJoin4: ipv4,
+	setCP6: ipv6, setLast6: ipv6, setJoin6: ipv6,
 }
 
 func familyOf(a netip.Addr) family {

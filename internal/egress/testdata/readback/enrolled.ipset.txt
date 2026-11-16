@@ -1,0 +1,63 @@
+Name: manade-probe4
+Type: hash:ip
+Revision: 6
+Header: family inet hashsize 1024 maxelem 65536 bucketsize 12 initval 0x7e7a9c1c
+Size in memory: 216
+References: 19
+Number of entries: 0
+
+Name: manade-target4
+Type: hash:ip
+Revision: 6
+Header: family inet hashsize 1024 maxelem 65536 bucketsize 12 initval 0xa5b312d1
+Size in memory: 216
+References: 19
+Number of entries: 0
+
+Name: manade-cp4
+Type: hash:ip
+Revision: 6
+Header: family inet hashsize 1024 maxelem 65536 bucketsize 12 initval 0xa73625d4
+Size in memory: 256
+References: 3
+Number of entries: 1
+
+Name: manade-cp6
+Type: hash:ip
+Revision: 6
+Header: family inet6 hashsize 1024 maxelem 65536 bucketsize 12 initval 0x661666cf
+Size in memory: 224
+References: 0
+Number of entries: 0
+
+Name: manade-cplast4
+Type: hash:ip
+Revision: 6
+Header: family inet hashsize 1024 maxelem 65536 bucketsize 12 initval 0x07d75272
+Size in memory: 256
+References: 3
+Number of entries: 1
+
+Name: manade-cplast6
+Type: hash:ip
+Revision: 6
+Header: family inet6 hashsize 1024 maxelem 65536 bucketsize 12 initval 0xc021f39c
+Size in memory: 224
+References: 0
+Number of entries: 0
+
+Name: manade-cpjoin4
+Type: hash:ip
+Revision: 6
+Header: family inet hashsize 1024 maxelem 65536 bucketsize 12 initval 0xa6207db2
+Size in memory: 216
+References: 2
+Number of entries: 0
+
+Name: manade-cpjoin6
+Type: hash:ip
+Revision: 6
+Header: family inet6 hashsize 1024 maxelem 65536 bucketsize 12 initval 0x22e8181d
+Size in memory: 224
+References: 0
+Number of entries: 0

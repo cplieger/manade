@@ -35,7 +35,7 @@ var manadeJumps = []Jump{
 }
 
 // managedSets are every ipset a rule set may declare.
-var managedSets = []string{setProbe4, setTarget4, setProbe6, setTarget6, setGitHub4}
+var managedSets = []string{setProbe4, setTarget4, setProbe6, setTarget6, setGitHub4, setCP4, setCP6, setLast4, setLast6, setJoin4, setJoin6}
 
 var natJump = Jump{Table: "nat", Chain: "POSTROUTING", Target: iptNAT, IPv6: true}
 
@@ -116,19 +116,33 @@ func (rs *Ruleset) iptLines(f family) []string {
 }
 
 func (s *set) ipset() string {
-	fam := "inet"
-	if s.family == ipv6 {
-		fam = "inet6"
-	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "create %s hash:ip family %s", s.name, fam)
+	fmt.Fprintf(&b, "create %s hash:ip family %s", s.name, s.ipsetFamily())
 	if s.timeout {
 		fmt.Fprintf(&b, " timeout %d", ipsetTimeout)
 	}
-	fmt.Fprintf(&b, " maxelem %d\nflush %s\n", LearnedMax, s.name)
+	fmt.Fprintf(&b, " maxelem %d\n", LearnedMax)
+	if s.exception {
+		return b.String() + s.ipsetSwap()
+	}
+	fmt.Fprintf(&b, "flush %s\n", s.name)
 	for _, l := range s.elems {
 		fmt.Fprintf(&b, "add %s %s timeout %d\n", s.name, l.Addr, seconds(l.Left))
 	}
+	return b.String()
+}
+
+// ipsetSwap fills a temporary set with an exception set's addresses and
+// swaps it in, so the live set is never empty while it changes: a flush
+// then add would drop the supervisor's dials in between.
+func (s *set) ipsetSwap() string {
+	next := s.name + "-next"
+	var b strings.Builder
+	fmt.Fprintf(&b, "create %s hash:ip family %s maxelem %d\nflush %s\n", next, s.ipsetFamily(), LearnedMax, next)
+	for _, a := range s.addrs {
+		fmt.Fprintf(&b, "add %s %s\n", next, a)
+	}
+	fmt.Fprintf(&b, "swap %s %s\ndestroy %s\n", next, s.name, next)
 	return b.String()
 }
 
@@ -199,11 +213,14 @@ func (r *rule) iptTail() string {
 	if r.ct != "" {
 		tail += " -m conntrack --ctstate " + map[string]string{ctEstablished: "RELATED,ESTABLISHED", ctNew: "NEW"}[r.ct]
 	}
-	if r.saddrSet != "" {
-		tail += " -m set --match-set " + r.saddrSet + " src"
+	if r.mark {
+		tail += fmt.Sprintf(" -m mark --mark %#x", Mark)
 	}
 	if r.daddrSet != "" {
 		tail += " -m set --match-set " + r.daddrSet + " dst"
+	}
+	if src, dst, ok := r.probeSets(); ok {
+		tail += " -m set --match-set " + src + " src -m set --match-set " + dst + " dst"
 	}
 	return tail + map[action]string{accept: " -j RETURN", drop: " -j DROP", masquerade: " -j MASQUERADE"}[r.action]
 }
@@ -239,16 +256,21 @@ func (r *rule) iptPorts() []string {
 	return out
 }
 
+// ipsetFamily is the set's family as ipset names it.
+func (s *set) ipsetFamily() string {
+	if s.family == ipv6 {
+		return "inet6"
+	}
+	return "inet"
+}
+
 // ipsetDef is a set's definition as `ipset list -t` shows it.
 type ipsetDef struct {
 	typ, family, maxelem, timeout string
 }
 
 func (s *set) ipsetDef() ipsetDef {
-	d := ipsetDef{typ: "hash:ip", family: "inet", maxelem: strconv.Itoa(LearnedMax)}
-	if s.family == ipv6 {
-		d.family = "inet6"
-	}
+	d := ipsetDef{typ: "hash:ip", family: s.ipsetFamily(), maxelem: strconv.Itoa(LearnedMax)}
 	if s.timeout {
 		d.timeout = strconv.Itoa(ipsetTimeout)
 	}

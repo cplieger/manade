@@ -153,3 +153,9 @@ ip6 nat POSTROUTING -j MANADE-NAT
 # stale jumps, the nat one where a nat table lists
 # stale ipsets, destroyed where the kernel holds them
 manade-gh4
+manade-cp4
+manade-cp6
+manade-cplast4
+manade-cplast6
+manade-cpjoin4
+manade-cpjoin6

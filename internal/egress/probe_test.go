@@ -296,8 +296,127 @@ func TestPlanProbe(t *testing.T) {
 			},
 		},
 		{
+			// Jobs never reach the control plane, whatever an allow entry
+			// opens: the forward chain drops its sets first. The host's own
+			// unmarked dial meets the private drop, ahead of which the
+			// allow entry opens the LAN, so only the last good address,
+			// outside it, is checked there; a target with no port has no
+			// accept to check.
+			name: "an enrolled host with its control plane on the LAN",
+			in: func() *ProbeInput {
+				in := probeInput(config.Egress{Internet: true, Allow: []config.Allow{
+					{To: pfx("192.168.1.0/24"), Protocol: config.ProtocolTCP, Ports: ports([2]uint16{7464, 7464})},
+				}})
+				in.APIPort = 0
+				in.ControlPlane = &ControlPlane{
+					Newest:   Target{Addrs: []netip.Addr{addr("192.168.1.80"), addr("2001:db8:7::80")}, Port: 7464},
+					LastGood: Target{Addrs: []netip.Addr{addr("10.1.1.77"), addr("192.168.1.80")}, Port: 7464},
+					Join:     Target{Addrs: []netip.Addr{addr("10.1.1.99")}},
+				}
+				return in
+			}(),
+			want: []want{
+				{job, block, "172.18.0.1:1"},
+				{job, block, "172.19.0.1:1"},
+				{job, block, "172.19.0.1:53"},
+				{job, block, "10.0.0.53:53"},
+				{job, block, "172.18.0.3:7465"},
+				{job, block, "192.168.1.80:7464"},
+				{job, block, "10.1.1.77:7464"},
+				github, jobLookup,
+				{job, KindNoIPv6, "[2606:4700:4700::1111]:443"},
+				{job, KindTry, "192.168.1.1:7464"},
+				{output, block, "172.19.0.1:1"},
+				{output, block, "172.19.0.1:53"},
+				{output, block, "10.0.0.53:53"},
+				{output, block, "10.1.1.77:7464"},
+				outLookup,
+				{output, KindNoIPv6, "[2606:4700:4700::1111]:443"},
+			},
+		},
+		{
+			// A public control plane on an internet host is one the host's
+			// own traffic reaches, so only jobs are checked; without
+			// internet the host's unmarked dial is dropped too.
+			name: "enrolled hosts with a public control plane",
+			in: func() *ProbeInput {
+				in := probeInput(config.Egress{Internet: true, IPv6: true})
+				in.APIPort = 0
+				in.Self64 = pfx("2a01:e0a:1259:2710::/64")
+				in.ControlPlane = &ControlPlane{
+					Newest:   Target{Addrs: []netip.Addr{addr("203.0.113.10"), addr("2001:db8:7::10")}, Port: 7464},
+					LastGood: Target{Addrs: []netip.Addr{addr("203.0.113.10")}, Port: 7464},
+					Join:     Target{Addrs: []netip.Addr{addr("fd00::20")}, Port: 7465},
+				}
+				return in
+			}(),
+			want: []want{
+				{job, block, "172.18.0.1:1"},
+				{job, block, "[fdc6:6d61:6e61:6465::1]:1"},
+				{job, block, "172.19.0.1:1"},
+				{job, block, "172.19.0.1:53"},
+				{job, block, "10.0.0.53:53"},
+				{job, block, "172.18.0.3:7465"},
+				{job, block, "[fdc6:6d61:6e61:6465::3]:7465"},
+				{job, block, "203.0.113.10:7464"},
+				{job, block, "[2001:db8:7::10]:7464"},
+				{job, block, "[fd00::20]:7465"},
+				github, jobLookup,
+				{job, KindReach, "[2606:4700:4700::1111]:443"},
+				{job, block, "[fd4d:6169:6e65::2]:1"},
+				{job, block, "[fd4d:6169:6e65::1]:1"},
+				{job, block, "[2a01:e0a:1259:2710::1]:1"},
+				{output, block, "172.19.0.1:1"},
+				{output, block, "172.19.0.1:53"},
+				{output, block, "10.0.0.53:53"},
+				{output, block, "[fd00::20]:7465"},
+				outLookup,
+			},
+		},
+		{
+			name: "an enrolled host without internet",
+			in: func() *ProbeInput {
+				in := probeInput(config.Egress{})
+				in.APIPort = 0
+				in.ControlPlane = &ControlPlane{
+					Newest:   Target{Addrs: []netip.Addr{addr("203.0.113.10"), addr("2001:db8:7::10")}, Port: 7464},
+					LastGood: Target{Addrs: []netip.Addr{addr("203.0.113.10")}, Port: 7464},
+				}
+				return in
+			}(),
+			want: []want{
+				{job, block, "172.18.0.1:1"},
+				{job, block, "172.19.0.1:1"},
+				{job, block, "172.19.0.1:53"},
+				{job, block, "10.0.0.53:53"},
+				{job, block, "172.18.0.3:7465"},
+				{job, block, "203.0.113.10:7464"},
+				github,
+				{job, block, "9.9.9.9:443"},
+				jobLookup,
+				{job, KindNoIPv6, "[2606:4700:4700::1111]:443"},
+				{output, block, "172.19.0.1:1"},
+				{output, block, "172.19.0.1:53"},
+				{output, block, "10.0.0.53:53"},
+				{output, block, "1.1.1.1:1"},
+				{output, block, "8.8.8.8:1"},
+				{output, block, "203.0.113.10:7464"},
+				outLookup,
+				{output, KindNoIPv6, "[2606:4700:4700::1111]:443"},
+			},
+		},
+		{
 			name: "open",
 			in:   probeInput(config.Egress{Open: true, Internet: true}),
+			want: []want{github, jobLookup, outLookup},
+		},
+		{
+			name: "an open enrolled host",
+			in: func() *ProbeInput {
+				in := probeInput(config.Egress{Open: true, Internet: true})
+				in.ControlPlane = &ControlPlane{Newest: Target{Addrs: []netip.Addr{addr("192.168.1.80")}, Port: 7464}}
+				return in
+			}(),
 			want: []want{github, jobLookup, outLookup},
 		},
 	} {

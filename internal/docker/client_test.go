@@ -178,6 +178,23 @@ func TestDaemonError(t *testing.T) {
 			t.Errorf("missing image %v, other 404 %v, a 500 %v", errors.Is(missing, ErrImageMissing), errors.Is(other, ErrImageMissing), errors.Is(fault, ErrImageMissing))
 		}
 	})
+	t.Run("a missing network is told apart from another 404", func(t *testing.T) {
+		// Docker Engine 29.9.3's answer to a start whose network was removed.
+		missing := &daemonError{Code: http.StatusNotFound, Message: "failed to set up container networking: network manade not found"}
+		for _, other := range []*daemonError{
+			{Code: http.StatusNotFound, Message: "No such container: r1"},
+			{Code: http.StatusNotFound, Message: "No such image: ghcr.io/x@sha256:1"},
+			{Code: http.StatusNotFound, Message: "page not found"},
+			{Code: http.StatusInternalServerError, Message: "failed to set up container networking: network manade not found"},
+		} {
+			if errors.Is(other, ErrNetworkMissing) {
+				t.Errorf("%d %q matches ErrNetworkMissing", other.Code, other.Message)
+			}
+		}
+		if !errors.Is(missing, ErrNetworkMissing) || errors.Is(missing, ErrImageMissing) {
+			t.Errorf("the missing network matches ErrNetworkMissing %v, ErrImageMissing %v", errors.Is(missing, ErrNetworkMissing), errors.Is(missing, ErrImageMissing))
+		}
+	})
 }
 
 func TestCallCapsTheBody(t *testing.T) {
