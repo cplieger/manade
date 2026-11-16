@@ -127,7 +127,7 @@ func lanConfig(h *config.Host, profiles ...config.Profile) *config.Config {
 	for i := range profiles {
 		profiles[i].Hosts = []string{h.Name}
 	}
-	return &config.Config{File: "/config/config.yaml", Self: &config.Self{Name: h.Name, TLSDir: "/tls"}, Hosts: []config.Host{*h}, Profiles: profiles}
+	return &config.Config{File: "/config/config.json", Self: &config.Self{Name: h.Name, TLSDir: "/tls"}, Hosts: []config.Host{*h}, Profiles: profiles}
 }
 
 func TestSupervisorReload(t *testing.T) {

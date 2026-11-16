@@ -9,7 +9,7 @@ import (
 
 func TestProfileDefaults(t *testing.T) {
 	t.Parallel()
-	p := profile(t, mustBuild(t, tokenEnv(), withProfile("")), "p")
+	p := profile(t, mustBuild(t, &Config{}, withProfile("")), "p")
 	if p.RunnerImage != "base" || p.Image != "" {
 		t.Errorf("image = %q/%q, want the shipped base", p.RunnerImage, p.Image)
 	}
@@ -35,7 +35,7 @@ func TestProfileDefaults(t *testing.T) {
 
 func TestProfileValidForms(t *testing.T) {
 	t.Parallel()
-	cfg := mustBuild(t, tokenEnv(), withProfile(`cpus: 0.5, memory: 6MiB, swap: 1GiB, pids: 1, disk: 20GiB,
+	cfg := mustBuild(t, &Config{}, withProfile(`cpus: 0.5, memory: 6MiB, swap: 1GiB, pids: 1, disk: 20GiB,
     shm_size: 256MiB, max_lifetime: 30m, idle_timeout: 1m, max_runners: 3, user: "1001:1001",
     image: "ghcr.io/acme/runner:2.330.0@sha256:`+hex64+`", command: [/opt/runner/run.sh, --once],
     tmpfs: [{path: /scratch, size: 1GiB}], scopes: [ACME/App, acme/gone],
@@ -66,7 +66,7 @@ func TestProfileValidForms(t *testing.T) {
 
 func TestProfileEmptyScopesServeNothing(t *testing.T) {
 	t.Parallel()
-	p := profile(t, mustBuild(t, tokenEnv(), withOpenProfile("privileged: true, scopes: []")), "p")
+	p := profile(t, mustBuild(t, &Config{}, strings.TrimPrefix(withOpenProfile("privileged: true, scopes: []"), scopes)), "p")
 	if p.Scopes == nil || p.Allowed("acme/app") || p.Allowed("acme") {
 		t.Errorf("scopes = %#v: want an empty list that allows no scope", p.Scopes)
 	}
@@ -87,7 +87,7 @@ func TestProfileImageFields(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			p := profile(t, mustBuild(t, tokenEnv(), withProfile(tc.body)), "p")
+			p := profile(t, mustBuild(t, &Config{}, withProfile(tc.body)), "p")
 			if p.RunnerImage != tc.runner || p.Image != tc.image {
 				t.Errorf("runner_image %q, image %q; want %q, %q", p.RunnerImage, p.Image, tc.runner, tc.image)
 			}
@@ -95,7 +95,7 @@ func TestProfileImageFields(t *testing.T) {
 	}
 	t.Run("both", func(t *testing.T) {
 		t.Parallel()
-		err := build(tokenEnv(), []byte(withProfile("image: alpine, runner_image: base")))
+		err := buildDoc(&Config{}, withProfile("image: alpine, runner_image: base"))
 		wantErr(t, err, "profiles.p.image: set image or runner_image, not both")
 	})
 }
@@ -134,7 +134,7 @@ func TestProfileInvalidForms(t *testing.T) {
 		{"dockerUnknown", "docker: socket", "profiles.p.docker: want one of none, host-socket"},
 		{"runtimeUnknown", "runtime: kata", "profiles.p.runtime: want one of runc"},
 		{"privilegedYes", "privileged: yes", "profiles.p.privileged: want true or false"},
-		{"allowRootTitle", "allow_root: True", "profiles.p.allow_root: want true or false"},
+		{"allowRootTitle", `allow_root: "True"`, "profiles.p.allow_root: want true or false"},
 		{"capUnknown", "capabilities: [NET_ADMIN, CAP_SYS_ADMIN], scopes: [acme/app]", "profiles.p.capabilities[1]: want a Linux capability name"},
 		{"capAll", "capabilities: [ALL], scopes: [acme/app]", "profiles.p.capabilities[0]"},
 		{"capWord", "capabilities: all, scopes: [acme/app]", "profiles.p.capabilities: want docker-default or a list"},
@@ -145,19 +145,19 @@ func TestProfileInvalidForms(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			err := build(tokenEnv(), []byte(withProfile(tc.body)))
+			err := buildDoc(&Config{}, withProfile(tc.body))
 			wantErr(t, err, tc.want)
 		})
 	}
 	t.Run("name", func(t *testing.T) {
 		t.Parallel()
-		err := build(tokenEnv(), []byte(header+"profiles:\n  Large: {}\n"))
+		err := buildDoc(&Config{}, header+"profiles:\n  Large: {}\n")
 		wantErr(t, err, `profiles."Large": want a name of 1 to 32`)
 	})
 	t.Run("swapOverflow", func(t *testing.T) {
 		t.Parallel()
 		doc := strings.Replace(withProfile("memory: 8388607TiB, swap: 1TiB"), "memory: 64GiB", "memory: 8388607TiB", 1)
-		wantErr(t, build(tokenEnv(), []byte(doc)), "profiles.p.swap: memory plus swap is too large")
+		wantErr(t, buildDoc(&Config{}, doc), "profiles.p.swap: memory plus swap is too large")
 	})
 }
 
@@ -176,9 +176,9 @@ func TestProfileElevatedNeedsScopes(t *testing.T) {
 	} {
 		t.Run(tc.grant, func(t *testing.T) {
 			t.Parallel()
-			err := build(tokenEnv(), []byte(tc.doc(tc.body)))
+			err := buildDoc(&Config{}, tc.doc(tc.body))
 			wantErr(t, err, "profiles.p.scopes: an elevated profile must list its scopes", tc.grant)
-			p := profile(t, mustBuild(t, tokenEnv(), tc.doc(tc.body+", scopes: [acme/app]")), "p")
+			p := profile(t, mustBuild(t, &Config{}, tc.doc(tc.body+", scopes: [acme/app]")), "p")
 			if !slices.Contains(p.Grants(), tc.grant) {
 				t.Errorf("grants = %q, want %s", p.Grants(), tc.grant)
 			}
@@ -197,7 +197,7 @@ func TestProfilePrivilegeEscalation(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			err := build(tokenEnv(), []byte(withOpenProfile(tc.body+", scopes: [acme/app]")))
+			err := buildDoc(&Config{}, withOpenProfile(tc.body+", scopes: [acme/app]"))
 			if tc.want == "" {
 				if err != nil {
 					t.Fatalf("err = %v", err)
@@ -207,7 +207,7 @@ func TestProfilePrivilegeEscalation(t *testing.T) {
 			wantErr(t, err, "profiles.p.allow_privilege_escalation: "+tc.want)
 		})
 	}
-	p := profile(t, mustBuild(t, tokenEnv(), withProfile("capabilities: docker-default, scopes: [acme/app]")), "p")
+	p := profile(t, mustBuild(t, &Config{}, withProfile("capabilities: docker-default, scopes: [acme/app]")), "p")
 	if !p.DockerDefaultCaps || len(p.Capabilities) != 14 || !slices.IsSorted(p.Capabilities) {
 		t.Errorf("docker-default = %v %q, want Docker's 14 defaults, sorted", p.DockerDefaultCaps, p.Capabilities)
 	}
@@ -216,7 +216,7 @@ func TestProfilePrivilegeEscalation(t *testing.T) {
 func TestProfileShippedDockerImage(t *testing.T) {
 	t.Parallel()
 	const privileged = "runner_image: docker, allow_privilege_escalation: true, privileged: true, scopes: [acme/app]"
-	p := profile(t, mustBuild(t, tokenEnv(), withOpenProfile(privileged)), "p")
+	p := profile(t, mustBuild(t, &Config{}, withOpenProfile(privileged)), "p")
 	if !slices.Equal(p.Command, []string{"/usr/local/bin/manade-dockerd-run"}) {
 		t.Errorf("command = %q, want the wrapper", p.Command)
 	}
@@ -227,7 +227,7 @@ func TestProfileShippedDockerImage(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			err := build(tokenEnv(), []byte(withOpenProfile(tc.body+", scopes: [acme/app]")))
+			err := buildDoc(&Config{}, withOpenProfile(tc.body+", scopes: [acme/app]"))
 			wantErr(t, err, tc.want)
 		})
 	}
@@ -236,7 +236,7 @@ func TestProfileShippedDockerImage(t *testing.T) {
 func TestProfileMounts(t *testing.T) {
 	t.Parallel()
 	ok := withProfile("mounts: [{volume: cache, target: /cache}, {bind: /srv/data, target: /data, read_only: true}], scopes: [acme/app]")
-	p := profile(t, mustBuild(t, tokenEnv(), ok), "p")
+	p := profile(t, mustBuild(t, &Config{}, ok), "p")
 	want := []Mount{{Source: "cache", Target: "/cache"}, {Source: "/srv/data", Target: "/data", Bind: true, ReadOnly: true}}
 	if !slices.Equal(p.Mounts, want) {
 		t.Errorf("mounts = %+v", p.Mounts)
@@ -252,7 +252,7 @@ func TestProfileMounts(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			err := build(tokenEnv(), []byte(withProfile("mounts: ["+tc.mount+"], scopes: [acme/app]")))
+			err := buildDoc(&Config{}, withProfile("mounts: ["+tc.mount+"], scopes: [acme/app]"))
 			wantErr(t, err, tc.want)
 		})
 	}

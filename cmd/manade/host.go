@@ -39,7 +39,7 @@ func serveHost(stderr io.Writer) int {
 	defer signal.Stop(hup)
 	level := slogx.Setup(slogx.Options{Output: stderr})
 	log := slog.Default()
-	cfg, err := config.Load(ctx, config.RoleHost)
+	cfg, err := config.LoadHost(ctx)
 	if err != nil {
 		log.Error("The runner host's config does not validate", "error", err)
 		return 1
@@ -51,7 +51,7 @@ func serveHost(stderr io.Writer) int {
 	log.Info("The runner host is starting", "host", cfg.Self.Name, "version", version)
 	err = host.Run(ctx, cfg, &host.Options{
 		Log: log, Version: version, Hangup: hup,
-		Reload: func(ctx context.Context) (*config.Config, error) { return config.Load(ctx, config.RoleHost) },
+		Reload: config.LoadHost,
 		Health: health.NewStatus(health.WithMarker(host.HealthMarker), health.WithLogger(log)),
 	})
 	if err != nil {

@@ -54,6 +54,8 @@ type Options struct {
 
 // supervisor is one run of a host.
 type supervisor struct {
+	// regAuth is the host's registry credentials, from its environment.
+	regAuth   config.RegistryAuth
 	outward   hostapi.Outward
 	served    atomic.Pointer[served]
 	lat       *latencies
@@ -98,7 +100,7 @@ func Run(ctx context.Context, cfg *config.Config, opts *Options) error {
 	if !ok {
 		return fmt.Errorf("MANADE_HOST %q names no hosts entry", cfg.Self.Name)
 	}
-	s := &supervisor{log: opts.Log, opts: opts, lat: newLatencies(), instance: newInstanceID(), changed: make(chan struct{}, 1)}
+	s := &supervisor{log: opts.Log, opts: opts, regAuth: cfg.Self.RegistryAuth, lat: newLatencies(), instance: newInstanceID(), changed: make(chan struct{}, 1)}
 	ms, err := platform.Mountinfo(platform.System)
 	if err != nil {
 		return err
@@ -115,7 +117,7 @@ func Run(ctx context.Context, cfg *config.Config, opts *Options) error {
 	if s.oom, err = platform.LoadOOMTotal(ctx, oomFile); err != nil {
 		s.log.Warn("The saved OOM kill total was not read, so the total counts from this start", "error", err)
 	}
-	if s.net, err = bringUp(ctx, h, s.platform(), guardHooks{Restored: s.onRestored, Checked: s.onChecked}); err != nil {
+	if s.net, err = bringUp(ctx, h, s.platform(cfg.Self.IPv6Echo), guardHooks{Restored: s.onRestored, Checked: s.onChecked}); err != nil {
 		return err
 	}
 	err = s.serve(ctx, cfg, h, cg, ms)
@@ -191,7 +193,7 @@ func (s *supervisor) warnNoMemoryLimit(h *config.Host, sv *served, cg *platform.
 // host's run, which each runner's work runs under.
 func (s *supervisor) build(ctx context.Context, h *config.Host, sv *served, cg *platform.Cgroup) error {
 	s.images = images.New(&images.Config{
-		Daemon: s.dk, Host: h, Lookup: lookupRegistry, ByName: s.net.gitHubName, Log: s.log,
+		Daemon: s.dk, Host: h, RegistryAuth: s.regAuth, Lookup: lookupRegistry, ByName: s.net.gitHubName, Log: s.log,
 		Keep:    images.Keep{Runner: func(n string) bool { return s.runners.holds(n) }, ProbeLeftover: func(r string) bool { return s.prober.Leftover(r) }},
 		Version: s.opts.Version, StateDir: stateDir, Binary: binaryPath, Profiles: sv.Profiles,
 		Tidied: func() { s.runners.tidied() },
@@ -491,8 +493,8 @@ func (s *supervisor) outwardAddrs() hostapi.Outward {
 	return out
 }
 
-// platform is the real kernel and daemon.
-func (s *supervisor) platform() *seams {
+// platform is the real kernel and daemon, with the echo endpoint echoURL.
+func (s *supervisor) platform(echoURL string) *seams {
 	return &seams{
 		Run: platform.Exec, Lookup: netsetup.LookupVia, Random: rand.Reader,
 		PickStorage: func(dir string) (platform.StoragePick, error) {
@@ -508,7 +510,7 @@ func (s *supervisor) platform() *seams {
 			}
 			return c, nil
 		},
-		ListenDNS: listenDNS, FetchDomains: resolver.FetchMeta(httpclient.New(metaTimeout)), Upstreams: resolver.Upstreams, Echo: echoOverIPv6(),
+		ListenDNS: listenDNS, FetchDomains: resolver.FetchMeta(httpclient.New(metaTimeout)), Upstreams: resolver.Upstreams, Echo: echoOverIPv6(), EchoURL: echoURL,
 		Log: s.log, Root: platform.System,
 	}
 }

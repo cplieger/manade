@@ -68,8 +68,10 @@ type seams struct {
 	// resolver.Upstreams in production.
 	Upstreams func(dns []netip.Addr) []netip.AddrPort
 	Echo      echoFunc
-	Log       *slog.Logger
-	Root      platform.Root
+	// EchoURL is the endpoint Echo asks: the host's MANADE_IPV6_ECHO.
+	EchoURL string
+	Log     *slog.Logger
+	Root    platform.Root
 }
 
 // hostNet is a host whose namespace, rules and daemon are up.
@@ -78,8 +80,10 @@ type hostNet struct {
 	rules  *ruleLoader
 	log    *slog.Logger
 	echo   echoFunc
-	seams  *seams
-	hooks  guardHooks
+	// echoURL is where echo asks for the machine's /64.
+	echoURL string
+	seams   *seams
+	hooks   guardHooks
 	// resolver serves for the host's life.
 	resolver *dnsServer
 	// posture is what the section's open and internet keys decide; a change
@@ -113,7 +117,7 @@ func bringUp(ctx context.Context, h *config.Host, p *seams, hooks guardHooks) (*
 	if err := platform.CheckPrivateNamespace(p.Root); err != nil {
 		return nil, err
 	}
-	n := &hostNet{log: p.Log, echo: p.Echo, seams: p, hooks: hooks, rebuilds: make(chan *rebuild), dns: p.Upstreams(h.DNS)}
+	n := &hostNet{log: p.Log, echo: p.Echo, echoURL: p.EchoURL, seams: p, hooks: hooks, rebuilds: make(chan *rebuild), dns: p.Upstreams(h.DNS)}
 	var err error
 	if n.Storage, err = p.PickStorage(dataRoot); err != nil {
 		return nil, err

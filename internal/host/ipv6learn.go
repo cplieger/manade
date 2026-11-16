@@ -18,7 +18,7 @@ import (
 
 const (
 	// echoInterval is how often a host with ipv6 and internet asks its
-	// ipv6_echo, so a rotated prefix is followed.
+	// echo endpoint, so a rotated prefix is followed.
 	echoInterval = 10 * time.Minute
 	// echoTimeout bounds one ask, its retries included.
 	echoTimeout = time.Minute
@@ -67,7 +67,7 @@ func ask64(ctx context.Context, echo echoFunc, url string) (netip.Prefix, error)
 		case err != nil:
 			return netip.Prefix{}, fmt.Errorf("%s answered ip=%q, not an address", url, v)
 		case a.Is4() || a.Is4In6():
-			return netip.Prefix{}, fmt.Errorf("%s answered the IPv4 address %s, so the machine's /64 is unknown; give the host IPv6 egress or set an ipv6_echo that answers over IPv6", url, a.Unmap())
+			return netip.Prefix{}, fmt.Errorf("%s answered the IPv4 address %s, so the machine's /64 is unknown; give the host IPv6 egress or set a MANADE_IPV6_ECHO that answers over IPv6", url, a.Unmap())
 		case !globalUnicast6.Contains(a):
 			return netip.Prefix{}, fmt.Errorf("%s answered %s, which is not a global IPv6 address", url, a)
 		}
@@ -84,12 +84,12 @@ type learned64 struct {
 	prefix netip.Prefix
 }
 
-// unasked64 is what a posture holds before it asks its ipv6_echo.
+// unasked64 is what a posture holds before it asks its echo endpoint.
 func unasked64() *learned64 {
-	return &learned64{err: errors.New("the host has not asked its ipv6_echo yet")}
+	return &learned64{err: errors.New("the host has not asked its echo endpoint yet")}
 }
 
-// learn64 asks posture p's ipv6_echo at once and every echoInterval until
+// learn64 asks the host's echo endpoint for posture p at once and every echoInterval until
 // ctx ends, answering nil then. A changed /64 loads the rules again, and a
 // failed load ends it with the failure; a failed ask keeps the last /64.
 func (n *hostNet) learn64(ctx context.Context, p *posture) error {
@@ -108,7 +108,7 @@ func (n *hostNet) learn64(ctx context.Context, p *posture) error {
 }
 
 func (n *hostNet) learnOnce(ctx context.Context, p *posture) error {
-	got, err := ask64(ctx, n.echo, p.host.Load().Egress.IPv6Echo)
+	got, err := ask64(ctx, n.echo, n.echoURL)
 	if ctx.Err() != nil {
 		return nil
 	}

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/cplieger/manade/internal/config"
 	"github.com/cplieger/manade/internal/docker"
 )
 
@@ -108,7 +109,7 @@ func TestEncodeAuth(t *testing.T) {
 func TestAuthReadsTheFileAtEachCall(t *testing.T) {
 	hs := newHarness(t, internetHost())
 	path := filepath.Join(t.TempDir(), "auth.json")
-	hs.cfg.Host.RegistryAuth = path
+	hs.cfg.RegistryAuth = config.RegistryAuth{File: path}
 	m := New(hs.cfg)
 	if _, err := m.auth(t.Context(), "registry.lan:5000/x:1"); !errors.Is(err, errAuth) {
 		t.Errorf("auth with no file = %v, want errAuth", err)
@@ -122,8 +123,21 @@ func TestAuthReadsTheFileAtEachCall(t *testing.T) {
 			t.Errorf("auth = %v, %v; want the file's current %s", decodeAuth(t, got), err, user)
 		}
 	}
-	hs.cfg.Host.RegistryAuth = ""
+	hs.cfg.RegistryAuth = config.RegistryAuth{}
 	if got, err := New(hs.cfg).auth(t.Context(), "registry.lan:5000/x:1"); got != "" || err != nil {
-		t.Errorf("auth without registry_auth = %q, %v; want none", got, err)
+		t.Errorf("auth without registry credentials = %q, %v; want none", got, err)
+	}
+}
+
+func TestAuthFromTheValue(t *testing.T) {
+	hs := newHarness(t, internetHost())
+	hs.cfg.RegistryAuth = config.RegistryAuthValue(`{"auths":{"registry.lan:5000":{"username":"ci","password":"p"}}}`)
+	got, err := New(hs.cfg).auth(t.Context(), "registry.lan:5000/x:1")
+	if err != nil || decodeAuth(t, got)["username"] != "ci" {
+		t.Errorf("auth = %v, %v; want the value's ci", decodeAuth(t, got), err)
+	}
+	hs.cfg.RegistryAuth = config.RegistryAuthValue(`s3cret`)
+	if _, err := New(hs.cfg).auth(t.Context(), "registry.lan:5000/x:1"); !errors.Is(err, errAuth) || strings.Contains(err.Error(), "s3cret") {
+		t.Errorf("auth of a bad value = %v; want errAuth that never quotes it", err)
 	}
 }

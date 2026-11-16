@@ -16,16 +16,20 @@ var fixedProtected = []string{
 }
 
 // Protected answers the paths in host h's container that no job on a host
-// that is not open may reach. TLS_DIR is the host's own only in its own
-// role, and the default elsewhere: the host checks its own at start.
+// that is not open may reach. TLS_DIR and the registry credentials file come
+// from the host's own environment, known only on the host itself, which
+// checks its own at start; elsewhere TLS_DIR is its default.
 func (c *Config) Protected(h *Host) []string {
-	tls := hostTLSDir
-	if c.Self != nil && c.Self.Name == h.Name {
-		tls = c.Self.TLSDir
+	if c.Self == nil || c.Self.Name != h.Name {
+		return append([]string{hostTLSDir}, fixedProtected...)
 	}
-	out := append([]string{tls, c.configDir()}, fixedProtected...)
-	if h.RegistryAuth != "" {
-		out = append(out, h.RegistryAuth)
+	out := []string{c.Self.TLSDir}
+	if c.File != "" {
+		out = append(out, c.configDir())
+	}
+	out = append(out, fixedProtected...)
+	if f := c.Self.RegistryAuth.File; f != "" {
+		out = append(out, f)
 	}
 	return out
 }

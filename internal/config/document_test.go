@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"net/netip"
 	"slices"
 	"strings"
@@ -9,24 +10,8 @@ import (
 )
 
 func TestBuildDefaults(t *testing.T) {
-	cfg := mustBuild(t, tokenEnv(), withProfile(""))
-	if len(cfg.Hosts) != 1 {
-		t.Fatalf("hosts = %d, want the one default host", len(cfg.Hosts))
-	}
-	h := cfg.Hosts[0]
-	t.Run("oneDefaultHostFromTopLevelCapacity", func(t *testing.T) {
-		if h.Name != "default" {
-			t.Errorf("name = %q, want default", h.Name)
-		}
-		if h.Capacity != (Capacity{MilliCPUs: 16000, Memory: 64 << 30}) {
-			t.Errorf("capacity = %+v", h.Capacity)
-		}
-	})
-	t.Run("addressIsTheSocket", func(t *testing.T) {
-		if h.Address != (Address{Socket: "/run/manade/hosts/default/api.sock"}) {
-			t.Errorf("address = %+v", h.Address)
-		}
-	})
+	cfg := mustBuild(t, &Config{}, withProfile(""))
+	h := host(t, cfg, "default")
 	t.Run("dns", func(t *testing.T) {
 		want := []netip.Addr{netip.MustParseAddr("1.1.1.1"), netip.MustParseAddr("8.8.8.8")}
 		if !slices.Equal(h.DNS, want) {
@@ -35,7 +20,7 @@ func TestBuildDefaults(t *testing.T) {
 	})
 	t.Run("egress", func(t *testing.T) {
 		e := h.Egress
-		if !e.Internet || e.Open || e.IPv6 || e.IPv6Echo != "" || e.Allow != nil || e.Block6 != nil {
+		if !e.Internet || e.Open || e.IPv6 || e.Allow != nil || e.Block6 != nil {
 			t.Errorf("egress = %+v, want internet only", e)
 		}
 	})
@@ -54,16 +39,34 @@ func TestBuildDefaults(t *testing.T) {
 			t.Errorf("head_reserve_after = %v, want 2m", cfg.HeadReserveAfter)
 		}
 	})
-	t.Run("registryAuth", func(t *testing.T) {
-		if h.RegistryAuth != "" {
-			t.Errorf("registry_auth = %q, want none", h.RegistryAuth)
-		}
-	})
 	t.Run("profileHosts", func(t *testing.T) {
 		if got := profile(t, cfg, "p").Hosts; !slices.Equal(got, []string{"default"}) {
 			t.Errorf("hosts = %v, want [default]", got)
 		}
 	})
+	t.Run("scope", func(t *testing.T) {
+		want := Scope{Key: "acme/app", Owner: "acme", Repo: "app", DefaultProfile: "p", Kind: ScopeRepo, path: "scopes[0]"}
+		if len(cfg.Scopes) != 1 || cfg.Scopes[0] != want {
+			t.Errorf("scopes = %+v, want %+v", cfg.Scopes, want)
+		}
+	})
+}
+
+// A host's budget is the pool's to learn from the host's first report, so a
+// host with none set builds with a zero budget.
+func TestBuildHostWithoutCapacity(t *testing.T) {
+	cfg := mustBuild(t, &Config{}, scopes+"hosts:\n  default: {}\nprofiles:\n  p: {}\n")
+	if c := host(t, cfg, "default").Capacity; c != (Capacity{}) {
+		t.Errorf("capacity = %+v, want none", c)
+	}
+}
+
+// A document with no scope is a first run's: nothing is served yet.
+func TestBuildWithoutScopes(t *testing.T) {
+	cfg := mustBuild(t, &Config{}, "hosts:\n  default: {}\nprofiles:\n  default: {}\n")
+	if len(cfg.Scopes) != 0 || profile(t, cfg, "default") == nil {
+		t.Errorf("scopes = %+v, want none", cfg.Scopes)
+	}
 }
 
 func TestBuildHosts(t *testing.T) {
@@ -71,11 +74,9 @@ func TestBuildHosts(t *testing.T) {
     capacity: {cpus: 8, memory: 24GiB, disk: 100GiB, max_runners: 6}
     images: {refresh: 30m}
   nas:
-    address: https://nas.example:7464
     capacity: {cpus: 2, memory: 3GiB}
     dns: [10.0.0.53, "2001:db8::53"]
     network: {subnet: 10.200.0.0/24}
-    registry_auth: /auth/config.json
     egress:
       ipv6: true
       block6: ["2001:db8:1::/48"]
@@ -84,11 +85,10 @@ func TestBuildHosts(t *testing.T) {
         - {to: 192.168.2.0/24, ports: ["8000-8100", 9000], protocol: both}
         - {to: "fd00::1", ports: [53], protocol: udp}
   lan:
-    address: https://10.0.0.9
     capacity: {cpus: 1.5, memory: 512MiB}
     egress: {open: true}
 `, "nas, default")
-	cfg := mustBuild(t, tokenEnv(), "images: {refresh: 2h}\n"+doc)
+	cfg := mustBuild(t, &Config{}, "images: {refresh: 2h}\n"+doc)
 	t.Run("sortedByName", func(t *testing.T) {
 		var names []string
 		for _, h := range cfg.Hosts {
@@ -109,9 +109,6 @@ func TestBuildHosts(t *testing.T) {
 	})
 	t.Run("nas", func(t *testing.T) {
 		h := host(t, cfg, "nas")
-		if h.Address != (Address{HostPort: "nas.example:7464", Port: 7464}) {
-			t.Errorf("address = %+v", h.Address)
-		}
 		if h.ImageRefresh != 2*time.Hour {
 			t.Errorf("images.refresh = %v, want the top level's 2h", h.ImageRefresh)
 		}
@@ -121,13 +118,10 @@ func TestBuildHosts(t *testing.T) {
 		if h.Subnet != netip.MustParsePrefix("10.200.0.0/24") {
 			t.Errorf("subnet = %v", h.Subnet)
 		}
-		if h.RegistryAuth != "/auth/config.json" {
-			t.Errorf("registry_auth = %q", h.RegistryAuth)
-		}
 	})
 	t.Run("nasEgress", func(t *testing.T) {
 		e := host(t, cfg, "nas").Egress
-		if !e.Internet || !e.IPv6 || e.Open || e.IPv6Echo != "https://cloudflare.com/cdn-cgi/trace" {
+		if !e.Internet || !e.IPv6 || e.Open {
 			t.Errorf("egress = %+v", e)
 		}
 		if !slices.Equal(e.Block6, []netip.Prefix{netip.MustParsePrefix("2001:db8:1::/48")}) {
@@ -146,9 +140,6 @@ func TestBuildHosts(t *testing.T) {
 	})
 	t.Run("lan", func(t *testing.T) {
 		h := host(t, cfg, "lan")
-		if h.Address != (Address{HostPort: "10.0.0.9:7464", Port: 7464}) {
-			t.Errorf("address = %+v, want the API's port 7464", h.Address)
-		}
 		if h.Capacity.MilliCPUs != 1500 || !h.Egress.Open {
 			t.Errorf("lan = %+v", h)
 		}
@@ -160,29 +151,6 @@ func TestBuildHosts(t *testing.T) {
 	})
 }
 
-func TestIPv6EchoOnlyWhereLearned(t *testing.T) {
-	tests := []struct {
-		name, egress, want string
-	}{
-		{"ipv6Off", `{ipv6_echo: "https://echo.example/ip"}`, ""},
-		{"internetOff", `{ipv6: true, internet: false}`, ""},
-		{"default", `{ipv6: true}`, defaultIPv6Echo},
-		{"own", `{ipv6: true, ipv6_echo: "https://echo.example/ip"}`, "https://echo.example/ip"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			doc := withHosts("  h:\n    capacity: {cpus: 1, memory: 1GiB}\n    egress: "+tt.egress+"\n", "h")
-			cfg := &Config{}
-			// The cross-field rules refuse an ipv6_echo without ipv6; the
-			// parsed value is what this pins.
-			_ = build(cfg, []byte(doc))
-			if h, ok := cfg.Host("h"); !ok || h.Egress.IPv6Echo != tt.want {
-				t.Errorf("ipv6_echo = %+v, want %q", cfg.Hosts, tt.want)
-			}
-		})
-	}
-}
-
 func TestBuildRefusals(t *testing.T) {
 	const h = "  h:\n    capacity: {cpus: 1, memory: 1GiB}\n"
 	hosted := func(section string) string { return withHosts(h+section, "h") }
@@ -190,27 +158,29 @@ func TestBuildRefusals(t *testing.T) {
 		name, doc string
 		want      []string
 	}{
-		{"unknownTopLevel", withProfile("") + "pool: x\n", []string{"pool"}},
-		{"secondDocument", withProfile("") + "---\nqueue: {}\n", []string{"document"}},
-		{"topLevelNetwork", withProfile("") + "network: {subnet: 10.0.0.0/24}\n", []string{"network"}},
-		{"profileNetwork", withProfile("network: host"), []string{"network"}},
-		{"bridgeSubnet", hosted("    network: {bridge_subnet: 172.30.1.0/24}\n"), []string{"bridge_subnet"}},
-		{"noScopes", "capacity: {cpus: 1, memory: 1GiB}\nprofiles: {p: {}}\n", []string{"scopes: list at least one scope"}},
+		{"unknownTopLevel", withProfile("") + "pool: x\n", []string{"pool: unknown key"}},
+		{"topLevelCapacity", withProfile("") + "capacity: {cpus: 1, memory: 1GiB}\n", []string{"capacity: unknown key"}},
+		{"address", hosted("    address: https://nas:7464\n"), []string{"hosts.h.address: refused: hosts dial the control plane"}},
+		{"registryAuth", hosted("    registry_auth: /auth.json\n"), []string{"hosts.h.registry_auth: refused: set MANADE_REGISTRY_AUTH or MANADE_REGISTRY_AUTH_FILE"}},
+		{"ipv6Echo", hosted("    egress: {ipv6: true, ipv6_echo: \"https://echo.example\"}\n"), []string{"hosts.h.egress.ipv6_echo: refused: set MANADE_IPV6_ECHO"}},
+		{"scopeNoTarget", strings.Replace(withProfile(""), "repo: acme/app", "runner_group: g", 1), []string{"scopes[0]: set exactly one of repo, org or enterprise"}},
+		{"scopeTwoTargets", strings.Replace(withProfile(""), "repo: acme/app", "repo: acme/app, org: acme", 1), []string{"scopes[0]: set exactly one"}},
+		{"scopeRepoShape", strings.Replace(withProfile(""), "acme/app", "acme", 1), []string{"scopes[0].repo: want owner/name"}},
+		{"scopeOrgShape", strings.Replace(withProfile(""), "repo: acme/app", "org: -acme", 1), []string{"scopes[0].org: want an organization name"}},
+		{"scopeEnterpriseShape", strings.Replace(withProfile(""), "repo: acme/app", "enterprise: a_b", 1), []string{"scopes[0].enterprise: want an enterprise slug"}},
+		{"scopeRepeated", strings.Replace(withProfile(""), "  - {repo: acme/app, default_profile: p}\n", "  - {repo: acme/app, default_profile: p}\n  - {repo: ACME/app, default_profile: p}\n", 1), []string{`scopes[1]: repeats scope "ACME/app"`}},
+		{"scopeInstallation", strings.Replace(withProfile(""), "default_profile: p", "default_profile: p, installation_id: 0", 1), []string{"scopes[0].installation_id: want a whole number from 1"}},
+		{"scopeState", strings.Replace(withProfile(""), "default_profile: p", "default_profile: p, state: paused", 1), []string{"scopes[0].state: want one of served, stopping"}},
+		{"scopeDefaultName", strings.Replace(withProfile(""), "default_profile: p", "default_profile: Big", 1), []string{"scopes[0].default_profile: want a name of 1 to 32"}},
+		{"topLevelNetwork", withProfile("") + "network: {subnet: 10.0.0.0/24}\n", []string{"network: unknown key"}},
+		{"profileNetwork", withProfile("network: host"), []string{"profiles.p.network: unknown key"}},
+		{"bridgeSubnet", hosted("    network: {bridge_subnet: 172.30.1.0/24}\n"), []string{"hosts.h.network.bridge_subnet: unknown key"}},
 		{"noProfiles", header, []string{"profiles: define at least one profile"}},
-		{"noCapacity", scopes + "profiles: {p: {}}\n", []string{"capacity: required"}},
-		{"capacityBesideHosts", "capacity: {cpus: 1, memory: 1GiB}\n" + hosted(""), []string{"capacity: set each host's budget under hosts.<name>.capacity"}},
-		{"emptyHosts", scopes + "hosts: {}\nprofiles: {p: {}}\n", []string{"hosts: define at least one host"}},
-		{"hostCapacityMissing", withHosts("  h: {}\n", "h"), []string{"hosts.h.capacity: required"}},
+		{"hostMemoryMissing", withHosts("  h: {capacity: {cpus: 1}}\n", "h"), []string{"hosts.h.capacity.memory: required"}},
 		{"hostCPUsMissing", withHosts("  h: {capacity: {memory: 1GiB}}\n", "h"), []string{"hosts.h.capacity.cpus: required"}},
 		{"hostMemoryBad", withHosts("  h: {capacity: {cpus: 1, memory: 1G}}\n", "h"), []string{"hosts.h.capacity.memory: want a whole number with a unit"}},
 		{"hostDiskBad", withHosts("  h: {capacity: {cpus: 1, memory: 1GiB, disk: 0}}\n", "h"), []string{"hosts.h.capacity.disk: want more than 0"}},
 		{"hostMaxRunnersBad", withHosts("  h: {capacity: {cpus: 1, memory: 1GiB, max_runners: 0}}\n", "h"), []string{"hosts.h.capacity.max_runners: want a whole number from 1"}},
-		{"topLevelCPUsBad", scopes + "capacity: {cpus: -1, memory: 1GiB}\nprofiles: {p: {}}\n", []string{"capacity.cpus: want a CPU count"}},
-		{"addressScheme", hosted("    address: http://nas:7464\n"), []string{"hosts.h.address: want unix:///path/api.sock or https://host:port"}},
-		{"addressUserinfo", hosted("    address: https://u:p@nas:7464\n"), []string{"hosts.h.address"}},
-		{"addressPath", hosted("    address: https://nas:7464/v1\n"), []string{"hosts.h.address"}},
-		{"addressPort", hosted("    address: https://nas:70000\n"), []string{"hosts.h.address: want host:port"}},
-		{"addressSocketRelative", hosted("    address: unix://run/api.sock\n"), []string{"hosts.h.address: want an absolute, clean path"}},
 		{"dnsEmpty", hosted("    dns: []\n"), []string{"hosts.h.dns: list at least one resolver"}},
 		{"dnsLoopback", hosted("    dns: [127.0.0.1]\n"), []string{"hosts.h.dns[0]: want a unicast resolver"}},
 		{"dnsLinkLocal", hosted("    dns: [1.1.1.1, \"fe80::1\"]\n"), []string{"hosts.h.dns[1]: want a unicast resolver"}},
@@ -221,11 +191,9 @@ func TestBuildRefusals(t *testing.T) {
 		{"subnetIPv6", hosted("    network: {subnet: \"fd00::/64\"}\n"), []string{"hosts.h.network.subnet"}},
 		{"topRefreshShort", "images: {refresh: 5m}\n" + withProfile(""), []string{"images.refresh: want at least 10m"}},
 		{"hostRefreshBad", hosted("    images: {refresh: soon}\n"), []string{"hosts.h.images.refresh: want a positive duration"}},
-		{"registryAuthRelative", hosted("    registry_auth: auth.json\n"), []string{"hosts.h.registry_auth: want an absolute, clean path"}},
 		{"internetBad", hosted("    egress: {internet: yes}\n"), []string{"hosts.h.egress.internet: want true or false"}},
 		{"openBad", hosted("    egress: {open: 1}\n"), []string{"hosts.h.egress.open: want true or false"}},
 		{"ipv6Bad", hosted("    egress: {ipv6: on}\n"), []string{"hosts.h.egress.ipv6: want true or false"}},
-		{"echoNotHTTPS", hosted("    egress: {ipv6: true, ipv6_echo: \"http://echo.example\"}\n"), []string{"hosts.h.egress.ipv6_echo: want an https:// URL"}},
 		{"block6IPv4", hosted("    egress: {ipv6: true, block6: [10.0.0.0/8]}\n"), []string{"hosts.h.egress.block6[0]: want an IPv6 prefix"}},
 		{"block6Unmasked", hosted("    egress: {ipv6: true, block6: [\"2001:db8::1/48\"]}\n"), []string{"hosts.h.egress.block6[0]"}},
 		{"allowNoTo", hosted("    egress: {allow: [{ports: [1]}]}\n"), []string{"hosts.h.egress.allow[0].to: required"}},
@@ -244,7 +212,7 @@ func TestBuildRefusals(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			wantErr(t, build(tokenEnv(), []byte(tt.doc)), tt.want...)
+			wantErr(t, buildDoc(&Config{}, tt.doc), tt.want...)
 		})
 	}
 }
@@ -273,7 +241,7 @@ func TestHostNames(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(strings.NewReplacer("/", "slash", ".", "dot").Replace(tt.name), func(t *testing.T) {
 			doc := withHosts("  \""+tt.name+"\": {capacity: {cpus: 1, memory: 1GiB}}\n", "default")
-			err := build(tokenEnv(), []byte(doc))
+			err := buildDoc(&Config{}, doc)
 			refused := err != nil && (strings.Contains(err.Error(), "want a lowercase DNS label") || strings.Contains(err.Error(), "want a name other than ca and orchestrator"))
 			if refused == tt.ok {
 				t.Errorf("host %q: err = %v, want accepted %v", tt.name, err, tt.ok)
@@ -282,15 +250,62 @@ func TestHostNames(t *testing.T) {
 	}
 }
 
-func TestNoVariableExpansion(t *testing.T) {
-	t.Setenv("RUNNER_GROUP", "expanded")
-	doc := header + `profiles: {p: {command: [/run.sh, "${GITHUB_TOKEN}"]}}` + "\n"
-	doc = strings.Replace(doc, "org: acme", `{org: acme, runner_group: "${RUNNER_GROUP}"}`, 1)
-	cfg := mustBuild(t, tokenEnv(), doc)
-	if g := cfg.Scopes[2].RunnerGroup; g != "${RUNNER_GROUP}" {
-		t.Errorf("runner_group = %q, want it literal", g)
+// A value the document cannot decode is refused at its path: a decode stops
+// at its first refusal.
+func TestDecodeRefusals(t *testing.T) {
+	for _, tc := range []struct{ name, doc, path, want string }{
+		{"notObject", `[1]`, "", "want an object"},
+		{"syntax", `{"hosts": `, "hosts", "want one JSON object"},
+		{"trailing", `{} {}`, "", "want one JSON object"},
+		{"duplicateKey", `{"queue": {}, "queue": {}}`, "queue", "want one JSON object"},
+		{"unknownHostKey", `{"hosts": {"nas": {"cpus": 2}}}`, "hosts.nas.cpus", "unknown key"},
+		{"numericHostName", `{"hosts": {"10": {"x": 1}}}`, "hosts.10.x", "unknown key"},
+		{"listIndex", `{"scopes": [{"repo": "a/b"}, {"x": 1}]}`, "scopes[1].x", "unknown key"},
+		{"nestedIndex", `{"profiles": {"p": {"tmpfs": [{"path": "/t", "y": 1}]}}}`, "profiles.p.tmpfs[0].y", "unknown key"},
+		{"listForObject", `{"hosts": []}`, "hosts", "want an object"},
+		{"stringForList", `{"hosts": {"nas": {"dns": "1.1.1.1"}}}`, "hosts.nas.dns", "want a list"},
+		{"numberForString", `{"profiles": {"p": {"image": 7}}}`, "profiles.p.image", "want a string"},
+		{"objectForScalar", `{"profiles": {"p": {"cpus": {"n": 1}}}}`, "profiles.p.cpus", "want a string, a number, true or false"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := build(&Config{}, []byte(tc.doc), nil)
+			var fe fieldErrors
+			if !errors.As(err, &fe) || len(fe) != 1 || fe[0].Path != tc.path || !strings.Contains(fe[0].Message, tc.want) {
+				t.Errorf("err = %#v, want one refusal at %q holding %q", err, tc.path, tc.want)
+			}
+		})
 	}
-	if c := profile(t, cfg, "p").Command; c[1] != "${GITHUB_TOKEN}" {
-		t.Errorf("command = %q, want it literal", c)
+}
+
+// A scalar is read as written, whichever JSON kind carries it.
+func TestDecodeScalars(t *testing.T) {
+	const d = `{"scopes": [{"repo": "acme/app", "default_profile": "p", "installation_id": 42}],
+		"hosts": {"default": {"capacity": {"cpus": 1.5, "memory": "2GiB", "max_runners": "3"}, "egress": {"ipv6": true, "allow": [{"to": "fd00::1", "ports": [53, "8000-8100"]}]}}},
+		"profiles": {"p": {"scopes": ["acme/app"], "cpus": "0.5", "memory": "512MiB", "allow_root": false, "max_lifetime": null}}}`
+	cfg := &Config{}
+	if err := build(cfg, []byte(d), nil); err != nil {
+		t.Fatal(err)
+	}
+	if c := host(t, cfg, "default").Capacity; c != (Capacity{MilliCPUs: 1500, Memory: 2 << 30, MaxRunners: 3}) {
+		t.Errorf("capacity = %+v", c)
+	}
+	if a := host(t, cfg, "default").Egress.Allow; len(a) != 1 || !slices.Equal(a[0].Ports, []PortRange{{53, 53}, {8000, 8100}}) {
+		t.Errorf("allow = %+v", a)
+	}
+	if p := profile(t, cfg, "p"); p.MilliCPUs != 500 || p.AllowRoot || p.MaxLifetime != defaultMaxLifetime {
+		t.Errorf("profile = %+v; want a null max_lifetime read as unset", p)
+	}
+	if cfg.Scopes[0].InstallationID != 42 {
+		t.Errorf("installation_id = %d", cfg.Scopes[0].InstallationID)
+	}
+}
+
+// Every refusal of one document is reported, each at its own path.
+func TestBuildReportsEveryPath(t *testing.T) {
+	d := scopes + "hosts:\n  default: {capacity: {cpus: 0}, dns: [127.0.0.1]}\nprofiles:\n  p: {memory: 1MiB, user: root}\n"
+	got := paths(t, buildDoc(&Config{}, d))
+	want := []string{"hosts.default.capacity.memory", "hosts.default.capacity.cpus", "hosts.default.dns[0]", "profiles.p.user", "profiles.p.memory"}
+	if !slices.Equal(got, want) {
+		t.Errorf("paths = %q, want %q", got, want)
 	}
 }

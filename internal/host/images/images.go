@@ -62,6 +62,8 @@ type Keep struct {
 type Config struct {
 	Daemon Daemon
 	Host   *config.Host
+	// RegistryAuth is the host's registry credentials, fixed for its life.
+	RegistryAuth config.RegistryAuth
 	// Lookup resolves a registry's name through the host's resolver.
 	Lookup func(ctx context.Context, name string) ([]netip.Addr, error)
 	// ByName reports a name an internet: false host reaches by name:
@@ -93,6 +95,7 @@ type Manager struct {
 	keep     Keep
 	wake     chan struct{}
 	host     *config.Host
+	regAuth  config.RegistryAuth
 	refs     map[string]*ref
 	version  string
 	binary   string
@@ -139,7 +142,7 @@ func (p *profile) ready() bool { return p.id != "" && p.ref.refused == nil }
 func New(cfg *Config) *Manager {
 	m := &Manager{
 		daemon: cfg.Daemon, lookup: cfg.Lookup, byName: cfg.ByName, log: cfg.Log, keep: cfg.Keep, tidied: cfg.Tidied,
-		version: cfg.Version, binary: cfg.Binary, wake: make(chan struct{}, 1),
+		version: cfg.Version, binary: cfg.Binary, wake: make(chan struct{}, 1), regAuth: cfg.RegistryAuth,
 		rec: record{path: recordPath(cfg.StateDir)}, checking: map[string]int{},
 	}
 	m.set(cfg.Host, cfg.Profiles)
