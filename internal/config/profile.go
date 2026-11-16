@@ -189,16 +189,16 @@ type Mount struct {
 	ReadOnly bool
 }
 
-// Allowed reports whether the scope with key may use the profile. Keys match
+// allowed reports whether the scope with key may use the profile. Keys match
 // without case, as GitHub's owner and repository names do.
-func (p *Profile) Allowed(key string) bool {
+func (p *Profile) allowed(key string) bool {
 	return p.Scopes == nil || slices.ContainsFunc(p.Scopes, func(s string) bool { return strings.EqualFold(s, key) })
 }
 
 // usable reports whether new jobs of the scope with key may be routed to the
 // profile: allowed, not leaving the scope and not being deleted.
 func (p *Profile) usable(key string) bool {
-	return p.Allowed(key) && !p.Deleting && !slices.ContainsFunc(p.Retiring, func(s string) bool { return strings.EqualFold(s, key) })
+	return p.allowed(key) && !p.Deleting && !slices.ContainsFunc(p.Retiring, func(s string) bool { return strings.EqualFold(s, key) })
 }
 
 // Grants names each elevated field the profile sets away from its default,

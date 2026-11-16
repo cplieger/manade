@@ -25,7 +25,7 @@ func TestProfileDefaults(t *testing.T) {
 	if p.Docker != "none" || p.Runtime != "runc" {
 		t.Errorf("docker %q, runtime %q", p.Docker, p.Runtime)
 	}
-	if g := p.Grants(); g != nil || p.Scopes != nil || !p.Allowed("acme/web") {
+	if g := p.Grants(); g != nil || p.Scopes != nil || !p.allowed("acme/web") {
 		t.Errorf("grants %q, scopes %q: want none and every scope", g, p.Scopes)
 	}
 	if p.Disk != 0 || p.ShmSize != 0 || p.MaxRunners != 0 || p.User != "" {
@@ -56,7 +56,7 @@ func TestProfileValidForms(t *testing.T) {
 	if !slices.Equal(p.Tmpfs, []Tmpfs{{Path: "/scratch", Size: 1 << 30}}) {
 		t.Errorf("tmpfs = %+v", p.Tmpfs)
 	}
-	if !p.Allowed("acme/app") || p.Allowed("acme/web") || p.Allowed("acme") {
+	if !p.allowed("acme/app") || p.allowed("acme/web") || p.allowed("acme") {
 		t.Errorf("scopes = %q: want acme/app alone, matched without case", p.Scopes)
 	}
 	if !slices.Equal(p.Capabilities, []string{"NET_ADMIN", "NET_RAW"}) {
@@ -67,7 +67,7 @@ func TestProfileValidForms(t *testing.T) {
 func TestProfileEmptyScopesServeNothing(t *testing.T) {
 	t.Parallel()
 	p := profile(t, mustBuild(t, &Config{}, strings.TrimPrefix(withOpenProfile("privileged: true, scopes: []"), scopes)), "p")
-	if p.Scopes == nil || p.Allowed("acme/app") || p.Allowed("acme") {
+	if p.Scopes == nil || p.allowed("acme/app") || p.allowed("acme") {
 		t.Errorf("scopes = %#v: want an empty list that allows no scope", p.Scopes)
 	}
 }
