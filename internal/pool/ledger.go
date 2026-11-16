@@ -12,6 +12,7 @@ import (
 
 	"github.com/cplieger/manade/internal/config"
 	"github.com/cplieger/manade/internal/github"
+	"github.com/cplieger/manade/internal/hostapi"
 )
 
 // res is a reservation: milli-CPUs, memory and disk bytes, and runners.
@@ -67,6 +68,9 @@ type stray struct {
 	created       time.Time
 	res           res
 	host, profile int
+	// recheck marks a record a generation change left with no scale set:
+	// the next listing judges it as an adoption, so an idle one is removed.
+	recheck bool
 }
 
 // hostBook is one host's budget and gates.
@@ -78,6 +82,9 @@ type hostBook struct {
 	// disk reports a capacity.disk, so a slot there counts its profile's
 	// disk.
 	disk bool
+	// reported marks a host whose settings set no capacity: its budget is
+	// what its last status admits (§10.2), zero until one answers.
+	reported bool
 	// reachable reports that the host answers, so its runners' exits
 	// reach the ledger; serving, that it takes new slots: reachable,
 	// admitted and proved.
@@ -98,7 +105,7 @@ func newLedger(cfg *config.Config) *ledger {
 	hostAt := map[string]int{}
 	for i := range cfg.Hosts {
 		c := &cfg.Hosts[i].Capacity
-		hb := hostBook{budget: res{c.MilliCPUs, c.Memory, unbounded, unbounded}, ready: make([]bool, len(cfg.Profiles))}
+		hb := hostBook{budget: res{c.MilliCPUs, c.Memory, unbounded, unbounded}, ready: make([]bool, len(cfg.Profiles)), reported: c.MilliCPUs == 0}
 		if c.Disk > 0 {
 			hb.budget.disk, hb.disk = c.Disk, true
 		}
@@ -178,12 +185,30 @@ const (
 type runner struct {
 	// created is when the record was made, or an adopted container started.
 	created time.Time
-	name    string
+	// req is the POST a start sent and no host answered, repeated by name;
+	// nil once answered.
+	req  *hostapi.RunnerRequest
+	name string
+	// instance is the supervisor that holds the record: the last one that
+	// listed it or answered its POST, else the last one seen before sending
+	// it.
+	instance string
+	// closing is the reason the pool decided the record closes with, ""
+	// until it decided.
+	closing ExitReason
 	res     res
-	host    int
-	state   runnerState
-	// completed reports that a JobCompleted named the runner.
-	completed bool
+	// id is the registration's ID, 0 until GitHub answers its JIT config.
+	id int64
+	// answered is the host's sequence number at the POST's answer, 0
+	// until one answers; only a list begun after it judges the runner.
+	answered uint64
+	host     int
+	state    runnerState
+	// completed reports that a JobCompleted named the runner; posting,
+	// that its POST is in flight; counted, that its start was counted;
+	// failed, that its host failed the start; stale, that its profile's
+	// spec changed in a later generation, so it takes no new job.
+	completed, posting, counted, failed, stale bool
 }
 
 // addBook records a scale set; its profile is one the config defines.
@@ -198,12 +223,14 @@ func (l *ledger) addBook(ss github.ScaleSet, org bool) *book {
 
 // adopt records a runner a host lists, holding r, its built limits, there.
 // The caller settles the ledger once it has adopted every runner.
-func (b *book) adopt(name string, host int, r res, state runnerState) {
-	b.runners[name] = &runner{name: name, res: r, host: host, state: state}
+func (b *book) adopt(name string, host int, r res, state runnerState) *runner {
+	rr := &runner{name: name, res: r, host: host, state: state}
+	b.runners[name] = rr
+	return rr
 }
 
 // hold keeps a stray runner's reservation on its host until release.
-func (l *ledger) hold(name string, st stray) { l.strays[name] = st }
+func (l *ledger) hold(name string, st *stray) { l.strays[name] = *st }
 
 // release frees a stray's reservation once its host reported it ended.
 func (l *ledger) release(name string, now time.Time) {

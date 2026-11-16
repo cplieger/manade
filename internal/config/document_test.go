@@ -340,7 +340,7 @@ func TestDecodeScalars(t *testing.T) {
 	if a := host(t, cfg, "default").Egress.Allow; len(a) != 1 || !slices.Equal(a[0].Ports, []PortRange{{53, 53}, {8000, 8100}}) {
 		t.Errorf("allow = %+v", a)
 	}
-	if p := profile(t, cfg, "p"); p.MilliCPUs != 500 || p.AllowRoot || p.MaxLifetime != defaultMaxLifetime {
+	if p := profile(t, cfg, "p"); p.MilliCPUs != 500 || p.AllowRoot || p.MaxLifetime != DefaultMaxLifetime {
 		t.Errorf("profile = %+v; want a null max_lifetime read as unset", p)
 	}
 	if cfg.Scopes[0].InstallationID != 42 {

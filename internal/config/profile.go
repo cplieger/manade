@@ -167,8 +167,8 @@ type Profile struct {
 	Deleting                 bool
 }
 
-// defaultMaxLifetime is a profile's max_lifetime when the document sets none.
-const defaultMaxLifetime = 2 * time.Hour
+// DefaultMaxLifetime is a profile's max_lifetime when the document sets none.
+const DefaultMaxLifetime = 2 * time.Hour
 
 // maxLifetimeCap is GitHub's limit on a job on a self-hosted runner
 // (https://docs.github.com/en/actions/administering-github-actions/usage-limits-billing-and-administration), so the run-duration
@@ -331,7 +331,7 @@ func (fp *docProfile) resources(pr *Profile, at func(string) string, p *problems
 	pr.PIDs = field(p, at("pids"), fp.PIDs, "4096", positive(1<<22))
 	pr.Disk = field(p, at("disk"), fp.Disk, "", parsePositiveSize)
 	pr.ShmSize = field(p, at("shm_size"), fp.ShmSize, "", parsePositiveSize)
-	pr.MaxLifetime = field(p, at("max_lifetime"), fp.MaxLifetime, defaultMaxLifetime.String(), parseDuration)
+	pr.MaxLifetime = field(p, at("max_lifetime"), fp.MaxLifetime, DefaultMaxLifetime.String(), parseDuration)
 	if pr.MaxLifetime > maxLifetimeCap {
 		p.addf(at("max_lifetime"), "want at most 120h (5 days), GitHub's limit on a job on a self-hosted runner, got %s", quote(string(fp.MaxLifetime)))
 	}
