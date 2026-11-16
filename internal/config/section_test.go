@@ -5,8 +5,10 @@ import (
 	"testing"
 )
 
-// nasSelf is the environment of host nas.
-func nasSelf() *Self { return &Self{Name: "nas", TLSDir: "/tls"} }
+// nasSelf is the environment of host nas, whose ceiling lists 10.0.0.0/8.
+func nasSelf() *Self {
+	return &Self{Name: "nas", TLSDir: "/tls", Ceiling: Ceiling{Private: pfxs("10.0.0.0/8")}}
+}
 
 func TestParseSection(t *testing.T) {
 	t.Parallel()
@@ -102,8 +104,9 @@ func TestParseSectionMatchesTheDocument(t *testing.T) {
 			t.Parallel()
 			section := `{"hosts": {"nas": ` + tc.host + `}, "profiles": {"p": {` + tc.profile + `}}}`
 			document := `{"scopes": [{"repo": "acme/app", "default_profile": "p"}], "hosts": {"nas": ` + tc.host + `}, "profiles": {"p": {"hosts": ["nas"], ` + tc.profile + `}}}`
-			_, serr := ParseSection(nasSelf(), []byte(section))
-			derr := build(&Config{Self: nasSelf()}, []byte(document), nil)
+			self := nasSelf()
+			_, serr := ParseSection(self, []byte(section))
+			derr := build(&Config{Self: self}, []byte(document), nil, map[string]*Ceiling{"nas": &self.Ceiling})
 			got, want := paths(t, serr), paths(t, derr)
 			if len(want) == 0 {
 				t.Fatal("setup: the document is accepted")

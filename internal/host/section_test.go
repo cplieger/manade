@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"slices"
@@ -23,8 +24,13 @@ import (
 	"github.com/cplieger/manade/internal/hostapi"
 )
 
-// lanSelf is host lan's environment.
-func lanSelf() *config.Self { return &config.Self{Name: "lan", TLSDir: "/tls"} }
+// lanSelf is host lan's environment, whose ceiling lets it be open, use
+// IPv6 and reach 10.0.0.0/8.
+func lanSelf() *config.Self {
+	return &config.Self{Name: "lan", TLSDir: "/tls", Ceiling: config.Ceiling{
+		Open: true, IPv6: true, Private: []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8")},
+	}}
+}
 
 // The host parts and profiles of host lan's sections.
 const (
@@ -56,9 +62,15 @@ func upSupervisor(t *testing.T, sec *hostapi.Section) (s *supervisor, f *upFixtu
 // upOn is upSupervisor on platform p.
 func upOn(t *testing.T, sec *hostapi.Section, p *seams) (s *supervisor, run context.Context) {
 	t.Helper()
+	return upAs(t, lanSelf(), sec, p)
+}
+
+// upAs is upOn for host lan with environment self.
+func upAs(t *testing.T, self *config.Self, sec *hostapi.Section, p *seams) (s *supervisor, run context.Context) {
+	t.Helper()
 	log := slog.New(slog.DiscardHandler)
 	dir := t.TempDir()
-	s = newSupervisor(lanSelf(), &Options{Log: log}, filepath.Join(dir, "section.json"))
+	s = newSupervisor(self, &Options{Log: log}, filepath.Join(dir, "section.json"))
 	first, err := check(s.self, sec)
 	if err != nil {
 		t.Fatal(err)

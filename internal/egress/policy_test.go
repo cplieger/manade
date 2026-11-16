@@ -74,6 +74,26 @@ func scenarios() []scenario {
 		{name: "ipv6-unlearned", in: Input{Host: v6Host(true), Job6: job6}},
 		{name: "ipv6-internet-off", in: Input{Host: v6Host(false), Job6: job6, State: off6State}},
 		{name: "open", in: Input{Host: &config.Host{Name: "open", DNS: config.DefaultDNS, Egress: config.Egress{Open: true, Internet: true}}}},
+		{name: "block6", in: block6Input()},
+	}
+}
+
+// block6Input is a host whose MANADE_ALLOW_PRIVATE is 2001:db8:1::/48 and
+// MANADE_BLOCK6 2001:db8:1:5::/64, with an allow entry for the /48 and a
+// resolver inside it.
+func block6Input() Input {
+	return Input{
+		Host: &config.Host{
+			Name: "v6",
+			DNS:  []netip.Addr{addr("1.1.1.1"), addr("2001:db8:1:7::53")},
+			Egress: config.Egress{
+				Internet: true, IPv6: true,
+				Allow: []config.Allow{{To: pfx("2001:db8:1::/48"), Protocol: config.ProtocolTCP, Ports: ports([2]uint16{443, 443})}},
+			},
+		},
+		Job6:   pfx("fdc6:6d61:6e61:6465::/64"),
+		Block6: []netip.Prefix{pfx("2001:db8:1:5::/64")},
+		State:  State{Self64: pfx("2a01:e0a:1259:2710::/64"), Own64: pfx("2a01:e0a:1259:2711::/64")},
 	}
 }
 
@@ -238,4 +258,110 @@ func TestGenerateLearnedLeavesBlockedOut(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A MANADE_BLOCK6 drop comes ahead of the allow accepts in the forward and
+// output chains and ahead of the resolver accepts in the output chain, so an
+// allow entry for the /48 that holds it leaves the /64 unreached.
+func TestGenerateBlock6ComesFirst(t *testing.T) {
+	t.Parallel()
+	in := block6Input()
+	block, allow, resolver := pfx("2001:db8:1:5::/64"), pfx("2001:db8:1::/48"), pfx("2001:db8:1:7::53/128")
+	for _, be := range []Backend{NFTables, IPTables} {
+		rs, err := Generate(&in, be)
+		if err != nil {
+			t.Fatal(err)
+		}
+		at := func(hook string, a action, p netip.Prefix) int {
+			for _, c := range rs.chains {
+				if c.hook != hook {
+					continue
+				}
+				for i, r := range c.rules {
+					if r.action == a && slices.Contains(r.daddr, p) {
+						return i
+					}
+				}
+			}
+			t.Fatalf("backend %d: chain %s has no rule %d to %s", be, hook, a, p)
+			return 0
+		}
+		for _, hook := range []string{hookForward, hookOutput} {
+			if d, a := at(hook, drop, block), at(hook, accept, allow); d > a {
+				t.Errorf("backend %d: %s drops %s at %d, after the allow accept at %d", be, hook, block, d, a)
+			}
+		}
+		if d, r := at(hookOutput, drop, block), at(hookOutput, accept, resolver); d > r {
+			t.Errorf("backend %d: output drops %s at %d, after the resolver accept at %d", be, block, d, r)
+		}
+	}
+}
+
+// Every section a ceiling accepts renders rules in which the host's own
+// /64, its learned /64 and each MANADE_BLOCK6 prefix are dropped before any
+// accept reaches them: the ceiling lists none of them.
+func TestGenerateKeepsTheCeilingsDrops(t *testing.T) {
+	t.Parallel()
+	own64, self64 := pfx("2001:db8:2:1::/64"), pfx("2001:db8:2:2::/64")
+	for _, tc := range []struct {
+		name, host string
+		ceiling    config.Ceiling
+	}{
+		{
+			"ula", `{"egress": {"ipv6": true, "allow": [{"to": "fd00::5", "ports": [53], "protocol": "udp"}]}, "dns": ["fd00::53"]}`,
+			config.Ceiling{IPv6: true, Private: []netip.Prefix{pfx("fd00::/8")}, Block6: []netip.Prefix{pfx("2001:db8:3::/48")}},
+		},
+		{
+			"aCoveringAllow", `{"egress": {"ipv6": true, "allow": [{"to": "2001:db8:1::/48", "ports": [443]}]}, "dns": ["2001:db8:1:7::53"]}`,
+			config.Ceiling{IPv6: true, Private: []netip.Prefix{pfx("2001:db8:1::/48")}, Block6: []netip.Prefix{pfx("2001:db8:1:5::/64")}},
+		},
+		{
+			"block6LeavingOutTheHosts", `{"egress": {"ipv6": true, "block6": ["2001:db8:9::/48"]}}`,
+			config.Ceiling{IPv6: true, Block6: []netip.Prefix{pfx("2001:db8:1:5::/64")}},
+		},
+		{
+			"pinned", `{"egress": {"internet": false, "ipv6": true, "allow": [{"to": "2001:db8:1::/48", "ports": [443]}]}}`,
+			config.Ceiling{NoInternet: true, IPv6: true, Private: []netip.Prefix{pfx("2001:db8:1::/48")}, Block6: []netip.Prefix{pfx("2001:db8:1:5::/64")}},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			self := &config.Self{Name: "nas", TLSDir: "/tls", Ceiling: tc.ceiling}
+			cfg, err := config.ParseSection(self, []byte(`{"hosts": {"nas": `+tc.host+`}}`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			in := Input{Host: &cfg.Hosts[0], Job6: pfx("fdc6:6d61:6e61:6465::/64"), Block6: tc.ceiling.Block6, State: State{Own64: own64, Self64: self64}}
+			for _, be := range []Backend{NFTables, IPTables} {
+				rs, err := Generate(&in, be)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, kept := range slices.Concat([]netip.Prefix{own64, self64}, tc.ceiling.Block6) {
+					for _, c := range rs.chains {
+						if c.hook != hookInput {
+							checkDroppedFirst(t, c, kept)
+						}
+					}
+				}
+			}
+		})
+	}
+}
+
+// checkDroppedFirst fails unless chain c drops p before any accept naming a
+// destination that overlaps it.
+func checkDroppedFirst(t *testing.T, c chain, p netip.Prefix) {
+	t.Helper()
+	for _, r := range c.rules {
+		overlaps := slices.ContainsFunc(r.daddr, p.Overlaps)
+		switch {
+		case r.action == drop && slices.ContainsFunc(r.daddr, func(d netip.Prefix) bool { return d.Bits() <= p.Bits() && d.Contains(p.Addr()) }):
+			return
+		case r.action == accept && overlaps:
+			t.Errorf("chain %s accepts %v before it drops %s", c.hook, r.daddr, p)
+			return
+		}
+	}
+	t.Errorf("chain %s never drops %s", c.hook, p)
 }

@@ -57,8 +57,12 @@ type Input struct {
 	Host *config.Host
 	// Job6 is the job network's IPv6 /64, inside fc00::/7; required when
 	// the host's egress has IPv6, ignored otherwise.
-	Job6  netip.Prefix
-	State State
+	Job6 netip.Prefix
+	// Block6 is the host's MANADE_BLOCK6: IPv6 prefixes dropped ahead of
+	// every accept the section controls, so no allow entry or resolver
+	// reopens them.
+	Block6 []netip.Prefix
+	State  State
 }
 
 // State is what the host learns while it runs.
@@ -249,9 +253,13 @@ func (rs *Ruleset) build(in *Input) {
 	// does not, since the learner asks the echo endpoint over it.
 	jobs := destinations(in, v6, e.Internet && in.State.Self64.IsValid())
 	own := destinations(in, v6, e.Internet)
+	var block []rule
+	if v6 && len(in.Block6) > 0 {
+		block = []rule{{daddr: outermost(in.Block6), action: drop}}
+	}
 	rs.chains = []chain{
-		{hook: hookForward, rules: counted(forward(jobs, v6), v6)},
-		{hook: hookOutput, rules: counted(output(in.Host.DNS, own, v6), v6)},
+		{hook: hookForward, rules: counted(forward(block, jobs, v6), v6)},
+		{hook: hookOutput, rules: counted(output(in.Host.DNS, block, own, v6), v6)},
 		{hook: hookInput, rules: counted(input(v6), v6)},
 	}
 	rs.sets = []set{{name: setProbe4, family: ipv4}, {name: setTarget4, family: ipv4}}
@@ -326,26 +334,36 @@ func destinations(in *Input, v6, global6 bool) []rule {
 	return rs
 }
 
-func forward(dest []rule, v6 bool) []rule {
+// forward is the forward chain: block, the MANADE_BLOCK6 drops, comes
+// ahead of the allow accepts that open dest.
+func forward(block, dest []rule, v6 bool) []rule {
 	rs := []rule{{iif: jobBridges, oif: jobBridges, action: drop}}
 	if !v6 {
 		rs = append(rs, rule{family: ipv6, action: drop})
 	}
 	rs = append(rs, rule{ct: ctEstablished, action: accept})
-	for i := range dest {
-		r := dest[i]
+	all := slices.Concat(block, dest)
+	for i := range all {
+		r := all[i]
 		r.iif = jobBridges
 		rs = append(rs, r)
 	}
 	return append(rs, rule{oif: jobBridges, ct: ctNew, action: drop})
 }
 
-func output(dns []netip.Addr, dest []rule, v6 bool) []rule {
+// output is the output chain: block, the MANADE_BLOCK6 drops, comes ahead
+// of the resolver accepts and dest's allow accepts.
+func output(dns []netip.Addr, block, dest []rule, v6 bool) []rule {
 	rs := []rule{{oif: loopback, action: accept}, {ct: ctEstablished, action: accept}}
 	if v6 {
 		rs = append(rs, rule{nd: true, action: accept})
 	} else {
 		rs = append(rs, rule{family: ipv6, action: drop})
+	}
+	for i := range block {
+		r := block[i]
+		r.oif = iface{name: jobBridges.name, glob: true, not: true}
+		rs = append(rs, r)
 	}
 	var r4, r6 []netip.Prefix
 	for _, a := range dns {

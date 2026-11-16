@@ -36,7 +36,7 @@ func doc(y string) []byte {
 }
 
 // buildDoc builds fixture y into cfg with no previous model.
-func buildDoc(cfg *Config, y string) error { return build(cfg, doc(y), nil) }
+func buildDoc(cfg *Config, y string) error { return build(cfg, doc(y), nil, nil) }
 
 // withProfile builds header plus one profile "p" whose body is the flow
 // mapping's contents.
@@ -71,7 +71,7 @@ func jsonProfile(body string) string { return `"profiles": {"p": {` + body + `}}
 // mustBuildJSON builds JSON document d into cfg with no previous model.
 func mustBuildJSON(t *testing.T, cfg *Config, d string) *Config {
 	t.Helper()
-	if err := build(cfg, []byte(d), nil); err != nil {
+	if err := build(cfg, []byte(d), nil, nil); err != nil {
 		t.Fatalf("build: %v", err)
 	}
 	return cfg

@@ -175,10 +175,27 @@ type SectionRefusal struct {
 	Errors []FieldError `json:"errors"`
 }
 
+// Ceiling is what the host's own environment lets a section set, each
+// field the variable its comment names. The control plane checks each save
+// against the one the host last reported.
+type Ceiling struct {
+	// AllowPrivate is MANADE_ALLOW_PRIVATE.
+	AllowPrivate []netip.Prefix `json:"allow_private"`
+	// Block6 is MANADE_BLOCK6.
+	Block6 []netip.Prefix `json:"block6"`
+	// Warnings name each variable the host read as its narrower meaning.
+	Warnings []string `json:"warnings,omitempty"`
+	// AllowOpen, AllowInternet and AllowIPv6 are MANADE_ALLOW_OPEN,
+	// MANADE_ALLOW_INTERNET and MANADE_ALLOW_IPV6.
+	AllowOpen     bool `json:"allow_open"`
+	AllowInternet bool `json:"allow_internet"`
+	AllowIPv6     bool `json:"allow_ipv6"`
+}
+
 // Status is the host's account of itself (GET /v1/status). The control
 // plane gives a host work only while it runs the section last delivered
 // and its proof holds, and exports each figure. A host waiting for its
-// first section answers its version and Section alone.
+// first section answers its version, Section and Ceiling alone.
 type Status struct {
 	// IPv6 is set only on a host with ipv6 and internet both true.
 	IPv6 *IPv6Status `json:"ipv6,omitempty"`
@@ -188,6 +205,7 @@ type Status struct {
 	Version    string          `json:"version"`
 	PolicyHash string          `json:"policy_hash,omitempty"`
 	Section    SectionStatus   `json:"section"`
+	Ceiling    Ceiling         `json:"ceiling"`
 	Daemon     DaemonStatus    `json:"daemon"`
 	Rules      RulesStatus     `json:"rules"`
 	DNS        DNSStatus       `json:"dns"`

@@ -171,7 +171,7 @@ func (s *supervisor) run(ctx, rctx context.Context, cancel context.CancelCauseFu
 		s.log.Warn("The saved OOM kill total was not read, so the total counts from this start", "error", err)
 	}
 	h := s.running.host
-	if s.net, err = bringUp(rctx, h, s.platform(s.self.IPv6Echo), guardHooks{Restored: s.onRestored, Checked: s.onChecked}); err != nil {
+	if s.net, err = bringUp(rctx, h, s.platform(s.self), guardHooks{Restored: s.onRestored, Checked: s.onChecked}); err != nil {
 		return err
 	}
 	err = s.serve(rctx, cancel, cg, ms)
@@ -447,8 +447,9 @@ func (s *supervisor) outwardAddrs() hostapi.Outward {
 	return out
 }
 
-// platform is the real kernel and daemon, with the echo endpoint echoURL.
-func (s *supervisor) platform(echoURL string) *seams {
+// platform is the real kernel and daemon, with host self's echo endpoint
+// and MANADE_BLOCK6.
+func (s *supervisor) platform(self *config.Self) *seams {
 	return &seams{
 		Run: platform.Exec, Lookup: netsetup.LookupVia, Random: rand.Reader,
 		PickStorage: func(dir string) (platform.StoragePick, error) {
@@ -464,7 +465,7 @@ func (s *supervisor) platform(echoURL string) *seams {
 			}
 			return c, nil
 		},
-		ListenDNS: listenDNS, FetchDomains: resolver.FetchMeta(httpclient.New(metaTimeout)), Upstreams: resolver.Upstreams, Echo: echoOverIPv6(), EchoURL: echoURL,
+		ListenDNS: listenDNS, FetchDomains: resolver.FetchMeta(httpclient.New(metaTimeout)), Upstreams: resolver.Upstreams, Echo: echoOverIPv6(), EchoURL: self.IPv6Echo, Block6: self.Ceiling.Block6,
 		Log: s.log, Root: platform.System,
 	}
 }

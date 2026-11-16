@@ -275,7 +275,7 @@ func TestJSONDocument(t *testing.T) {
   }
 }`
 	cfg := &Config{}
-	if err := build(cfg, []byte(d), nil); err != nil {
+	if err := build(cfg, []byte(d), nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if len(cfg.Hosts) != 3 || len(cfg.Profiles) != 4 || len(cfg.Scopes) != 2 {

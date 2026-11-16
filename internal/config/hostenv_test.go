@@ -2,7 +2,11 @@ package config
 
 import (
 	"log/slog"
+	"maps"
+	"net/netip"
 	"os"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -14,6 +18,7 @@ func clearEnv(t *testing.T) {
 	for _, key := range []string{
 		"LOG_LEVEL", "TLS_DIR", "MANADE_HOST", "MANADE_API_LISTEN", "MANADE_API_UID",
 		"MANADE_IPV6_ECHO", "MANADE_REGISTRY_AUTH", "MANADE_REGISTRY_AUTH_FILE",
+		"MANADE_ALLOW_OPEN", "MANADE_ALLOW_INTERNET", "MANADE_ALLOW_IPV6", "MANADE_ALLOW_PRIVATE", "MANADE_BLOCK6",
 		"GITHUB_APP_PRIVATE_KEY", "GITHUB_APP_PRIVATE_KEY_FILE", "GITHUB_TOKEN", "GITHUB_TOKEN_FILE",
 	} {
 		t.Setenv(key, "")
@@ -41,7 +46,7 @@ func TestLoadSelf(t *testing.T) {
 			Name: "nas", Listen: Address{Socket: "/run/manade/hosts/nas/api.sock"}, TLSDir: "/tls", APIUID: 65532,
 			IPv6Echo: "https://cloudflare.com/cdn-cgi/trace", LogLevel: slog.LevelInfo,
 		}
-		if *self != want {
+		if !reflect.DeepEqual(*self, want) {
 			t.Errorf("self = %+v, want %+v", *self, want)
 		}
 	})
@@ -139,6 +144,94 @@ func TestLoadSelfRegistryAuth(t *testing.T) {
 		}
 		if a := cfg.RegistryAuth; a.File != "" || a.Value.Reveal() != "" {
 			t.Errorf("registry auth = %+v, want none", a)
+		}
+	})
+}
+
+// The shipped compose files set no ceiling variable, so a new host is
+// closed: no open egress, no IPv6 and no private destination.
+func TestLoadSelfCeilingDefaults(t *testing.T) {
+	self, err := loadSelf(t, map[string]string{"MANADE_HOST": "nas"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c := self.Ceiling; !reflect.DeepEqual(c, Ceiling{}) {
+		t.Errorf("ceiling = %+v, want the zero ceiling", c)
+	}
+}
+
+// Each ceiling variable's fail direction (tier 3): a toggle reads true only
+// as "true", anything else but "false" reading false with a warning; a
+// malformed MANADE_ALLOW_PRIVATE entry is skipped with a warning, which
+// narrows reach; a malformed MANADE_BLOCK6 entry refuses start, since
+// skipping it would widen reach.
+func TestLoadSelfCeiling(t *testing.T) {
+	for _, tc := range []struct {
+		env      map[string]string
+		want     Ceiling
+		name     string
+		warnings []string
+	}{
+		{name: "openTrue", env: map[string]string{"MANADE_ALLOW_OPEN": "true"}, want: Ceiling{Open: true}},
+		{name: "openFalse", env: map[string]string{"MANADE_ALLOW_OPEN": "false"}},
+		{name: "openMisspelt", env: map[string]string{"MANADE_ALLOW_OPEN": "TRUE"}, warnings: []string{"MANADE_ALLOW_OPEN: \"TRUE\" is neither true nor false, so it reads false"}},
+		{name: "openOne", env: map[string]string{"MANADE_ALLOW_OPEN": "1"}, warnings: []string{"MANADE_ALLOW_OPEN: \"1\""}},
+		{name: "internetFalse", env: map[string]string{"MANADE_ALLOW_INTERNET": "false"}, want: Ceiling{NoInternet: true}},
+		{name: "internetTrue", env: map[string]string{"MANADE_ALLOW_INTERNET": "true"}},
+		{name: "internetMisspelt", env: map[string]string{"MANADE_ALLOW_INTERNET": "yes"}, want: Ceiling{NoInternet: true}, warnings: []string{"MANADE_ALLOW_INTERNET: \"yes\""}},
+		{name: "ipv6True", env: map[string]string{"MANADE_ALLOW_IPV6": "true"}, want: Ceiling{IPv6: true}},
+		{name: "ipv6Misspelt", env: map[string]string{"MANADE_ALLOW_IPV6": "on"}, warnings: []string{"MANADE_ALLOW_IPV6: \"on\""}},
+		{
+			name: "private", env: map[string]string{"MANADE_ALLOW_PRIVATE": "10.0.0.0/8, fd00::/8,192.168.1.53"},
+			want: Ceiling{Private: []netip.Prefix{pfx("10.0.0.0/8"), pfx("fd00::/8"), pfx("192.168.1.53/32")}},
+		},
+		{
+			name: "privateMalformedSkipped", env: map[string]string{"MANADE_ALLOW_PRIVATE": "10.0.0.0/8,lan,10.0.0.1/8"},
+			want:     Ceiling{Private: []netip.Prefix{pfx("10.0.0.0/8")}},
+			warnings: []string{"MANADE_ALLOW_PRIVATE: skipped \"lan\"", "MANADE_ALLOW_PRIVATE: skipped \"10.0.0.1/8\""},
+		},
+		{
+			name: "block6", env: map[string]string{"MANADE_BLOCK6": "2001:db8:1::/48 , 2001:db8:2::/48"},
+			want: Ceiling{Block6: []netip.Prefix{pfx("2001:db8:1::/48"), pfx("2001:db8:2::/48")}},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := map[string]string{"MANADE_HOST": "nas"}
+			maps.Copy(env, tc.env)
+			self, err := loadSelf(t, env)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := self.Ceiling
+			warnings := got.Warnings
+			got.Warnings = nil
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("ceiling = %+v, want %+v", got, tc.want)
+			}
+			if len(warnings) != len(tc.warnings) {
+				t.Fatalf("warnings = %q, want %d", warnings, len(tc.warnings))
+			}
+			for i, w := range tc.warnings {
+				if !strings.Contains(warnings[i], w) {
+					t.Errorf("warning %d = %q, want it to hold %q", i, warnings[i], w)
+				}
+			}
+		})
+	}
+	for _, tc := range []struct{ name, raw, want string }{
+		{"block6Malformed", "2001:db8:1::/48,lan", `MANADE_BLOCK6: want an IP address or a prefix such as 10.0.0.0/24, got "lan"`},
+		{"block6IPv4", "10.0.0.0/8", `MANADE_BLOCK6: want an IPv6 prefix such as 2001:db8:1::/48, got "10.0.0.0/8"`},
+		{"block6Unmasked", "2001:db8:1::1/48", `MANADE_BLOCK6: want an IP address or a prefix`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := loadSelf(t, map[string]string{"MANADE_HOST": "nas", "MANADE_BLOCK6": tc.raw})
+			wantErr(t, err, tc.want)
+		})
+	}
+	t.Run("aBadToggleNamesNoOtherVariable", func(t *testing.T) {
+		self, err := loadSelf(t, map[string]string{"MANADE_HOST": "nas", "MANADE_ALLOW_OPEN": "maybe", "MANADE_ALLOW_IPV6": "true"})
+		if err != nil || !self.Ceiling.IPv6 || self.Ceiling.Open || !slices.ContainsFunc(self.Ceiling.Warnings, func(w string) bool { return strings.HasPrefix(w, "MANADE_ALLOW_OPEN:") }) {
+			t.Errorf("self = %+v, %v", self, err)
 		}
 	})
 }

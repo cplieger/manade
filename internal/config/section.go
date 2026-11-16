@@ -23,7 +23,8 @@ type docSection struct {
 }
 
 // ParseSection validates settings, the section the control plane delivered
-// to host self, with the parser every write path runs. A section names
+// to host self, with the parser every write path runs, against self's
+// ceiling. A section names
 // hosts.<self.Name> alone, the profiles that host serves with no host
 // list, images.refresh and pool.host_address; capacity, a profile's host
 // order and the pool's state are the pool's, never a host's. It answers the
@@ -34,7 +35,7 @@ func ParseSection(self *Self, settings []byte) (*Config, error) {
 		return nil, FieldErrors{decodeError(err)}
 	}
 	var p problems
-	cfg := &Config{Self: self}
+	cfg := &Config{Self: self, ceilings: map[string]*Ceiling{self.Name: &self.Ceiling}}
 	refresh := parseRefresh(&p, "images.refresh", cmp.Or(string(d.Images.Refresh), "1h"))
 	if h, ok := d.host(self.Name, refresh, &p); ok {
 		cfg.Hosts = []Host{h}

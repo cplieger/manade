@@ -30,6 +30,8 @@ type Self struct {
 	RegistryAuth RegistryAuth
 	// Listen is where the host API is served.
 	Listen Address
+	// Ceiling bounds every section the host accepts.
+	Ceiling Ceiling
 	// APIUID owns the API socket.
 	APIUID   int
 	LogLevel slog.Level
@@ -93,6 +95,9 @@ func readSelf() (*Self, []error) {
 		errs = append(errs, fmt.Errorf("MANADE_IPV6_ECHO: %w", err))
 	}
 	if s.RegistryAuth, err = readRegistryAuth(); err != nil {
+		errs = append(errs, err)
+	}
+	if s.Ceiling, err = readCeiling(); err != nil {
 		errs = append(errs, err)
 	}
 	for _, key := range hostCredentials {

@@ -16,7 +16,7 @@ func twoScopes(app, web, small, build string) string {
 		"profiles": {"small": {` + small + `}, "build": {` + build + `}}}`
 }
 
-func buildJSON(prev *Config, d string) error { return build(&Config{}, []byte(d), prev) }
+func buildJSON(prev *Config, d string) error { return build(&Config{}, []byte(d), prev, nil) }
 
 func TestPoolStateParses(t *testing.T) {
 	t.Parallel()
@@ -127,7 +127,7 @@ func TestMaxLifetimeCap(t *testing.T) {
 			t.Parallel()
 			d := object(jsonScopes, jsonHost, jsonProfile(`"max_lifetime": "`+tc.raw+`"`))
 			cfg := &Config{}
-			err := build(cfg, []byte(d), nil)
+			err := build(cfg, []byte(d), nil, nil)
 			if !tc.refused {
 				if err != nil {
 					t.Fatalf("err = %v", err)

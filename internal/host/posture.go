@@ -58,7 +58,7 @@ func (n *hostNet) want(p *posture, h *config.Host) wanted {
 			if p.gh != nil {
 				st.GitHub = p.gh.learner.Held()
 			}
-			return egress.Generate(&egress.Input{Host: h, Job6: n.Job6, State: st}, n.Kernel.Backend)
+			return egress.Generate(&egress.Input{Host: h, Job6: n.Job6, Block6: n.seams.Block6, State: st}, n.Kernel.Backend)
 		},
 		IPv6Off:   !h.Egress.Open && !h.Egress.IPv6,
 		BridgeNF6: h.Egress.IPv6 && bridge6,

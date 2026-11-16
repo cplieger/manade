@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/cplieger/manade/internal/config"
 	"github.com/cplieger/manade/internal/egress"
 	"github.com/cplieger/manade/internal/host/platform"
 	"github.com/cplieger/manade/internal/hostapi"
@@ -147,13 +148,13 @@ func (l *latencies) snapshot() []hostapi.CallLatency {
 // afresh; a host not up yet answers its version and section alone.
 func (s *supervisor) status(ctx context.Context) hostapi.Status {
 	if s.phase.Load() != phaseUp {
-		return hostapi.Status{Version: s.opts.Version, Section: s.sectionStatus()}
+		return hostapi.Status{Version: s.opts.Version, Section: s.sectionStatus(), Ceiling: ceilingStatus(&s.self.Ceiling)}
 	}
 	sv := s.served.Load()
 	h := s.host()
 	n := s.net
 	st := hostapi.Status{
-		Version: s.opts.Version, PolicyHash: egress.PolicyHash(h), Section: s.sectionStatus(),
+		Version: s.opts.Version, PolicyHash: egress.PolicyHash(h), Section: s.sectionStatus(), Ceiling: ceilingStatus(&s.self.Ceiling),
 		Daemon:        hostapi.DaemonStatus{Version: s.info.ServerVersion, StorageDriver: s.info.Driver},
 		Rules:         hostapi.RulesStatus{Backend: backendName(n.Kernel.Backend), Restored: s.restored.Load(), RawOff: n.Kernel.RawOff},
 		DNS:           hostapi.DNSStatus{Configured: h.DNS, Original: n.Original.Addrs, OriginalUnknown: n.Original.Unknown},
@@ -198,6 +199,13 @@ func (s *supervisor) oomStatus(ctx context.Context, cg *platform.Cgroup) hostapi
 	}
 	st.Kills = &total
 	return st
+}
+
+func ceilingStatus(c *config.Ceiling) hostapi.Ceiling {
+	return hostapi.Ceiling{
+		AllowPrivate: c.Private, Block6: c.Block6, Warnings: c.Warnings,
+		AllowOpen: c.Open, AllowInternet: !c.NoInternet, AllowIPv6: c.IPv6,
+	}
 }
 
 func backendName(b egress.Backend) string {

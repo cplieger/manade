@@ -25,6 +25,8 @@ import (
 type Config struct {
 	// Self is set on a runner host only.
 	Self *Self
+	// ceilings are the hosts' ceilings the rules check against, by name.
+	ceilings map[string]*Ceiling
 	// HostAddress is pool.host_address, where hosts on other machines dial
 	// the control plane: host:port, or empty when unset.
 	HostAddress      string
@@ -117,13 +119,16 @@ func (s Secret) LogValue() slog.Value { return slog.StringValue(s.String()) }
 
 // build validates settings document data into cfg, which holds the
 // environment's settings. prev is the model data replaces, or nil for a
-// first document; the rule on a profile being deleted reads it.
-func build(cfg *Config, data []byte, prev *Config) error {
+// first document; the rule on a profile being deleted reads it. reported
+// holds the ceiling each host last reported, by name; a host with none is
+// checked by the model alone.
+func build(cfg *Config, data []byte, prev *Config, reported map[string]*Ceiling) error {
 	var d document
 	if err := json.Unmarshal(data, &d, json.RejectUnknownMembers(true)); err != nil {
 		return FieldErrors{decodeError(err)}
 	}
 	var p problems
+	cfg.ceilings = reported
 	d.apply(cfg, &p)
 	if prev != nil {
 		cfg.checkDeleting(prev, &p)

@@ -18,10 +18,12 @@ var dockerHubNames = []string{"docker.io", "index.docker.io", "registry-1.docker
 const registryPort = 443
 
 // check runs the rules that join a host's section to the profiles it
-// serves. Every field is parsed by then.
+// serves, and each host's ceiling where one is known. Every field is parsed
+// by then.
 func (c *Config) check(p *problems) {
 	for i := range c.Hosts {
-		checkHost(&c.Hosts[i], p)
+		h := &c.Hosts[i]
+		checkHost(h, c.ceilings[h.Name], p)
 	}
 	for i := range c.Profiles {
 		c.checkProfile(&c.Profiles[i], p)
@@ -69,9 +71,14 @@ func (c *Config) checkDeleting(prev *Config, p *problems) {
 	}
 }
 
-func checkHost(h *Host, p *problems) {
+// checkHost checks host h, and against its ceiling c unless c is nil: a
+// host that has never reported one is checked by the model alone.
+func checkHost(h *Host, c *Ceiling, p *problems) {
 	at := func(key string) string { return hostPath(h.Name) + "." + key }
-	checkEgress(&h.Egress, at, p)
+	checkEgress(h, c, at, p)
+	if c != nil {
+		checkCeiling(h, c, at, p)
+	}
 	checkSubnet(h, at, p)
 	if !h.Egress.IPv6 && !h.Egress.Open {
 		for _, r := range h.DNS {
@@ -82,7 +89,8 @@ func checkHost(h *Host, p *problems) {
 	}
 }
 
-func checkEgress(e *Egress, at func(string) string, p *problems) {
+func checkEgress(h *Host, c *Ceiling, at func(string) string, p *problems) {
+	e := &h.Egress
 	if e.Open {
 		beside := []struct {
 			key string
@@ -98,7 +106,7 @@ func checkEgress(e *Egress, at func(string) string, p *problems) {
 		p.addf(at("egress.block6"), "needs egress.ipv6: true")
 	}
 	for i, a := range e.Allow {
-		checkAllow(a.To, e.IPv6, at("egress.allow["+strconv.Itoa(i)+"].to"), p)
+		checkAllow(h, a.To, c, at("egress.allow["+strconv.Itoa(i)+"].to"), p)
 	}
 }
 
@@ -121,17 +129,21 @@ func checkSubnet(h *Host, at func(string) string, p *problems) {
 	}
 }
 
-func checkAllow(to netip.Prefix, ipv6 bool, at string, p *problems) {
+// checkAllow checks allow entry to of host h, and against its ceiling c
+// unless c is nil.
+func checkAllow(h *Host, to netip.Prefix, c *Ceiling, at string, p *problems) {
 	switch {
 	case !to.IsValid():
-	case to.Addr().Is4():
-		if !within(to, PrivateRanges) {
-			p.addf(at, "%s is not private: allow names destinations inside %s, and egress.internet governs public ones", show(to), prefixList(PrivateRanges))
-		}
-	case !ipv6:
+	case to.Addr().Is4() && !within(to, PrivateRanges) && c != nil && c.NoInternet:
+		p.addf(at, "%s is public, and MANADE_ALLOW_INTERNET=false on host %s's machine refuses every public allow entry", show(to), quote(h.Name))
+	case to.Addr().Is4() && !within(to, PrivateRanges):
+		p.addf(at, "%s is not private: allow names destinations inside %s, and egress.internet governs public ones", show(to), prefixList(PrivateRanges))
+	case to.Addr().Is6() && !h.Egress.IPv6:
 		p.addf(at, "%s is IPv6, which needs egress.ipv6: true", show(to))
-	case !within(to, ipv6AllowRanges):
+	case to.Addr().Is6() && !within(to, ipv6AllowRanges):
 		p.addf(at, "%s lies outside %s", show(to), prefixList(ipv6AllowRanges))
+	case c != nil:
+		c.checkAllow(to, quote(h.Name), at, p)
 	}
 }
 

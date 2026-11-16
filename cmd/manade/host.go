@@ -50,6 +50,9 @@ func serveHost(stderr io.Writer) int {
 	if self.LogLevelInvalid {
 		log.Warn("LOG_LEVEL is not a known level, so the host logs at info")
 	}
+	for _, w := range self.Ceiling.Warnings {
+		log.Warn("The host reads a ceiling variable as its narrower reach", "detail", w)
+	}
 	log.Info("The runner host is starting", "host", self.Name, "version", version)
 	err = host.Run(ctx, self, &host.Options{
 		Log: log, Version: version,

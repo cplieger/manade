@@ -71,6 +71,8 @@ type seams struct {
 	EchoURL string
 	Log     *slog.Logger
 	Root    platform.Root
+	// Block6 is the host's MANADE_BLOCK6.
+	Block6 []netip.Prefix
 }
 
 // hostNet is a host whose namespace, rules and daemon are up.
