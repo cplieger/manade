@@ -4,12 +4,10 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -17,7 +15,6 @@ import (
 
 	"github.com/cplieger/go/httpclient"
 	"github.com/cplieger/go/textsafe"
-	"github.com/cplieger/manade/internal/config"
 )
 
 // APIError is an error answer the client has no sentinel for.
@@ -41,41 +38,15 @@ type Client struct {
 	base   string
 }
 
-// NewClient reaches host name at addr. An addr with HostPort needs tlsCfg,
-// ClientTLS's config: the client verifies the host's certificate against
-// name, never against the address's hostname, so the certificate binds the
-// host wherever it moves.
-func NewClient(name string, addr config.Address, tlsCfg *tls.Config) (*Client, error) {
-	tr := &http.Transport{MaxIdleConns: 4, IdleConnTimeout: 90 * time.Second, TLSHandshakeTimeout: 10 * time.Second}
-	var base string
-	switch {
-	case addr.Socket != "":
-		socket := addr.Socket
-		tr.DialContext = func(ctx context.Context, _, _ string) (net.Conn, error) {
-			var d net.Dialer
-			return d.DialContext(ctx, "unix", socket)
-		}
-		base = "http://" + name
-	case addr.HostPort != "" && tlsCfg != nil:
-		cfg := tlsCfg.Clone()
-		cfg.ServerName = name
-		tr.TLSClientConfig = cfg
-		tr.ForceAttemptHTTP2 = false
-		base = "https://" + addr.HostPort
-	case addr.HostPort != "":
-		return nil, fmt.Errorf("host %s: an https address needs the orchestrator's TLS files", name)
-	default:
-		return nil, fmt.Errorf("host %s: no address", name)
-	}
+// NewClient calls a host through rt, the client of the connection the host
+// opened (hostlink's), which carries every call.
+func NewClient(rt http.RoundTripper) *Client {
 	return &Client{
-		api:    &http.Client{Transport: tr, Timeout: deleteBound + 2*clientSlack, CheckRedirect: httpclient.RefuseAllRedirects},
-		stream: &http.Client{Transport: tr, CheckRedirect: httpclient.RefuseAllRedirects},
-		base:   base,
-	}, nil
+		api:    &http.Client{Transport: rt, Timeout: deleteBound + 2*clientSlack, CheckRedirect: httpclient.RefuseAllRedirects},
+		stream: &http.Client{Transport: rt, CheckRedirect: httpclient.RefuseAllRedirects},
+		base:   "http://host",
+	}
 }
-
-// CloseIdleConnections closes the client's idle connections.
-func (c *Client) CloseIdleConnections() { c.api.CloseIdleConnections() }
 
 // Status reads the host's status.
 func (c *Client) Status(ctx context.Context) (Status, error) {

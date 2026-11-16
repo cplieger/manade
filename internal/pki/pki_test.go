@@ -14,7 +14,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cplieger/manade/internal/config"
 	"github.com/cplieger/manade/internal/hostapi"
 )
 
@@ -257,6 +256,25 @@ func serveHost(t *testing.T, root, name string) string {
 	return ln.Addr().String()
 }
 
+// clientTLS is a TLS client presenting the orchestrator's pair from dir and
+// trusting dir's CA.
+func clientTLS(t *testing.T, dir string) *tls.Config {
+	t.Helper()
+	pair, err := tls.LoadX509KeyPair(filepath.Join(dir, "orchestrator.pem"), filepath.Join(dir, "orchestrator-key.pem"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ca, err := os.ReadFile(filepath.Join(dir, hostapi.CAFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(ca) {
+		t.Fatal("no CA in ca.pem")
+	}
+	return &tls.Config{MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{pair}, RootCAs: pool}
+}
+
 // handshake dials addr with cfg and completes the TLS handshake.
 func handshake(t *testing.T, addr string, cfg *tls.Config) error {
 	t.Helper()
@@ -284,19 +302,23 @@ func TestIssuedFilesWorkOnlyInTheirRole(t *testing.T) {
 		t.Fatal(err)
 	}
 	addr := serveHost(t, root, "nas")
-	orch, err := hostapi.ClientTLS(filepath.Join(root, "orchestrator"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	orch := clientTLS(t, filepath.Join(root, "orchestrator"))
 	t.Run("the orchestrator reaches its host", func(t *testing.T) {
-		c, err := hostapi.NewClient("nas", config.Address{HostPort: addr}, orch)
+		cfg := orch.Clone()
+		cfg.ServerName = "nas"
+		hc := &http.Client{Transport: &http.Transport{TLSClientConfig: cfg}, Timeout: 5 * time.Second}
+		defer hc.CloseIdleConnections()
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "https://"+addr+"/", http.NoBody)
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer c.CloseIdleConnections()
-		_, err = c.Status(t.Context())
-		if err == nil || !strings.Contains(err.Error(), "404") {
-			t.Errorf("status = %v, want the handler's 404 after a good handshake", err)
+		resp, err := hc.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusNotFound {
+			t.Errorf("status = %d, want the handler's 404 after a good handshake", resp.StatusCode)
 		}
 	})
 	t.Run("a host certificate is refused as a client", func(t *testing.T) {

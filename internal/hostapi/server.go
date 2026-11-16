@@ -121,7 +121,7 @@ func NewServer(backend Backend, instanceID string, log *slog.Logger) *Server {
 // quickTimeout for the requests in flight, whose contexts end with ctx.
 func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	srv := &http.Server{
-		Handler:           s.handler(),
+		Handler:           s.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       quickTimeout,
 		IdleTimeout:       2 * time.Minute,
@@ -148,8 +148,8 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	return nil
 }
 
-// handler answers every route under /v1.
-func (s *Server) handler() http.Handler {
+// Handler answers every route under /v1.
+func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("GET /v1/status", s.bounded(quickTimeout, s.status))
 	mux.Handle("POST /v1/runners", s.bounded(quickTimeout, s.createRunner))
@@ -162,14 +162,22 @@ func (s *Server) handler() http.Handler {
 	return mux
 }
 
-// bounded cuts h's context and its answer's write at bound.
+// bounded cuts h's context and its answer's write at bound, and the
+// request's read at quickTimeout.
 func (s *Server) bounded(bound time.Duration, h http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), bound)
 		defer cancel()
+		s.readDeadline(w, quickTimeout)
 		s.writeDeadline(w, bound+quickTimeout)
 		h(w, r.WithContext(ctx))
 	})
+}
+
+func (s *Server) readDeadline(w http.ResponseWriter, d time.Duration) {
+	if err := http.NewResponseController(w).SetReadDeadline(time.Now().Add(d)); err != nil && !errors.Is(err, http.ErrNotSupported) {
+		s.log.Warn("The host API could not bound a request's read", "error", err)
+	}
 }
 
 func (s *Server) writeDeadline(w http.ResponseWriter, d time.Duration) {

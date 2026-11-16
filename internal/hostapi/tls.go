@@ -49,23 +49,6 @@ func ServerTLS(dir, name string) (*tls.Config, error) {
 	}, nil
 }
 
-// ClientTLS loads the orchestrator's TLS files from dir. Each host's link
-// takes a Clone with ServerName set to the host's config name.
-func ClientTLS(dir string) (*tls.Config, error) {
-	pool, cert, err := loadPair(dir, OrchestratorFiles, x509.ExtKeyUsageClientAuth, OrchestratorName)
-	if err != nil {
-		return nil, err
-	}
-	return &tls.Config{
-		MinVersion:   tls.VersionTLS13,
-		Certificates: []tls.Certificate{cert},
-		RootCAs:      pool,
-		VerifyConnection: func(cs tls.ConnectionState) error {
-			return checkPeer(&cs, x509.ExtKeyUsageServerAuth, cs.ServerName)
-		},
-	}, nil
-}
-
 // loadPair reads dir's CA and the pair under file, whose certificate must
 // carry usage and dnsName.
 func loadPair(dir, file string, usage x509.ExtKeyUsage, dnsName string) (*x509.CertPool, tls.Certificate, error) {
