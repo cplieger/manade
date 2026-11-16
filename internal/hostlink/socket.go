@@ -8,6 +8,10 @@ import (
 	"path/filepath"
 )
 
+// SocketPath is where the control plane listens for the hosts on its own
+// machine, in a volume only it and those hosts mount.
+const SocketPath = "/run/manade/hosts.sock"
+
 // ListenSocket listens for local hosts at path with mode 0600, owned by the
 // process, whatever its umask. The socket is bound inside a fresh 0700
 // directory beside path and renamed onto path once its mode is set, which

@@ -363,7 +363,7 @@ func testServed(pinning bool) *served {
 	dind := testProfile("dind", 1)
 	dind.RunnerImage, dind.Command = config.ShippedDocker, []string{config.DockerWrapper}
 	cfg := &config.Config{
-		Self:     &config.Self{Name: "nas", TLSDir: "/tls"},
+		Self:     &config.Self{Name: "nas"},
 		Profiles: []config.Profile{testProfile("small", 1), testProfile("large", 2), dind, other},
 	}
 	h := &config.Host{Name: "nas", Egress: config.Egress{Internet: true}}

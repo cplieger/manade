@@ -26,10 +26,7 @@ type Config struct {
 	// Self is set on a runner host only.
 	Self *Self
 	// ceilings are the hosts' ceilings the rules check against, by name.
-	ceilings map[string]*Ceiling
-	// HostAddress is pool.host_address, where hosts on other machines dial
-	// the control plane: host:port, or empty when unset.
-	HostAddress      string
+	ceilings         map[string]*Ceiling
 	Scopes           []Scope
 	Hosts            []Host
 	Profiles         []Profile

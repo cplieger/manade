@@ -92,7 +92,7 @@ func TestTheHostRefusesASectionBeyondItsCeiling(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			self := tc.self
-			self.Name, self.TLSDir = "lan", "/tls"
+			self.Name = "lan"
 			s := waitingAs(t, &self)
 			small := `"small": {"runner_image": "base", "cpus": 1, "memory": "512MiB", "scopes": ["acme/app"], "mounts": [{"bind": "/run/secrets", "target": "/m", "read_only": true}]}`
 			if tc.name != "theRegistryAuthFile" {
@@ -144,7 +144,7 @@ func TestAnUpHostKeepsItsSectionWhenItsCeilingRefusesOne(t *testing.T) {
 // value it read narrower, so the control plane checks the first save.
 func TestAWaitingHostReportsItsCeiling(t *testing.T) {
 	c := config.Ceiling{NoInternet: true, Block6: prefixes("2001:db8:1:5::/64"), Warnings: []string{`MANADE_ALLOW_OPEN: "yes" is neither true nor false, so it reads false`}}
-	s := waitingAs(t, &config.Self{Name: "lan", TLSDir: "/tls", Ceiling: c})
+	s := waitingAs(t, &config.Self{Name: "lan", Ceiling: c})
 	want := hostapi.Ceiling{Block6: c.Block6, Warnings: c.Warnings}
 	if got := statusOf(t, s).Ceiling; !reflect.DeepEqual(got, want) {
 		t.Errorf("ceiling = %+v, want %+v", got, want)

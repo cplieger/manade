@@ -27,7 +27,7 @@ import (
 // lanSelf is host lan's environment, whose ceiling lets it be open, use
 // IPv6 and reach 10.0.0.0/8.
 func lanSelf() *config.Self {
-	return &config.Self{Name: "lan", TLSDir: "/tls", Ceiling: config.Ceiling{
+	return &config.Self{Name: "lan", Ceiling: config.Ceiling{
 		Open: true, IPv6: true, Private: []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8")},
 	}}
 }
@@ -199,6 +199,7 @@ func TestABootWithNoControlPlaneRunsTheSavedSection(t *testing.T) {
 	if err := writeSection(t.Context(), s.sectionPath, sec); err != nil {
 		t.Fatal(err)
 	}
+	s.bootSaved(t.Context())
 	got := s.awaitSection(t.Context())
 	if got == nil || got.hash != hashOf(t, sec) || len(got.host.Egress.Allow) != 1 || got.raw.Revision != 7 {
 		t.Fatalf("boot section = %+v, want the saved one", got)
@@ -277,6 +278,7 @@ func TestASavedSectionThatNoLongerValidates(t *testing.T) {
 	if err := writeSection(t.Context(), s.sectionPath, sectionOf(3, `{"address": "10.0.0.1:7464"}`)); err != nil {
 		t.Fatal(err)
 	}
+	s.bootSaved(t.Context())
 	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
 	defer cancel()
 	if got := s.awaitSection(ctx); got != nil {
@@ -311,12 +313,12 @@ func TestEachRowApplies(t *testing.T) {
 			t.Error("images.refresh changed the policy hash")
 		}
 	})
-	t.Run("a socket host's dial address stored, no rule changed", func(t *testing.T) {
+	t.Run("a socket host's dial address applied, no rule changed", func(t *testing.T) {
 		s, f, _ := upSupervisor(t, sectionOf(1, lanHost, smallJSON))
 		rules, policy := f.kernel.save(false), egress.PolicyHash(s.net.section())
 		sec := &hostapi.Section{Revision: 2, Settings: []byte(`{"hosts": {"lan": {}}, "profiles": {` + smallJSON + `}, "pool": {"host_address": "cp.example:7464"}}`)}
-		if ans := deliver(t, s, sec); ans.Applies != hostapi.SectionApplied || s.running.cfg.HostAddress != "cp.example:7464" {
-			t.Errorf("answer %+v, address %q", ans, s.running.cfg.HostAddress)
+		if ans := deliver(t, s, sec); ans.Applies != hostapi.SectionApplied || s.running.raw.Revision != 2 {
+			t.Errorf("answer %+v, running revision %d", ans, s.running.raw.Revision)
 		}
 		if string(f.kernel.save(false)) != string(rules) || egress.PolicyHash(s.net.section()) != policy {
 			t.Error("the dial address touched a socket host's rules or policy hash")

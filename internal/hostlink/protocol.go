@@ -14,8 +14,8 @@ import (
 	"github.com/cplieger/manade/internal/config"
 )
 
-// Protocol is the upgrade token, naming the host API's major.
-const Protocol = "manade-host/1"
+// protocol is the upgrade token, naming the host API's major.
+const protocol = "manade-host/1"
 
 // connectPath is the one route a host calls before the upgrade.
 const connectPath = "/connect"
@@ -74,8 +74,8 @@ func helloFrom(hd http.Header) (Hello, error) {
 
 // The codes a refusal of the upgrade carries.
 const (
-	CodeUpgradeRequired = "upgrade_required"
-	CodeBadRequest      = "bad_request"
+	codeUpgradeRequired = "upgrade_required"
+	codeBadRequest      = "bad_request"
 )
 
 // refusal is every answer to /connect but its 101.
@@ -91,17 +91,17 @@ type refusal struct {
 func writeRefusal(w http.ResponseWriter, status int, r *refusal) {
 	b, _ := json.Marshal(r)
 	w.Header().Set("Content-Type", "application/json")
-	if r.Code == CodeUpgradeRequired {
+	if r.Code == codeUpgradeRequired {
 		// RFC 9110 §15.5.22: a 426 names the protocol to upgrade to.
-		w.Header().Set("Upgrade", Protocol)
+		w.Header().Set("Upgrade", protocol)
 		w.Header().Set("Connection", "Upgrade")
 	}
 	w.WriteHeader(status)
 	_, _ = w.Write(b)
 }
 
-// RefusedError is the control plane's refusal of a host's upgrade.
-type RefusedError struct {
+// refusedError is the control plane's refusal of a host's upgrade.
+type refusedError struct {
 	Code    string
 	Message string
 	Want    string
@@ -109,16 +109,16 @@ type RefusedError struct {
 	Status  int
 }
 
-func (e *RefusedError) Error() string {
+func (e *refusedError) Error() string {
 	return fmt.Sprintf("the control plane refused the connection: status %d (%s): %s", e.Status, e.Code, e.Message)
 }
 
-func refusedFrom(status int, body []byte) *RefusedError {
+func refusedFrom(status int, body []byte) *refusedError {
 	var r refusal
 	if json.Unmarshal(body, &r) != nil || r.Code == "" {
-		return &RefusedError{Status: status, Code: "unknown", Message: textsafe.SanitizeSingleLineBounded(string(body), 256)}
+		return &refusedError{Status: status, Code: "unknown", Message: textsafe.SanitizeSingleLineBounded(string(body), 256)}
 	}
-	return &RefusedError{
+	return &refusedError{
 		Status: status, Code: textsafe.SanitizeSingleLineBounded(r.Code, 64), Message: textsafe.SanitizeSingleLineBounded(r.Message, 512),
 		Want: textsafe.SanitizeSingleLineBounded(r.Want, 64), Got: textsafe.SanitizeSingleLineBounded(r.Got, 64),
 	}

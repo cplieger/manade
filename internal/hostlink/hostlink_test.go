@@ -60,7 +60,7 @@ func upgradeAnswer(t *testing.T, r *rig, headers map[string]string) answer {
 
 func TestUpgradeAnswers(t *testing.T) {
 	r := newRig(t, nil)
-	good := map[string]string{"Connection": "Upgrade", "Upgrade": Protocol, headerName: "nas", headerBuild: "v1", headerInstance: "i1"}
+	good := map[string]string{"Connection": "Upgrade", "Upgrade": protocol, headerName: "nas", headerBuild: "v1", headerInstance: "i1"}
 	with := func(k, v string) map[string]string {
 		h := maps.Clone(good)
 		if v == "" {
@@ -72,7 +72,7 @@ func TestUpgradeAnswers(t *testing.T) {
 	}
 	t.Run("101 for a host speaking the protocol", func(t *testing.T) {
 		a := upgradeAnswer(t, r, good)
-		if a.status != http.StatusSwitchingProtocols || a.header.Get("Upgrade") != Protocol {
+		if a.status != http.StatusSwitchingProtocols || a.header.Get("Upgrade") != protocol {
 			t.Errorf("answer = %d, Upgrade %q", a.status, a.header.Get("Upgrade"))
 		}
 		if l := r.link(t, "nas", "i1"); l.Build != "v1" {
@@ -81,13 +81,13 @@ func TestUpgradeAnswers(t *testing.T) {
 	})
 	t.Run("426 for another protocol, naming both", func(t *testing.T) {
 		a := upgradeAnswer(t, r, with("Upgrade", "manade-host/2"))
-		if a.status != http.StatusUpgradeRequired || a.body.Code != CodeUpgradeRequired || a.body.Want != Protocol || a.body.Got != "manade-host/2" || a.header.Get("Upgrade") != Protocol {
+		if a.status != http.StatusUpgradeRequired || a.body.Code != codeUpgradeRequired || a.body.Want != protocol || a.body.Got != "manade-host/2" || a.header.Get("Upgrade") != protocol {
 			t.Errorf("answer = %d %+v, Upgrade %q", a.status, a.body, a.header.Get("Upgrade"))
 		}
 	})
 	t.Run("426 for no upgrade at all", func(t *testing.T) {
 		a := upgradeAnswer(t, r, with("Upgrade", ""))
-		if a.status != http.StatusUpgradeRequired || a.body.Want != Protocol || a.body.Got != "" {
+		if a.status != http.StatusUpgradeRequired || a.body.Want != protocol || a.body.Got != "" {
 			t.Errorf("answer = %d %+v", a.status, a.body)
 		}
 	})
@@ -98,9 +98,9 @@ func TestUpgradeAnswers(t *testing.T) {
 		}
 	})
 	t.Run("400 for a name no host may have", func(t *testing.T) {
-		for _, name := range []string{"", "NAS", "../x", "ca"} {
+		for _, name := range []string{"", "NAS", "../x", "10.0.0.1"} {
 			a := upgradeAnswer(t, r, with(headerName, name))
-			if a.status != http.StatusBadRequest || a.body.Code != CodeBadRequest {
+			if a.status != http.StatusBadRequest || a.body.Code != codeBadRequest {
 				t.Errorf("name %q: answer = %d %+v", name, a.status, a.body)
 			}
 		}
@@ -115,8 +115,8 @@ func TestUplinkReportsARefusal(t *testing.T) {
 	u, _ := r.host(t, "Bad Name", "i1", newBackend(), nil)
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if refused, ok := errors.AsType[*RefusedError](u.State().Err); ok {
-			if refused.Status != http.StatusBadRequest || refused.Code != CodeBadRequest || u.State().Connected {
+		if refused, ok := errors.AsType[*refusedError](u.State().Err); ok {
+			if refused.Status != http.StatusBadRequest || refused.Code != codeBadRequest || u.State().Connected {
 				t.Errorf("state = %+v", u.State())
 			}
 			return

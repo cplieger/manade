@@ -54,9 +54,7 @@ type UplinkOptions struct {
 
 // UplinkState is the host's channel as its status reports it.
 type UplinkState struct {
-	// Since is when the channel last connected or last failed.
-	Since time.Time
-	// Err is the last dial failure, refusal or close; a *RefusedError for a
+	// Err is the last dial failure, refusal or close; a *refusedError for a
 	// refusal.
 	Err       error
 	Connected bool
@@ -95,9 +93,9 @@ func (u *Uplink) Run(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		u.state.Store(&UplinkState{Since: time.Now(), Err: err})
+		u.state.Store(&UplinkState{Err: err})
 		wait := u.wait.after(lasted)
-		if refused, ok := errors.AsType[*RefusedError](err); ok {
+		if refused, ok := errors.AsType[*refusedError](err); ok {
 			u.opts.Log.Warn("The control plane refused the host's connection; the host dials again", "code", refused.Code, "error", err, "wait", wait)
 		} else if lasted > 0 {
 			u.opts.Log.Info("The host's connection to the control plane closed; the host dials again", "error", err, "connected_for", lasted.Round(time.Second), "wait", wait)
@@ -134,7 +132,7 @@ func (u *Uplink) connect(ctx context.Context) (time.Duration, error) {
 		return 0, err
 	}
 	since := time.Now()
-	u.state.Store(&UplinkState{Since: since, Connected: true})
+	u.state.Store(&UplinkState{Connected: true})
 	u.opts.Log.Info("The host is connected to the control plane", "host", hello.Name, "section", hello.Section)
 	u.serve(ctx, &bufferedConn{Conn: conn, r: br})
 	return time.Since(since), errClosed
@@ -152,7 +150,7 @@ func (u *Uplink) upgrade(ctx context.Context, conn net.Conn, hello *Hello) (*buf
 		return nil, err
 	}
 	req.Header.Set("Connection", "Upgrade")
-	req.Header.Set("Upgrade", Protocol)
+	req.Header.Set("Upgrade", protocol)
 	hello.header(req.Header)
 	if werr := req.Write(conn); werr != nil {
 		return nil, fmt.Errorf("the upgrade request: %w", werr)
@@ -167,8 +165,8 @@ func (u *Uplink) upgrade(ctx context.Context, conn net.Conn, hello *Hello) (*buf
 		_ = resp.Body.Close()
 		return nil, refusedFrom(resp.StatusCode, body)
 	}
-	if !strings.EqualFold(resp.Header.Get("Upgrade"), Protocol) {
-		return nil, fmt.Errorf("the control plane switched to %q, not %s", resp.Header.Get("Upgrade"), Protocol)
+	if !strings.EqualFold(resp.Header.Get("Upgrade"), protocol) {
+		return nil, fmt.Errorf("the control plane switched to %q, not %s", resp.Header.Get("Upgrade"), protocol)
 	}
 	if err := conn.SetDeadline(time.Time{}); err != nil {
 		return nil, err
@@ -247,7 +245,7 @@ func (l *oneConn) Close() error {
 	return nil
 }
 
-func (l *oneConn) Addr() net.Addr { return linkAddr{} }
+func (*oneConn) Addr() net.Addr { return linkAddr{} }
 
 // closingConn closes its listener when the server closes it.
 type closingConn struct {

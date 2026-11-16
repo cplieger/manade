@@ -43,7 +43,6 @@ func ParseSection(self *Self, settings []byte) (*Config, error) {
 	cfg.Profiles = d.profiles(self.Name, &p)
 	if a := d.Pool.HostAddress; a != "" {
 		p.add("pool.host_address", checkDialAddress(a))
-		cfg.HostAddress = a
 	}
 	if len(cfg.Hosts) == 1 {
 		cfg.check(&p)

@@ -2,8 +2,7 @@
 // Docker daemon. With no argument it serves; `manade health` is the image's
 // healthcheck, which reads the health marker the server keeps. `manade host`
 // runs a runner host, `manade control-plane` the control plane that hosts
-// will dial, `manade probe` its probe's in-container side, `manade pki`
-// issues the TLS files of a pool whose hosts are reached over TCP, and
+// dial, `manade probe` its probe's in-container side, and
 // `manade storage-driver <dir>` answers the graph driver a job's own daemon
 // runs on.
 package main
@@ -46,7 +45,7 @@ const dockerTimeout = 30 * time.Second
 
 func main() { os.Exit(run(os.Args[1:], os.Stderr)) }
 
-const usage = "usage: manade [health | host [health] | control-plane | probe [listen] | pki <dir> <host>... | storage-driver <dir>]"
+const usage = "usage: manade [health | host [health] | control-plane | probe [listen] | storage-driver <dir>]"
 
 // run dispatches one command and returns the exit code: 0 after a clean
 // shutdown, 1 when the pool cannot start or stops on a failure, 2 on a usage
@@ -64,8 +63,6 @@ func run(args []string, stderr io.Writer) int {
 		return runControlPlane(args[1:], stderr)
 	case args[0] == "probe":
 		return runProbe(args[1:], stderr)
-	case args[0] == "pki":
-		return runPKI(args[1:], stderr)
 	case len(args) == 2 && args[0] == "storage-driver":
 		return runStorageDriver(args[1], stderr)
 	default:

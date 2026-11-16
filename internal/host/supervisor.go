@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -27,6 +28,7 @@ import (
 	"github.com/cplieger/manade/internal/host/probe"
 	"github.com/cplieger/manade/internal/host/resolver"
 	"github.com/cplieger/manade/internal/hostapi"
+	"github.com/cplieger/manade/internal/hostlink"
 	"github.com/cplieger/manade/internal/jobspec"
 )
 
@@ -104,7 +106,6 @@ type supervisor struct {
 	phase      atomic.Int32
 	serving    atomic.Bool
 	rebuilding bool
-	apiPort    uint16
 }
 
 func newSupervisor(self *config.Self, opts *Options, path string) *supervisor {
@@ -116,36 +117,49 @@ func newSupervisor(self *config.Self, opts *Options, path string) *supervisor {
 	return s
 }
 
-// Run serves host self's API, boots on the section it saved or, with none,
-// on the first one the control plane delivers, and holds it until ctx
-// ends, then stops its daemon, which stops each runner. Any failure before
-// the host is up leaves no daemon; a guard or daemon failure later stops
-// the daemon and answers why, and a restart to apply a section answers
-// ErrRestart.
+// Run boots host self on the section it saved or, with none, on the first
+// one the control plane delivers, and holds it until ctx ends, then stops its
+// daemon, which stops each runner. Throughout, it keeps one connection to
+// the control plane open on the hosts socket and serves the host API over
+// it. Any failure before the host is up leaves no daemon; a guard or daemon
+// failure later stops the daemon and answers why, and a restart to apply a
+// section answers ErrRestart.
 func Run(ctx context.Context, self *config.Self, opts *Options) error {
-	s := newSupervisor(self, opts, sectionPath)
-	ln, err := listen(ctx, self)
-	if err != nil {
-		return err
-	}
+	return newSupervisor(self, opts, sectionPath).runLinked(ctx, dialSocket(hostlink.SocketPath))
+}
+
+// runLinked is Run with the channel dialed by dial. The saved section is
+// read before the first dial, so every upgrade names its revision; the
+// channel outlives ctx until the run has stopped, so the control plane
+// reads the host through its shutdown.
+func (s *supervisor) runLinked(ctx context.Context, dial func(context.Context) (net.Conn, error)) error {
 	rctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
-	actx, stopAPI := context.WithCancel(context.WithoutCancel(ctx))
-	apiDone := make(chan error, 1)
+	s.bootSaved(ctx)
+	up := hostlink.NewUplink(&hostlink.UplinkOptions{
+		Dial: dial, Hello: s.hello, Handler: hostapi.NewServer(&backend{s: s}, s.instance, s.log).Handler(), Log: s.log,
+	})
+	uctx, stopUplink := context.WithCancel(context.WithoutCancel(ctx))
+	uplinkDone := make(chan struct{})
 	go func() {
-		serr := hostapi.NewServer(&backend{s: s}, s.instance, s.log).Serve(actx, ln)
-		if serr != nil {
-			cancel(serr)
-		}
-		apiDone <- serr
+		up.Run(uctx)
+		close(uplinkDone)
 	}()
-	s.log.Info("The runner host serves its API", "host", self.Name, "instance", s.instance, "version", opts.Version)
-	err = s.run(ctx, rctx, cancel)
-	stopAPI()
-	if aerr := <-apiDone; aerr != nil && ctx.Err() == nil && !errors.Is(err, ErrRestart) {
-		err = errors.Join(err, aerr)
-	}
+	s.log.Info("The runner host dials the control plane", "host", s.self.Name, "instance", s.instance, "version", s.opts.Version)
+	err := s.run(ctx, rctx, cancel)
+	stopUplink()
+	<-uplinkDone
 	return err
+}
+
+// hello is what each upgrade says of the host: the revision named is the
+// running section's, none before the first.
+func (s *supervisor) hello() hostlink.Hello {
+	h := hostlink.Hello{Name: s.self.Name, Build: s.opts.Version, Instance: s.instance}
+	if st := s.view.Load(); st.Hash != "" {
+		h.Section = strconv.FormatUint(st.Revision, 10)
+	}
+	return h
 }
 
 // run boots on the first section and holds the host until rctx ends,
@@ -189,23 +203,33 @@ func ended(ctx, rctx context.Context) error {
 	return context.Cause(rctx)
 }
 
-// awaitSection answers the section the host boots on: the one it saved,
-// when it still validates, or else the first one delivered; nil when ctx
-// ends first.
-func (s *supervisor) awaitSection(ctx context.Context) *accepted {
-	if next := s.savedSection(ctx); next != nil {
-		s.sectionMu.Lock()
-		defer s.sectionMu.Unlock()
-		if s.phase.Load() == phaseWaiting {
-			s.running = next
-			s.phase.Store(phaseBooting)
-			s.publish()
-			s.log.Info("The host boots on the section it saved", "hash", next.hash, "revision", next.raw.Revision)
-			return next
-		}
-	} else {
-		s.log.Info("The host waits for its first settings from the control plane", "host", s.self.Name)
+// bootSaved makes the section saved at the last accept the one the host
+// boots on, when it still validates.
+func (s *supervisor) bootSaved(ctx context.Context) {
+	next := s.savedSection(ctx)
+	if next == nil {
+		return
 	}
+	s.sectionMu.Lock()
+	defer s.sectionMu.Unlock()
+	if s.phase.Load() == phaseWaiting {
+		s.running = next
+		s.phase.Store(phaseBooting)
+		s.publish()
+		s.log.Info("The host boots on the section it saved", "hash", next.hash, "revision", next.raw.Revision)
+	}
+}
+
+// awaitSection answers the section the host boots on: bootSaved's, or else
+// the first one delivered; nil when ctx ends first.
+func (s *supervisor) awaitSection(ctx context.Context) *accepted {
+	s.sectionMu.Lock()
+	booting, running := s.phase.Load() == phaseBooting, s.running
+	s.sectionMu.Unlock()
+	if booting {
+		return running
+	}
+	s.log.Info("The host waits for its first settings from the control plane", "host", s.self.Name)
 	select {
 	case <-ctx.Done():
 		return nil
@@ -263,7 +287,7 @@ func (s *supervisor) serve(rctx context.Context, cancel context.CancelCauseFunc,
 		Pinning: !cg.Quota, PIDs: cg.PIDsController, Swap: cg.Swap,
 		Disk: s.net.Storage.Driver == platform.Overlay2 && platform.ProjectQuota(ms, dataRoot),
 	}
-	s.outward, s.apiPort = s.outwardAddrs(), s.self.Listen.Port
+	s.outward = s.outwardAddrs()
 	h := s.running.host
 	sv := s.newServed(s.running.cfg, h)
 	s.served.Store(sv)
@@ -396,7 +420,8 @@ func (s *supervisor) onRestored(string) { s.restored.Add(1) }
 const healthAsk = 3 * time.Second
 
 // onChecked records the health verdict after each guard check that left
-// the rules in place: healthy while the daemon answers and the API serves.
+// the rules in place: healthy while the daemon answers and the host serves
+// its section.
 func (s *supervisor) onChecked() {
 	if s.opts.Health == nil {
 		return
@@ -415,7 +440,7 @@ func (s *supervisor) probeHost() probe.Host {
 	h := s.host()
 	n := s.net
 	in := egress.ProbeInput{
-		Host: h, OutwardGateway: n.Gateway4, Original: n.Original, APIPort: s.apiPort,
+		Host: h, OutwardGateway: n.Gateway4, Original: n.Original,
 	}
 	ph := probe.Host{Sources: []netip.Addr{s.outward.Address}}
 	if h.Egress.IPv6 {
@@ -494,19 +519,6 @@ func socketGID() (uint32, error) {
 		return 0, errors.New("the host daemon's socket: no owner on this platform")
 	}
 	return sys.Gid, nil
-}
-
-// listen opens the API's listener: the Unix socket owned by APIUID, or TCP
-// with mutual TLS from TLSDir.
-func listen(ctx context.Context, self *config.Self) (net.Listener, error) {
-	if self.Listen.Socket != "" {
-		return hostapi.ListenUnix(self.Listen.Socket, self.APIUID)
-	}
-	tc, err := hostapi.ServerTLS(self.TLSDir, self.Name)
-	if err != nil {
-		return nil, err
-	}
-	return hostapi.ListenTLS(ctx, self.Listen.HostPort, tc)
 }
 
 func newInstanceID() string {

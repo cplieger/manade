@@ -7,7 +7,7 @@ import (
 
 // nasSelf is the environment of host nas, whose ceiling lists 10.0.0.0/8.
 func nasSelf() *Self {
-	return &Self{Name: "nas", TLSDir: "/tls", Ceiling: Ceiling{Private: pfxs("10.0.0.0/8")}}
+	return &Self{Name: "nas", Ceiling: Ceiling{Private: pfxs("10.0.0.0/8")}}
 }
 
 func TestParseSection(t *testing.T) {
@@ -38,11 +38,6 @@ func TestParseSection(t *testing.T) {
 			}
 		}
 	})
-	t.Run("hostAddress", func(t *testing.T) {
-		if cfg.HostAddress != "cp.example:7464" {
-			t.Errorf("host address = %q", cfg.HostAddress)
-		}
-	})
 	t.Run("self", func(t *testing.T) {
 		if cfg.Self == nil || cfg.Self.Name != "nas" {
 			t.Errorf("self = %+v", cfg.Self)
@@ -57,7 +52,7 @@ func TestParseSectionWithNoProfile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cfg.Profiles) != 0 || cfg.HostAddress != "" || len(cfg.Hosts) != 1 {
+	if len(cfg.Profiles) != 0 || len(cfg.Hosts) != 1 {
 		t.Errorf("cfg = %+v", cfg)
 	}
 }
@@ -96,7 +91,7 @@ func TestParseSectionMatchesTheDocument(t *testing.T) {
 		{"privilegedOnAClosedHost", `{}`, `"privileged": true, "scopes": ["acme/app"]`},
 		{"allowOutsidePrivate", `{"egress": {"allow": [{"to": "8.8.8.8"}]}}`, `"scopes": ["acme/app"]`},
 		{"dockerHubOffTheInternet", `{"egress": {"internet": false}}`, `"image": "library/ubuntu:24.04", "scopes": ["acme/app"]`},
-		{"aProtectedMount", `{}`, `"mounts": [{"bind": "/tls/x", "target": "/m"}], "scopes": ["acme/app"]`},
+		{"aProtectedMount", `{}`, `"mounts": [{"bind": "/run/manade/x", "target": "/m"}], "scopes": ["acme/app"]`},
 		{"aBadSize", `{}`, `"memory": "lots"`},
 		{"ipv6ResolverWithoutIPv6", `{"dns": ["2606:4700:4700::1111"]}`, `"cpus": 1`},
 	} {

@@ -120,16 +120,16 @@ func (s *Server) closeAll() {
 // it with a refusal body.
 func (s *Server) connect(w http.ResponseWriter, r *http.Request) {
 	got := r.Header.Get("Upgrade")
-	if got != Protocol || !hasToken(r.Header.Values("Connection"), "upgrade") {
+	if got != protocol || !hasToken(r.Header.Values("Connection"), "upgrade") {
 		writeRefusal(w, http.StatusUpgradeRequired, &refusal{
-			Code: CodeUpgradeRequired, Want: Protocol, Got: got,
-			Message: "this control plane speaks " + Protocol + "; upgrade the host or the control plane so both speak it",
+			Code: codeUpgradeRequired, Want: protocol, Got: got,
+			Message: "this control plane speaks " + protocol + "; upgrade the host or the control plane so both speak it",
 		})
 		return
 	}
 	hello, err := helloFrom(r.Header)
 	if err != nil {
-		writeRefusal(w, http.StatusBadRequest, &refusal{Code: CodeBadRequest, Message: err.Error()})
+		writeRefusal(w, http.StatusBadRequest, &refusal{Code: codeBadRequest, Message: err.Error()})
 		return
 	}
 	conn, brw, err := http.NewResponseController(w).Hijack()
@@ -155,7 +155,7 @@ func (s *Server) open(ctx context.Context, conn net.Conn, buffered int, hello *H
 	if err := conn.SetDeadline(time.Now().Add(s.handshake)); err != nil {
 		return nil, err
 	}
-	if _, err := conn.Write([]byte("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: " + Protocol + "\r\n\r\n")); err != nil {
+	if _, err := conn.Write([]byte("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: " + protocol + "\r\n\r\n")); err != nil {
 		return nil, err
 	}
 	// A hijacked connection keeps its deadlines, which would end the link in

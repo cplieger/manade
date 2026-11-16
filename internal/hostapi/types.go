@@ -65,10 +65,6 @@ const (
 	eventLimit = 64 << 10
 )
 
-// OrchestratorName is the DNS name the orchestrator's client certificate
-// carries and the host requires.
-const OrchestratorName = "manade-orchestrator"
-
 // Section is a PUT /v1/section body and the host's persisted section: the
 // settings revision the control plane built it from, and the section in the
 // settings document's vocabulary, which the host parses with the one parser.

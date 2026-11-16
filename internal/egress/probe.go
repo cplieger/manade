@@ -133,10 +133,7 @@ type ProbeInput struct {
 	ControlPlane *ControlPlane
 	// Original are the resolvers the host's resolv.conf named before the
 	// host rewrote it.
-	Original Resolvers
-	// APIPort is the host API's TCP port, or 0 when it serves a Unix
-	// socket only.
-	APIPort      uint16
+	Original     Resolvers
 	ListenerPort uint16
 }
 
@@ -217,9 +214,6 @@ func (p *planner) jobLeg() {
 	in := p.in
 	if !p.e.Open {
 		for _, gw := range []netip.Addr{in.JobGateway, in.JobGateway6} {
-			if in.APIPort != 0 {
-				p.blockLocal("the job network's gateway, on the API's port", gw, in.APIPort)
-			}
 			p.blockLocal("the job network's gateway", gw, 1)
 		}
 		p.gateway()

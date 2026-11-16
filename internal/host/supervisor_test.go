@@ -10,7 +10,9 @@ import (
 	"time"
 
 	"github.com/cplieger/go/health/v2"
+	"github.com/cplieger/manade/internal/config"
 	"github.com/cplieger/manade/internal/hostapi"
+	"github.com/cplieger/manade/internal/hostlink"
 )
 
 func TestHealthFollowsTheGuardsCheck(t *testing.T) {
@@ -19,14 +21,14 @@ func TestHealthFollowsTheGuardsCheck(t *testing.T) {
 	var pingErr error
 	s := &supervisor{opts: &Options{Health: st}, ping: func(context.Context) error { return pingErr }}
 	exists := func() bool { _, err := os.Stat(marker); return err == nil }
-	t.Run("unhealthy before the API serves", func(t *testing.T) {
+	t.Run("unhealthy before the host serves its section", func(t *testing.T) {
 		s.onChecked()
 		if st.Healthy() || exists() {
-			t.Error("healthy before the API serves")
+			t.Error("healthy before the host serves its section")
 		}
 	})
 	s.serving.Store(true)
-	t.Run("healthy once a check passes with the API serving and the daemon answering", func(t *testing.T) {
+	t.Run("healthy once a check passes with the host serving and the daemon answering", func(t *testing.T) {
 		s.onChecked()
 		if !st.Healthy() || !exists() {
 			t.Error("unhealthy after a passing check")
@@ -87,5 +89,69 @@ func TestLatencies(t *testing.T) {
 	})
 	if len(hostapi.LatencyBuckets) != len(got[0].Buckets) {
 		t.Error("a bucket per bound")
+	}
+}
+
+// The host dials the control plane's socket and serves its API over the
+// connection from before its first section until its run ends.
+func TestRunServesItsAPIOverTheChannel(t *testing.T) {
+	sock := filepath.Join(t.TempDir(), "hosts.sock")
+	ln, err := hostlink.ListenSocket(sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srvCtx, stopSrv := context.WithCancel(t.Context())
+	srv := hostlink.NewServer(slog.New(slog.DiscardHandler))
+	served := make(chan error, 1)
+	go func() { served <- srv.Serve(srvCtx, ln) }()
+	t.Cleanup(func() {
+		stopSrv()
+		<-served
+	})
+	s := waitingAs(t, &config.Self{Name: "lan"})
+	s.opts.Version = "v-test"
+	ctx, cancel := context.WithCancel(t.Context())
+	ran := make(chan error, 1)
+	go func() { ran <- s.runLinked(ctx, dialSocket(sock)) }()
+	var l *hostlink.Link
+	for deadline := time.Now().Add(10 * time.Second); l == nil; {
+		if time.Now().After(deadline) {
+			t.Fatal("the host did not connect")
+		}
+		l, _ = srv.Link("lan")
+		time.Sleep(10 * time.Millisecond)
+	}
+	if want := (hostlink.Hello{Name: "lan", Build: "v-test", Instance: s.instance}); l.Hello != want {
+		t.Errorf("hello = %+v, want %+v", l.Hello, want)
+	}
+	st, err := l.API.Status(t.Context())
+	if err != nil || st.Version != "v-test" || st.Section.State != hostapi.SectionWaiting || st.InstanceID != s.instance {
+		t.Errorf("status = %+v, %v; want the waiting host's", st, err)
+	}
+	if _, err := l.API.Runners(t.Context()); !errors.Is(err, hostapi.ErrWaitingForSection) {
+		t.Errorf("runners = %v, want ErrWaitingForSection", err)
+	}
+	cancel()
+	if err := <-ran; err != nil {
+		t.Errorf("runLinked = %v, want nil after ctx ended", err)
+	}
+	select {
+	case <-l.Done():
+	case <-time.After(10 * time.Second):
+		t.Error("the host's connection stayed open after its run ended")
+	}
+}
+
+func TestHelloNamesTheRunningSection(t *testing.T) {
+	s := waitingAs(t, &config.Self{Name: "lan"})
+	if h := s.hello(); h.Section != "" {
+		t.Errorf("hello before a section = %+v, want no revision", h)
+	}
+	if err := writeSection(t.Context(), s.sectionPath, sectionOf(7, lanHost, smallJSON)); err != nil {
+		t.Fatal(err)
+	}
+	s.bootSaved(t.Context())
+	if h := s.hello(); h.Section != "7" || h.Name != "lan" || h.Instance != s.instance {
+		t.Errorf("hello after booting on the saved section = %+v, want revision 7 of host lan", h)
 	}
 }

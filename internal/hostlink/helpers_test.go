@@ -26,27 +26,27 @@ func newBackend() *backend {
 	return &backend{changes: make(chan hostapi.Runner), release: make(chan struct{})}
 }
 
-func (b *backend) Status(context.Context) hostapi.Status {
+func (*backend) Status(context.Context) hostapi.Status {
 	return hostapi.Status{Version: "v1.0.0-dev.1"}
 }
 
-func (b *backend) CreateRunner(_ context.Context, req *hostapi.RunnerRequest) (hostapi.Runner, error) {
+func (*backend) CreateRunner(_ context.Context, req *hostapi.RunnerRequest) (hostapi.Runner, error) {
 	return hostapi.Runner{Name: req.RunnerName}, nil
 }
 
-func (b *backend) Runners(context.Context) ([]hostapi.Runner, error) { return nil, nil }
+func (*backend) Runners(context.Context) ([]hostapi.Runner, error) { return nil, nil }
 
-func (b *backend) DeleteRunner(context.Context, string, bool) ([]byte, error) { return nil, nil }
+func (*backend) DeleteRunner(context.Context, string, bool) ([]byte, error) { return nil, nil }
 
-func (b *backend) Logs(context.Context, string, int) ([]byte, error) { return nil, nil }
+func (*backend) Logs(context.Context, string, int) ([]byte, error) { return nil, nil }
 
-func (b *backend) Diag(context.Context, string) ([]byte, error) { return nil, nil }
+func (*backend) Diag(context.Context, string) ([]byte, error) { return nil, nil }
 
-func (b *backend) PutSection(context.Context, *hostapi.Section) (hostapi.SectionAnswer, error) {
+func (*backend) PutSection(context.Context, *hostapi.Section) (hostapi.SectionAnswer, error) {
 	return hostapi.SectionAnswer{Applies: hostapi.SectionApplied}, nil
 }
 
-func (b *backend) Restarting() <-chan struct{} { return nil }
+func (*backend) Restarting() <-chan struct{} { return nil }
 
 func (b *backend) Subscribe(ctx context.Context) <-chan hostapi.Runner {
 	out := make(chan hostapi.Runner)
@@ -78,7 +78,7 @@ func (b *backend) Probe(ctx context.Context) (hostapi.ProbeReport, error) {
 	}
 }
 
-func (b *backend) ProbeDeadline() time.Duration { return 10 * time.Minute }
+func (*backend) ProbeDeadline() time.Duration { return 10 * time.Minute }
 
 // rig is a control plane listening on a socket in a temporary directory.
 type rig struct {

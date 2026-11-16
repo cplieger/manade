@@ -15,12 +15,12 @@ import (
 )
 
 // testHost is host nas of a config file in root/config, its container's one
-// mount at root/data. Every host protects /tmp, where t.TempDir puts root,
+// mount at root/data, its registry credentials at root/secrets. Every host protects /tmp, where t.TempDir puts root,
 // so the test drops that one entry; TestNewHostProtects covers the list.
 func testHost(t *testing.T, open bool, plat Platform) (h *Host, root string) {
 	t.Helper()
 	root = t.TempDir()
-	for _, d := range []string{"config", "data", "tls"} {
+	for _, d := range []string{"config", "data", "secrets"} {
 		if err := os.Mkdir(filepath.Join(root, d), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -31,7 +31,7 @@ func testHost(t *testing.T, open bool, plat Platform) (h *Host, root string) {
 // hostAt is testHost's host in root, serving profiles.
 func hostAt(root string, open bool, plat Platform, profiles ...config.Profile) *Host {
 	cfg := &config.Config{
-		Self:     &config.Self{Name: "nas", TLSDir: filepath.Join(root, "tls")},
+		Self:     &config.Self{Name: "nas", RegistryAuth: config.RegistryAuth{File: filepath.Join(root, "secrets")}},
 		Profiles: profiles,
 	}
 	hc := &config.Host{Name: "nas", Egress: config.Egress{Internet: true, Open: open}}
@@ -238,7 +238,7 @@ func TestRunnerMounts(t *testing.T) {
 		"a source on the image's own filesystem": func(string) string { return "/usr/local/bin" },
 		"/etc/resolv.conf":                       func(string) string { return "/etc/resolv.conf" },
 		"the config directory":                   func(root string) string { return filepath.Join(root, "config") },
-		"an ancestor of TLS_DIR":                 func(root string) string { return root },
+		"an ancestor of the credentials":         func(root string) string { return root },
 		"a missing source":                       func(root string) string { return filepath.Join(root, "data", "absent") },
 	}
 	for name, src := range refused {
@@ -269,21 +269,21 @@ func TestRunnerMounts(t *testing.T) {
 		if err := os.Remove(src); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.Symlink(filepath.Join(root, "tls"), src); err != nil {
+		if err := os.Symlink(filepath.Join(root, "secrets"), src); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := h.Runner(bind(src), runner()); !errors.Is(err, errMountRefused) || !strings.Contains(err.Error(), filepath.Join(root, "tls")) {
+		if _, err := h.Runner(bind(src), runner()); !errors.Is(err, errMountRefused) || !strings.Contains(err.Error(), filepath.Join(root, "secrets")) {
 			t.Errorf("second create = %v, want the link refused naming its target", err)
 		}
 	})
 	t.Run("inside a mount that holds a protected path", func(t *testing.T) {
 		h, root := testHost(t, false, Platform{})
 		h.plat.Mounts = append(h.plat.Mounts, root)
-		link := filepath.Join(root, "data", "to-tls")
-		if err := os.Symlink(filepath.Join(root, "tls"), link); err != nil {
+		link := filepath.Join(root, "data", "to-secrets")
+		if err := os.Symlink(filepath.Join(root, "secrets"), link); err != nil {
 			t.Fatal(err)
 		}
-		for name, src := range map[string]string{"an ancestor of TLS_DIR": root, "a link to TLS_DIR": link} {
+		for name, src := range map[string]string{"an ancestor of the credentials": root, "a link to the credentials": link} {
 			if _, err := h.Runner(bind(src), runner()); !errors.Is(err, errMountRefused) || !strings.Contains(err.Error(), "which host nas protects") {
 				t.Errorf("%s: Runner = %v, want it refused as protected", name, err)
 			}
@@ -546,17 +546,17 @@ func TestResolve(t *testing.T) {
 
 func TestNewHostProtects(t *testing.T) {
 	root := t.TempDir()
-	real := filepath.Join(root, "real-tls")
-	if err := os.Mkdir(real, 0o755); err != nil {
+	real := filepath.Join(root, "real-auth.json")
+	if err := os.WriteFile(real, []byte("{}"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	link := filepath.Join(root, "tls")
+	link := filepath.Join(root, "auth.json")
 	if err := os.Symlink(real, link); err != nil {
 		t.Fatal(err)
 	}
-	cfg := &config.Config{Self: &config.Self{Name: "nas", TLSDir: link, RegistryAuth: config.RegistryAuth{File: "/auth/config.json"}}}
+	cfg := &config.Config{Self: &config.Self{Name: "nas", RegistryAuth: config.RegistryAuth{File: link}}}
 	h := NewHost(cfg, &config.Host{Name: "nas"}, &Platform{})
-	for _, want := range []string{link, real, "/auth/config.json", "/run/docker.sock", "/var/lib/docker", "/run/manade", "/tmp", "/proc", "/sys", "/dev"} {
+	for _, want := range []string{link, real, "/run/docker.sock", "/var/lib/docker", "/run/manade", "/tmp", "/proc", "/sys", "/dev"} {
 		if !slices.Contains(h.protected, want) {
 			t.Errorf("protected %v lacks %s", h.protected, want)
 		}

@@ -367,7 +367,7 @@ func TestGenerateKeepsTheCeilingsDrops(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			self := &config.Self{Name: "nas", TLSDir: "/tls", Ceiling: tc.ceiling}
+			self := &config.Self{Name: "nas", Ceiling: tc.ceiling}
 			cfg, err := config.ParseSection(self, []byte(`{"hosts": {"nas": `+tc.host+`}}`))
 			if err != nil {
 				t.Fatal(err)

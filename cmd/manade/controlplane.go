@@ -12,6 +12,7 @@ import (
 
 	"github.com/cplieger/go/slogx"
 	"github.com/cplieger/manade/internal/config"
+	"github.com/cplieger/manade/internal/hostlink"
 	"github.com/cplieger/manade/internal/store"
 )
 
@@ -28,7 +29,11 @@ func runControlPlane(args []string, stderr io.Writer) int {
 	return serveControlPlane(ctx, stderr)
 }
 
-// serveControlPlane holds the store open until ctx ends.
+// hostsSocket is hostlink.SocketPath, a test seam.
+var hostsSocket = hostlink.SocketPath
+
+// serveControlPlane holds the store open and answers the hosts on the
+// socket until ctx ends.
 func serveControlPlane(ctx context.Context, stderr io.Writer) int {
 	level := slogx.Setup(slogx.Options{Output: stderr})
 	log := slog.Default()
@@ -47,10 +52,24 @@ func serveControlPlane(ctx context.Context, stderr io.Writer) int {
 		log.Error("The control plane's store did not open", "error", err)
 		return 1
 	}
-	log.Info("The control plane is running", "version", version, "store", path)
-	<-ctx.Done()
+	code := serveHosts(ctx, log)
 	if err := st.Close(); err != nil {
 		log.Error("The control plane's store did not close cleanly", "error", err)
+		return 1
+	}
+	return code
+}
+
+// serveHosts answers the hosts on the socket until ctx ends.
+func serveHosts(ctx context.Context, log *slog.Logger) int {
+	ln, err := hostlink.ListenSocket(hostsSocket)
+	if err != nil {
+		log.Error("The control plane could not listen for its hosts", "socket", hostsSocket, "error", err)
+		return 1
+	}
+	log.Info("The control plane is running", "version", version, "hosts_socket", hostsSocket)
+	if err := hostlink.NewServer(log).Serve(ctx, ln); err != nil {
+		log.Error("The control plane's hosts listener stopped on a failure", "error", err)
 		return 1
 	}
 	return 0

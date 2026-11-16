@@ -1,6 +1,6 @@
 #!/bin/bash
 # The browser image's smoke test, run as the container's command by
-# internal/r5/jobspec's TestImages under the default profile.
+# internal/hostit's and internal/r5/jobspec's TestImages.
 set -euo pipefail
 fail() {
   printf 'FAIL: %s\n' "$*" >&2

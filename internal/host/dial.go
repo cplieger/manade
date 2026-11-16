@@ -1,6 +1,7 @@
 package host
 
 import (
+	"context"
 	"net"
 	"syscall"
 
@@ -13,6 +14,13 @@ import (
 // Unix socket needs no exception and is left unmarked.
 func controlPlaneDialer() *net.Dialer {
 	return &net.Dialer{Control: markTCP}
+}
+
+// dialSocket dials the control plane's socket at path.
+func dialSocket(path string) func(context.Context) (net.Conn, error) {
+	return func(ctx context.Context) (net.Conn, error) {
+		return controlPlaneDialer().DialContext(ctx, "unix", path)
+	}
 }
 
 func markTCP(network, _ string, c syscall.RawConn) error {

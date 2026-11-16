@@ -2,46 +2,32 @@ package config
 
 import (
 	"encoding/json/jsontext"
-	"net"
 	"net/netip"
 	"regexp"
-	"slices"
 	"strconv"
-	"strings"
 	"time"
 )
 
 // defaultHost is the one host a config without hosts means.
 const defaultHost = "default"
 
-// hostNameRe is a lowercase DNS label. A host's name is its certificate's DNS
-// name and the TLS server name, so an IP literal would make Go check IP SANs
-// instead, and it builds the host's socket and TLS paths, which a / or ..
-// would leave.
+// hostNameRe is a lowercase DNS label: an enrolled host's name becomes its
+// certificate's DNS name, where an IP literal would make Go check IP SANs
+// instead.
 var hostNameRe = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 
 const hostNameRule = "want a lowercase DNS label: letters, digits and dashes, at most 63, not starting or ending with a dash"
-
-// reservedHostNames name the TLS directories manade pki writes beside the
-// hosts' own, and "ca" also names the CA's file in every TLS_DIR.
-var reservedHostNames = []string{"ca", "orchestrator"}
 
 // CheckHostName refuses a name no hosts key may have.
 func CheckHostName(name string) error {
 	if !hostNameRe.MatchString(name) {
 		return invalid(hostNameRule, name)
 	}
-	if slices.Contains(reservedHostNames, name) {
-		return invalid("want a name other than ca and orchestrator, which name the pool's own TLS files", name)
-	}
 	return nil
 }
 
 // DefaultDNS are a host's resolvers when its section names none.
 var DefaultDNS = []netip.Addr{netip.MustParseAddr("1.1.1.1"), netip.MustParseAddr("8.8.8.8")}
-
-// defaultSocket is the host API's socket path for the host named name.
-func defaultSocket(name string) string { return "/run/manade/hosts/" + name + "/api.sock" }
 
 // hostPath is the error path of the host named name, quoted when the name is
 // not a valid one.
@@ -52,19 +38,7 @@ func hostPath(name string) string {
 	return "hosts." + name
 }
 
-// hostTLSDir is a host's TLS_DIR when its environment names none.
-const hostTLSDir = "/tls"
-
 const schemeHTTPS = "https"
-
-// Address is where a host API is served: exactly one of Socket, a Unix
-// socket path, and HostPort, a TCP address served with mutual TLS.
-type Address struct {
-	Socket   string
-	HostPort string
-	// Port is HostPort's port, 0 for a socket.
-	Port uint16
-}
 
 // Host is one validated hosts entry.
 type Host struct {
@@ -176,15 +150,4 @@ func parseDNS(p *problems, path string, raws []string) []netip.Addr {
 		out = append(out, a.Unmap())
 	}
 	return out
-}
-
-// parseHostPort accepts a listen address, host:port with a port from 1 to
-// 65535 and the host possibly empty.
-func parseHostPort(raw string) (Address, error) {
-	host, port, err := net.SplitHostPort(raw)
-	n, perr := strconv.ParseUint(port, 10, 16)
-	if err != nil || perr != nil || n < 1 || strings.ContainsAny(host, "/@") {
-		return Address{}, invalid("want host:port", raw)
-	}
-	return Address{HostPort: raw, Port: uint16(n)}, nil
 }

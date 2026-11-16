@@ -39,7 +39,6 @@ func probeInput(e config.Egress, dns ...netip.Addr) *ProbeInput {
 		JobGateway:     addr("172.18.0.1"),
 		Listener:       addr("172.18.0.3"),
 		OutwardGateway: addr("172.19.0.1"),
-		APIPort:        7464,
 		ListenerPort:   7465,
 	}
 	if e.IPv6 {
@@ -75,7 +74,6 @@ func TestPlanProbe(t *testing.T) {
 				{To: pfx("192.168.4.4/32"), Protocol: config.ProtocolUDP, Ports: ports([2]uint16{514, 514})},
 			}}),
 			want: []want{
-				{job, block, "172.18.0.1:7464"},
 				{job, block, "172.18.0.1:1"},
 				{job, block, "172.19.0.1:1"},
 				{job, block, "172.19.0.1:53"},
@@ -102,7 +100,6 @@ func TestPlanProbe(t *testing.T) {
 			in: func() *ProbeInput {
 				in := probeInput(config.Egress{}, addr("172.19.0.1"), addr("1.1.1.1"))
 				in.Original = Resolvers{Unknown: true}
-				in.APIPort = 0
 				return in
 			}(),
 			want: []want{
@@ -130,7 +127,6 @@ func TestPlanProbe(t *testing.T) {
 				return in
 			}(),
 			want: []want{
-				{job, block, "172.18.0.1:7464"},
 				{job, block, "172.18.0.1:1"},
 				{job, block, "172.19.0.1:1"},
 				{job, block, "172.19.0.1:53"},
@@ -158,7 +154,6 @@ func TestPlanProbe(t *testing.T) {
 				return in
 			}(),
 			want: []want{
-				{job, block, "172.18.0.1:7464"},
 				{job, block, "172.18.0.1:1"},
 				{job, block, "172.19.0.1:1"},
 				{job, block, "172.19.0.1:53"},
@@ -183,9 +178,7 @@ func TestPlanProbe(t *testing.T) {
 				return in
 			}(),
 			want: []want{
-				{job, block, "172.18.0.1:7464"},
 				{job, block, "172.18.0.1:1"},
-				{job, block, "[fdc6:6d61:6e61:6465::1]:7464"},
 				{job, block, "[fdc6:6d61:6e61:6465::1]:1"},
 				{job, block, "172.19.0.1:1"},
 				{job, block, "172.19.0.1:53"},
@@ -209,9 +202,7 @@ func TestPlanProbe(t *testing.T) {
 			name: "ipv6 with the /64 unlearned",
 			in:   probeInput(config.Egress{Internet: true, IPv6: true}),
 			want: []want{
-				{job, block, "172.18.0.1:7464"},
 				{job, block, "172.18.0.1:1"},
-				{job, block, "[fdc6:6d61:6e61:6465::1]:7464"},
 				{job, block, "[fdc6:6d61:6e61:6465::1]:1"},
 				{job, block, "172.19.0.1:1"},
 				{job, block, "172.19.0.1:53"},
@@ -236,9 +227,7 @@ func TestPlanProbe(t *testing.T) {
 				return in
 			}(),
 			want: []want{
-				{job, block, "172.18.0.1:7464"},
 				{job, block, "172.18.0.1:1"},
-				{job, block, "[fdc6:6d61:6e61:6465::1]:7464"},
 				{job, block, "[fdc6:6d61:6e61:6465::1]:1"},
 				{job, block, "172.19.0.1:1"},
 				{job, block, "172.19.0.1:53"},
@@ -276,9 +265,7 @@ func TestPlanProbe(t *testing.T) {
 				return in
 			}(),
 			want: []want{
-				{job, block, "172.18.0.1:7464"},
 				{job, block, "172.18.0.1:1"},
-				{job, block, "[fdc6:6d61:6e61:6465::1]:7464"},
 				{job, block, "[fdc6:6d61:6e61:6465::1]:1"},
 				{job, block, "172.18.0.3:7465"},
 				{job, block, "[fdc6:6d61:6e61:6465::3]:7465"},
@@ -307,7 +294,6 @@ func TestPlanProbe(t *testing.T) {
 				in := probeInput(config.Egress{Internet: true, Allow: []config.Allow{
 					{To: pfx("192.168.1.0/24"), Protocol: config.ProtocolTCP, Ports: ports([2]uint16{7464, 7464})},
 				}})
-				in.APIPort = 0
 				in.ControlPlane = &ControlPlane{
 					Newest:   Target{Addrs: []netip.Addr{addr("192.168.1.80"), addr("2001:db8:7::80")}, Port: 7464},
 					LastGood: Target{Addrs: []netip.Addr{addr("10.1.1.77"), addr("192.168.1.80")}, Port: 7464},
@@ -341,7 +327,6 @@ func TestPlanProbe(t *testing.T) {
 			name: "enrolled hosts with a public control plane",
 			in: func() *ProbeInput {
 				in := probeInput(config.Egress{Internet: true, IPv6: true})
-				in.APIPort = 0
 				in.Self64 = pfx("2a01:e0a:1259:2710::/64")
 				in.ControlPlane = &ControlPlane{
 					Newest:   Target{Addrs: []netip.Addr{addr("203.0.113.10"), addr("2001:db8:7::10")}, Port: 7464},
@@ -377,7 +362,6 @@ func TestPlanProbe(t *testing.T) {
 			name: "an enrolled host without internet",
 			in: func() *ProbeInput {
 				in := probeInput(config.Egress{})
-				in.APIPort = 0
 				in.ControlPlane = &ControlPlane{
 					Newest:   Target{Addrs: []netip.Addr{addr("203.0.113.10"), addr("2001:db8:7::10")}, Port: 7464},
 					LastGood: Target{Addrs: []netip.Addr{addr("203.0.113.10")}, Port: 7464},
@@ -485,12 +469,12 @@ func TestPlanBound(t *testing.T) {
 	t.Run("the internet plan", func(t *testing.T) {
 		t.Parallel()
 		p := PlanProbe(probeInput(config.Egress{Internet: true}))
-		// Twelve calls; the job leg's six blocks, its GitHub connection and
+		// Twelve calls; the job leg's five blocks, its GitHub connection and
 		// its NoIPv6 check at 3 s and its lookup at 4 s on the forwarder
 		// plus 1 s, each with 2 s of slack; the output
 		// leg's three blocks and NoIPv6 at 3 s and its lookup at 3 s for
 		// each of the two default resolvers.
-		want := 12*call + (8*(3+2)+(4+1+2))*time.Second + (4*3+2*3)*time.Second
+		want := 12*call + (7*(3+2)+(4+1+2))*time.Second + (4*3+2*3)*time.Second
 		if got := p.Bound(call); got != want {
 			t.Errorf("Bound = %v, want %v", got, want)
 		}
@@ -542,10 +526,10 @@ func TestPlanBound(t *testing.T) {
 		if want := []time.Duration{5 * time.Second, 6 * time.Second}; !slices.Equal(got, want) {
 			t.Errorf("lookup timeouts = %v, want %v", got, want)
 		}
-		// The job leg's six blocks, GitHub, 9.9.9.9 and NoIPv6 at 3 s and
+		// The job leg's five blocks, GitHub, 9.9.9.9 and NoIPv6 at 3 s and
 		// its lookup at 5 s, each with 2 s of slack; the output leg's five
 		// blocks and NoIPv6 at 3 s and its lookup at 6 s.
-		want := 12*call + (9*(3+2)+(5+2))*time.Second + (6*3+6)*time.Second
+		want := 12*call + (8*(3+2)+(5+2))*time.Second + (6*3+6)*time.Second
 		if b := p.Bound(call); b != want {
 			t.Errorf("Bound = %v, want %v", b, want)
 		}

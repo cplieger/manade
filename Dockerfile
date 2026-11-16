@@ -14,6 +14,7 @@ ARG BUILD_VERSION=dev
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=${BUILD_VERSION}" -o /manade ./cmd/manade
+RUN mkdir -p /out/data /out/run/manade
 COPY LICENSE NOTICE THIRD_PARTY_NOTICES.md ./
 COPY scripts/collect-licenses.sh scripts/
 RUN --mount=type=cache,target=/go/pkg/mod \
@@ -22,6 +23,11 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 FROM gcr.io/distroless/static-debian13:nonroot@sha256:aafe993665bf6200db38a02c11a9351e782a84b6a45e7f33b6695638c88e3931
 
 COPY --chmod=755 --from=builder /manade /manade
+# The control plane's store and its hosts socket's directory, owned by its
+# uid: Docker gives an empty named volume mounted here this owner, which the
+# hosts sharing the socket's volume never change, since they write nothing.
+COPY --chown=65532:65532 --from=builder /out/data /data
+COPY --chown=65532:65532 --from=builder /out/run/manade /run/manade
 COPY --from=builder /out/usr/share/licenses /usr/share/licenses
 # The pool reaches the Docker socket through the socket's group, which the
 # deployment adds; it never needs root.

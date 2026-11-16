@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -154,37 +153,6 @@ func NewServer(backend Backend, instanceID string, log *slog.Logger) *Server {
 		log = slog.Default()
 	}
 	return &Server{backend: backend, instanceID: instanceID, log: log, heartbeat: Heartbeat}
-}
-
-// Serve answers on ln until ctx ends, then closes ln and waits up to
-// quickTimeout for the requests in flight, whose contexts end with ctx.
-func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
-	srv := &http.Server{
-		Handler:           s.Handler(),
-		ReadHeaderTimeout: 10 * time.Second,
-		ReadTimeout:       quickTimeout,
-		IdleTimeout:       2 * time.Minute,
-		MaxHeaderBytes:    16 << 10,
-		BaseContext:       func(net.Listener) context.Context { return ctx },
-		ErrorLog:          slog.NewLogLogger(s.log.Handler(), slog.LevelWarn),
-	}
-	done := make(chan error, 1)
-	go func() { done <- srv.Serve(ln) }()
-	select {
-	case err := <-done:
-		return fmt.Errorf("host API: %w", err)
-	case <-ctx.Done():
-	}
-	sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), quickTimeout)
-	defer cancel()
-	err := srv.Shutdown(sctx)
-	if serr := <-done; !errors.Is(serr, http.ErrServerClosed) {
-		err = errors.Join(err, serr)
-	}
-	if err != nil {
-		return fmt.Errorf("host API shutdown: %w", err)
-	}
-	return nil
 }
 
 // Handler answers every route under /v1.
