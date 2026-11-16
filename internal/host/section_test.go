@@ -1,7 +1,9 @@
 package host
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/netip"
@@ -525,6 +527,25 @@ func TestARefusedSection(t *testing.T) {
 	deliver(t, s, sectionOf(3, lanHost, smallJSON, largeJSON))
 	if st := s.sectionStatus(); st.State != hostapi.SectionRunning || st.Refused != nil {
 		t.Errorf("after an accepted one: %+v", st)
+	}
+}
+
+// TestARefusalIsLoggedClean delivers a section whose unknown key holds a
+// bidi rune, which the refusal's path carries.
+func TestARefusalIsLoggedClean(t *testing.T) {
+	s, _, _ := upSupervisor(t, sectionOf(1, lanHost, smallJSON))
+	var logs bytes.Buffer
+	s.log = slog.New(slog.NewJSONHandler(&logs, nil))
+	_, err := s.deliver(t.Context(), sectionOf(2, `{"x\u202ey": 1}`, smallJSON))
+	if _, ok := errors.AsType[*hostapi.SectionRefusedError](err); !ok {
+		t.Fatalf("err = %v, want a refusal", err)
+	}
+	var rec struct{ Msg, Error string }
+	if err := json.Unmarshal(logs.Bytes(), &rec); err != nil || strings.Count(logs.String(), "\n") != 1 {
+		t.Fatalf("logs = %q (%v), want one JSON line", logs.String(), err)
+	}
+	if rec.Msg != "The host refused a section and runs the one it had" || rec.Error != "the host refused the section: hosts.lan.x y: unknown key" {
+		t.Errorf("logged %+v, want the refusal with its bidi rune replaced", rec)
 	}
 }
 

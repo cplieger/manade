@@ -129,11 +129,18 @@ func TestPeerTextIsLoggedClean(t *testing.T) {
 	if a.status != http.StatusSwitchingProtocols {
 		t.Fatalf("answer = %d %+v", a.status, a.body)
 	}
-	l := r.link(t, "nas", instance)
-	_ = l.Close()
+	r.link(t, "nas", instance)
+	const replacing = "i2\u2029x"
+	if a := upgradeAnswer(t, r, map[string]string{"Connection": "Upgrade", "Upgrade": protocol, headerName: "nas", headerBuild: build, headerInstance: replacing}); a.status != http.StatusSwitchingProtocols {
+		t.Fatalf("replacing answer = %d %+v", a.status, a.body)
+	}
+	_ = r.link(t, "nas", replacing).Close()
 	want := map[string]map[string]string{
-		"A host connected":    {"host": "nas", "build": "v1 gnp.exe", "instance": "i1 forged", "section": "7 x"},
-		"A host disconnected": {"host": "nas", "instance": "i1 forged"},
+		"A host connected": {"host": "nas", "build": "v1 gnp.exe", "instance": "i1 forged", "section": "7 x"},
+		"A host connected under a name that was already connected, and the newer connection replaces the older; two hosts holding one identity make it flap": {
+			"host": "nas", "instance": "i2 x", "replaced_instance": "i1 forged",
+		},
+		"A host disconnected": {"host": "nas", "instance": "i2 x"},
 	}
 	deadline := time.Now().Add(5 * time.Second)
 	for len(want) > 0 && time.Now().Before(deadline) {

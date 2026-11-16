@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/cplieger/go/filesafe"
+	"github.com/cplieger/go/textsafe"
 	"github.com/cplieger/manade/internal/config"
 	"github.com/cplieger/manade/internal/host/netsetup"
 	"github.com/cplieger/manade/internal/hostapi"
@@ -598,7 +599,7 @@ func (s *supervisor) refuse(sec *hostapi.Section, sr *hostapi.SectionRefusedErro
 	hash, _ := sec.Hash()
 	s.refused = &hostapi.SectionRefusal{At: time.Now(), Hash: hash, Errors: sr.Errors}
 	s.publish()
-	s.log.Warn("The host refused a section and runs the one it had", "error", sr)
+	s.log.Warn("The host refused a section and runs the one it had", "error", textsafe.NewUntrusted(sr.Error()))
 }
 
 // publish stores the section's status for status reads; sectionMu is held.
