@@ -99,3 +99,33 @@ func TestCheckIPv6(t *testing.T) {
 		}
 	})
 }
+
+func TestCheckUpstreams(t *testing.T) {
+	answering := func(ok ...string) Lookup {
+		return func(_ context.Context, s netip.Addr, name string) ([]netip.Addr, error) {
+			if name != "api.github.com" {
+				return nil, errors.New("asked for " + name)
+			}
+			if slices.Contains(ok, s.String()) {
+				return []netip.Addr{addr("140.82.112.6")}, nil
+			}
+			if s.String() == "8.8.8.8" {
+				return nil, nil
+			}
+			return nil, errors.New("i/o timeout")
+		}
+	}
+	t.Run("one resolver answering is enough", func(t *testing.T) {
+		if err := CheckUpstreams(t.Context(), section(), answering("8.8.8.8")); err != nil {
+			t.Errorf("CheckUpstreams = %v", err)
+		}
+	})
+	t.Run("none answering names each", func(t *testing.T) {
+		err := CheckUpstreams(t.Context(), section(), answering())
+		for _, want := range []string{"api.github.com", "1.1.1.1: i/o timeout", "8.8.8.8: no address"} {
+			if err == nil || !strings.Contains(err.Error(), want) {
+				t.Errorf("CheckUpstreams = %v, want it to name %q", err, want)
+			}
+		}
+	})
+}

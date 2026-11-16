@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -87,6 +88,8 @@ type upFixture struct {
 	root      platform.Root
 	lookups   []string
 	events    []string
+	// mu serialises lookups, which a first delivery asks at once.
+	mu sync.Mutex
 }
 
 func newUpFixture(t *testing.T) *upFixture {
@@ -118,6 +121,8 @@ func (f *upFixture) platform() *seams {
 			return f.kernel.run(ctx, stdin, name, args...)
 		},
 		Lookup: func(_ context.Context, s netip.Addr, name string) ([]netip.Addr, error) {
+			f.mu.Lock()
+			defer f.mu.Unlock()
 			f.events = append(f.events, "lookup")
 			f.lookups = append(f.lookups, s.String()+" "+name)
 			return []netip.Addr{netip.MustParseAddr("140.82.112.6")}, f.lookupErr
@@ -202,6 +207,13 @@ func TestUp(t *testing.T) {
 			t.Errorf("Up = %v, events %q", err, f.events)
 		}
 	})
+	t.Run("the subnet picked skips an on-link route", func(t *testing.T) {
+		f := newUpFixture(t)
+		writeAt(t, f.root, "/proc/net/route", route4+"eth1\t000012AC\t00000000\t0001\t0\t0\t0\t0000FFFF\t0\t0\t0\n")
+		if n := upNet(t, f, section()); n.Subnet != pfx("172.19.0.0/16") {
+			t.Errorf("subnet = %v, want the first pool clear of 172.17.0.0/16 and 172.18.0.0/16", n.Subnet)
+		}
+	})
 	t.Run("an internet: false host resolves through its own forwarder", func(t *testing.T) {
 		f := newUpFixture(t)
 		upNet(t, f, closedSection())
@@ -280,53 +292,81 @@ func TestUp(t *testing.T) {
 	})
 }
 
+// A dead daemon's pid file, socket and socket directory, left in the
+// container's writable layer, are gone before the daemon starts.
+func TestUpRemovesADeadDaemonsFiles(t *testing.T) {
+	f := newUpFixture(t)
+	writeAt(t, f.root, "/run/docker.pid", "1\n")
+	writeAt(t, f.root, "/run/docker.sock", "")
+	writeAt(t, f.root, "/run/docker/containerd/containerd.sock", "")
+	p := f.platform()
+	start := p.StartDaemon
+	var left []string
+	p.StartDaemon = func(spec *daemonSpec) (process, error) {
+		for _, name := range []string{"/run/docker.pid", "/run/docker.sock", "/run/docker"} {
+			if _, err := os.Lstat(f.root.Path(name)); err == nil {
+				left = append(left, name)
+			}
+		}
+		return start(spec)
+	}
+	n, err := bringUp(t.Context(), section(), p, guardHooks{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = n.stop() })
+	if len(left) != 0 || f.spec == nil {
+		t.Errorf("left %q at the daemon's start, started %v", left, f.spec != nil)
+	}
+}
+
+func TestHostRefusals(t *testing.T) {
+	up := func(t *testing.T) *hostNet {
+		t.Helper()
+		return upNet(t, newUpFixture(t), section())
+	}
+	for name, tc := range map[string]struct {
+		edit func(h *config.Host)
+		row  row
+		path string
+	}{
+		"an allow entry inside the subnet in use": {func(h *config.Host) { *h = *section("172.18.3.4/32") }, rowSwap, "hosts.lan.egress.allow[0].to"},
+		"an allow entry containing it":            {func(h *config.Host) { *h = *section("172.16.0.0/12") }, rowSwap, "hosts.lan.egress.allow[0].to"},
+		"a subnet an on-link route shadows":       {func(h *config.Host) { h.Subnet = pfx("172.17.5.0/24") }, rowRestart, "hosts.lan.network.subnet"},
+		"ipv6 on a kernel with no IPv6 nat":       {func(h *config.Host) { h.Egress.IPv6 = true }, rowRestart, "hosts.lan.egress.ipv6"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			n := up(t)
+			h := section()
+			tc.edit(h)
+			got, err := n.hostRefusals(h, tc.row)
+			if err != nil || len(got) != 1 || got[0].Path != tc.path {
+				t.Errorf("refusals = %+v, %v, want one at %s", got, err, tc.path)
+			}
+		})
+	}
+	// A restart builds the job network again, so the subnet in use binds
+	// nothing: a resolver inside it is answered by the next pick.
+	t.Run("a restart leaves the subnet in use behind", func(t *testing.T) {
+		h := section()
+		h.DNS = []netip.Addr{netip.MustParseAddr("172.18.0.53")}
+		if got, err := up(t).hostRefusals(h, rowRestart); err != nil || len(got) != 0 {
+			t.Errorf("refusals = %+v, %v, want none", got, err)
+		}
+	})
+}
+
 func TestReload(t *testing.T) {
 	up := func(t *testing.T) (*upFixture, *hostNet) {
 		t.Helper()
 		f := newUpFixture(t)
 		return f, upNet(t, f, section())
 	}
-	kept := map[string]struct {
-		edit func(h *config.Host)
-		want []string
-	}{
-		"an allow entry inside the subnet in use": {
-			edit: func(h *config.Host) { *h = *section("172.18.3.4/32") }, want: []string{"172.18.0.0/16", "egress.allow[0]"},
-		},
-		"an allow entry containing it": {
-			edit: func(h *config.Host) { *h = *section("172.16.0.0/12") }, want: []string{"172.18.0.0/16", "172.16.0.0/12"},
-		},
-		"a resolver inside it": {
-			edit: func(h *config.Host) { h.DNS = []netip.Addr{netip.MustParseAddr("172.18.0.53")} }, want: []string{"dns[0]"},
-		},
-		"egress.ipv6 turned on": {
-			edit: func(h *config.Host) { h.Egress.IPv6 = true }, want: []string{"hosts.lan.egress.ipv6", "restart"},
-		},
-		"the resolvers changed": {
-			edit: func(h *config.Host) { h.DNS = []netip.Addr{netip.MustParseAddr("9.9.9.9")} }, want: []string{"hosts.lan.dns", "restart"},
-		},
-	}
-	for name, tc := range kept {
-		t.Run(name, func(t *testing.T) {
-			_, n := up(t)
-			h := section()
-			tc.edit(h)
-			err := n.applicable(h)
-			if err == nil {
-				t.Fatal("Applicable = nil, want the section refused")
-			}
-			for _, w := range tc.want {
-				if !strings.Contains(err.Error(), w) {
-					t.Errorf("Applicable = %v, want it to name %q", err, w)
-				}
-			}
-		})
-	}
 	t.Run("new allow entries swap the rules and keep resolv.conf", func(t *testing.T) {
 		f, n := up(t)
 		h := section("10.0.0.50/32")
-		if n.applicable(h) != nil || n.postureChanged(h) {
-			t.Fatal("setup: an allow entry is a posture change or refused")
+		if r := rowOf(n.section(), h); r != rowSwap {
+			t.Fatalf("setup: an allow entry is row %d", r)
 		}
 		if k, fatal := n.swap(t.Context(), h); k != nil || fatal != nil {
 			t.Fatalf("Swap = %v, %v", k, fatal)
@@ -404,141 +444,4 @@ func openSection() *config.Host {
 	h := section()
 	h.Egress.Open = true
 	return h
-}
-
-// A change of open or internet rebuilds the posture as a boot builds one:
-// the rules, the ipsets, resolv.conf, the resolver's learning and the status
-// equal a fresh boot's of the new section, and so does disable_ipv6 unless
-// the new section is open: guard.bring only turns IPv6 off, so a host that
-// becomes open keeps the previous posture's IPv6 until a restart.
-func TestAChangeEqualsAFreshBoot(t *testing.T) {
-	postures := map[string]func() *config.Host{"open": openSection, "internet": func() *config.Host { return section() }, "internet off": closedSection}
-	for from, mkFrom := range postures {
-		for to, mkTo := range postures {
-			if from == to {
-				continue
-			}
-			t.Run(from+" to "+to, func(t *testing.T) {
-				synctest.Test(t, func(t *testing.T) {
-					fresh := newUpFixture(t)
-					boot := upNet(t, fresh, mkTo())
-					f := newUpFixture(t)
-					n := upNet(t, f, mkFrom())
-					stop := holding(t, n)
-					if failed, fatal := n.change(t.Context(), mkTo()); failed != nil || fatal != nil {
-						t.Fatalf("Change = %v, %v", failed, fatal)
-					}
-					v6Off := !mkTo().Egress.Open
-					if got, want := kernelState(t, f, v6Off), kernelState(t, fresh, v6Off); got != want {
-						t.Errorf("after the change:\n%s\nwant a fresh boot's:\n%s", got, want)
-					}
-					if (n.gitHubStatus() == nil) != (boot.gitHubStatus() == nil) || (n.learning() == nil) != (boot.learning() == nil) {
-						t.Errorf("learning %v, want a fresh boot's %v", n.gitHubStatus(), boot.gitHubStatus())
-					}
-					if f.dnsUDP.isClosed() || strings.Count(strings.Join(f.events, " "), "daemon") != 1 {
-						t.Errorf("the change stopped the resolver or started a daemon: events %q", f.events)
-					}
-					if err := stop(); err != nil {
-						t.Errorf("Hold = %v", err)
-					}
-				})
-			})
-		}
-	}
-}
-
-func TestAChangeThatFailsBringsTheOldPostureBack(t *testing.T) {
-	t.Run("a domain list that cannot be read", func(t *testing.T) {
-		synctest.Test(t, func(t *testing.T) {
-			f := newUpFixture(t)
-			n := upNet(t, f, section())
-			stop := holding(t, n)
-			before := kernelState(t, f, true)
-			f.fetchErr = errors.New("403 rate limit exceeded")
-			failed, fatal := n.change(t.Context(), closedSection())
-			if fatal != nil || failed == nil || !strings.Contains(failed.Error(), "domain list") {
-				t.Fatalf("Change = %v, %v, want failed naming the list", failed, fatal)
-			}
-			if got := kernelState(t, f, true); got != before {
-				t.Errorf("after the failed change:\n%s\nwant the old posture's:\n%s", got, before)
-			}
-			if n.gitHubStatus() != nil || n.learning() != nil || f.dnsUDP.isClosed() || !n.section().Egress.Internet {
-				t.Errorf("status %+v, resolver closed %v, want the internet posture with the resolver serving", n.gitHubStatus(), f.dnsUDP.isClosed())
-			}
-			f.fetchErr = nil
-			if failed, fatal := n.change(t.Context(), closedSection()); failed != nil || fatal != nil {
-				t.Errorf("a retried Change = %v, %v", failed, fatal)
-			}
-			if err := stop(); err != nil {
-				t.Errorf("Hold = %v", err)
-			}
-		})
-	})
-	t.Run("an old posture that fails to come back ends the hold", func(t *testing.T) {
-		synctest.Test(t, func(t *testing.T) {
-			f := newUpFixture(t)
-			n := upNet(t, f, section())
-			done := make(chan error, 1)
-			go func() { done <- n.hold(t.Context()) }()
-			n.seams.FetchDomains = func(context.Context) ([]byte, error) {
-				f.kernel.mu.Lock()
-				f.kernel.fail[platform.LegacyDir+"/iptables-restore"] = errors.New("refused")
-				f.kernel.mu.Unlock()
-				return nil, errors.New("403 rate limit exceeded")
-			}
-			failed, fatal := n.change(t.Context(), closedSection())
-			if failed == nil || !strings.Contains(failed.Error(), "domain list") {
-				t.Errorf("failed = %v, want it naming the list", failed)
-			}
-			if fatal == nil || !strings.Contains(fatal.Error(), "old egress posture") || !strings.Contains(fatal.Error(), "refused") {
-				t.Errorf("fatal = %v, want the failed return to the old posture", fatal)
-			}
-			if err := <-done; err == nil || f.proc.stopped != 1 {
-				t.Errorf("Hold = %v, stopped %d, want it ended with the daemon stopped", err, f.proc.stopped)
-			}
-		})
-	})
-}
-
-// Status reads the posture and never waits on a change's I/O: a change
-// whose domain list read blocks leaves status and the /64 answering.
-func TestStatusAnswersDuringAChange(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		f := v6Fixture(t, &echoes{replies: []func() ([]byte, error){answer("2a01:e0a:1259:2710::7008")}})
-		n := upNet(t, f, v6Section())
-		stop := holding(t, n)
-		synctest.Wait()
-		reading, release := make(chan struct{}), make(chan struct{})
-		n.seams.FetchDomains = func(context.Context) ([]byte, error) {
-			close(reading)
-			<-release
-			return []byte(metaBody), nil
-		}
-		changed := make(chan error, 1)
-		go func() {
-			failed, fatal := n.change(t.Context(), closedV6Section())
-			changed <- errors.Join(failed, fatal)
-		}()
-		<-reading
-		answered := make(chan struct{})
-		go func() {
-			_ = n.iPv6Status()
-			_ = n.gitHubStatus()
-			_ = n.section()
-			close(answered)
-		}()
-		synctest.Wait()
-		select {
-		case <-answered:
-		default:
-			t.Error("status waited on the change's domain list read")
-		}
-		close(release)
-		if err := <-changed; err != nil {
-			t.Errorf("Change = %v", err)
-		}
-		if err := stop(); err != nil {
-			t.Errorf("Hold = %v", err)
-		}
-	})
 }

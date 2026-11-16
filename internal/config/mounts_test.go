@@ -7,11 +7,10 @@ import (
 )
 
 // The protected paths of a host that is not open, checked on the host itself
-// with CONFIG_FILE /config/config.json, the default TLS_DIR and
-// MANADE_REGISTRY_AUTH_FILE /registry/auth.json.
+// with MANADE_REGISTRY_AUTH_FILE /registry/auth.json.
 var protectedPaths = []string{
 	"/run/docker.sock", "/var/run/docker.sock", "/run/docker", "/var/lib/docker",
-	"/run/manade", "/tls", "/config", "/registry/auth.json", "/tmp", "/proc", "/sys", "/dev",
+	"/run/manade", "/registry/auth.json", "/tmp", "/proc", "/sys", "/dev",
 }
 
 func mountDoc(lines, mounts string) string {
@@ -20,7 +19,7 @@ func mountDoc(lines, mounts string) string {
 
 // onHost is host h's own environment.
 func onHost() *Config {
-	return &Config{File: "/config/config.json", Self: &Self{Name: "h", TLSDir: "/tls", RegistryAuth: RegistryAuth{File: "/registry/auth.json"}}}
+	return &Config{Self: &Self{Name: "h", RegistryAuth: RegistryAuth{File: "/registry/auth.json"}}}
 }
 
 func TestProtectedPaths(t *testing.T) {
@@ -63,30 +62,25 @@ func TestProtectedPathsAccepted(t *testing.T) {
 	}
 }
 
-// A host checks its own TLS_DIR and credentials file; the control plane,
-// which cannot see them, checks the default TLS_DIR alone.
-func TestProtectedTLSDir(t *testing.T) {
+// A host checks its own credentials file; the control plane, which cannot
+// see it, checks the fixed paths alone.
+func TestProtectedOwnPaths(t *testing.T) {
 	t.Parallel()
-	self := func() *Config { return &Config{File: "/config/config.json", Self: &Self{Name: "h", TLSDir: "/certs"}} }
 	t.Run("hostsOwn", func(t *testing.T) {
 		t.Parallel()
-		err := buildDoc(self(), mountDoc("", "{bind: /certs, target: /c}"))
-		wantErr(t, err, `profiles.p.mounts[0].bind: "/certs" reaches /certs`)
+		err := buildDoc(onHost(), mountDoc("", "{bind: /registry/auth.json, target: /a}"))
+		wantErr(t, err, `profiles.p.mounts[0].bind: "/registry/auth.json" reaches /registry/auth.json`)
 	})
-	t.Run("hostsDefaultFree", func(t *testing.T) {
+	t.Run("anotherHostsFileFree", func(t *testing.T) {
 		t.Parallel()
-		if err := buildDoc(self(), mountDoc("", "{bind: /tls, target: /c}")); err != nil {
+		other := &Config{Self: &Self{Name: "g", RegistryAuth: RegistryAuth{File: "/registry/auth.json"}}}
+		if err := buildDoc(other, mountDoc("", "{bind: /registry/auth.json, target: /a}")); err != nil {
 			t.Fatalf("err = %v", err)
 		}
 	})
-	t.Run("elsewhereDefault", func(t *testing.T) {
-		t.Parallel()
-		err := buildDoc(&Config{}, mountDoc("", "{bind: /tls, target: /c}"))
-		wantErr(t, err, `"/tls" reaches /tls`)
-	})
 	t.Run("elsewhereNoOwnPaths", func(t *testing.T) {
 		t.Parallel()
-		if err := buildDoc(&Config{}, mountDoc("", "{bind: /registry/auth.json, target: /a}, {bind: /config, target: /c}")); err != nil {
+		if err := buildDoc(&Config{}, mountDoc("", "{bind: /registry/auth.json, target: /a}, {bind: /tls, target: /c}")); err != nil {
 			t.Fatalf("err = %v", err)
 		}
 	})

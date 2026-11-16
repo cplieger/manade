@@ -128,12 +128,12 @@ type ProbeInput struct {
 	Own6 netip.Addr
 	// Self64 is the machine's learned /64, or the zero Prefix.
 	Self64 netip.Prefix
+	// ControlPlane is an enrolled host's dial targets, as its rules hold
+	// them; nil on a socket host.
+	ControlPlane *ControlPlane
 	// Original are the resolvers the host's resolv.conf named before the
 	// host rewrote it.
-	Original Resolvers
-	// APIPort is the host API's TCP port, or 0 when it serves a Unix
-	// socket only.
-	APIPort      uint16
+	Original     Resolvers
 	ListenerPort uint16
 }
 
@@ -214,9 +214,6 @@ func (p *planner) jobLeg() {
 	in := p.in
 	if !p.e.Open {
 		for _, gw := range []netip.Addr{in.JobGateway, in.JobGateway6} {
-			if in.APIPort != 0 {
-				p.blockLocal("the job network's gateway, on the API's port", gw, in.APIPort)
-			}
 			p.blockLocal("the job network's gateway", gw, 1)
 		}
 		p.gateway()
@@ -225,6 +222,9 @@ func (p *planner) jobLeg() {
 		}
 		p.blockLocal("another job", in.Listener, in.ListenerPort)
 		p.blockLocal("another job, over IPv6", in.Listener6, in.ListenerPort)
+		p.controlPlane(func(a netip.Addr, port uint16) {
+			p.blockLocal("the control plane", a, port)
+		})
 	}
 	p.add(&Check{Name: "GitHub's API", Kind: KindReach, Addr: net.JoinHostPort(GitHubAPI, "443")})
 	if !p.e.Internet {
@@ -299,9 +299,33 @@ func (p *planner) outputLeg() {
 			p.block("a configured resolver, off port 53", r, 1)
 		}
 	}
+	p.controlPlane(func(a netip.Addr, port uint16) {
+		if !p.e.Internet || private(a) {
+			p.block("the control plane, dialled without the mark", a, port)
+		}
+	})
 	p.add(lookup)
 	if !p.e.IPv6 {
 		p.add(&Check{Name: "IPv6, which the host does not have", Kind: KindNoIPv6, Addr: public6.String()})
+	}
+}
+
+// controlPlane calls fn with each address in the exception sets and its
+// target's port.
+func (p *planner) controlPlane(fn func(a netip.Addr, port uint16)) {
+	cp := p.in.ControlPlane
+	if cp == nil {
+		return
+	}
+	for _, d := range dialTargets {
+		t := cp.target(d)
+		if t.Port == 0 {
+			continue
+		}
+		v4, v6 := splitFamilies(t.Addrs)
+		for _, a := range slices.Concat(v4, v6) {
+			fn(a, t.Port)
+		}
 	}
 }
 

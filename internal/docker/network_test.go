@@ -57,9 +57,19 @@ func TestEnsureNetworkCreates(t *testing.T) {
 			if err := c.EnsureNetwork(t.Context(), jobSpec(ipv6)); err != nil {
 				t.Fatalf("EnsureNetwork: %v", err)
 			}
+			sent := d.seen(http.MethodPost, "/networks/create")[0].body
 			var body networkWire
-			if err := json.Unmarshal(d.seen(http.MethodPost, "/networks/create")[0].body, &body); err != nil {
+			if err := json.Unmarshal(sent, &body); err != nil {
 				t.Fatal(err)
+			}
+			// A daemon's default-network-opts may turn IPv6 on for a create
+			// that leaves the field out, so false is sent too.
+			var raw map[string]any
+			if err := json.Unmarshal(sent, &raw); err != nil {
+				t.Fatal(err)
+			}
+			if v, ok := raw["EnableIPv6"]; !ok || v != ipv6 {
+				t.Errorf("create body EnableIPv6 = %v (present %v), want %v sent", v, ok, ipv6)
 			}
 			wantSubnets := 1
 			if ipv6 {

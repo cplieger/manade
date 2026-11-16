@@ -232,7 +232,7 @@ func TestBuildRefusals(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			wantErr(t, build(&Config{}, []byte(tt.doc), nil), tt.want...)
+			wantErr(t, build(&Config{}, []byte(tt.doc), nil, nil), tt.want...)
 		})
 	}
 }
@@ -255,14 +255,14 @@ func TestHostNames(t *testing.T) {
 		{"-nas", false},
 		{"nas-", false},
 		{"nas_2", false},
-		{"ca", false},
-		{"orchestrator", false},
+		{"ca", true},
+		{"orchestrator", true},
 	}
 	for _, tt := range tests {
 		t.Run(strings.NewReplacer("/", "slash", ".", "dot").Replace(tt.name), func(t *testing.T) {
 			d := onHosts(`"`+tt.name+`": {"capacity": {"cpus": 1, "memory": "1GiB"}}`, `"default"`)
-			err := build(&Config{}, []byte(d), nil)
-			refused := err != nil && (strings.Contains(err.Error(), "want a lowercase DNS label") || strings.Contains(err.Error(), "want a name other than ca and orchestrator"))
+			err := build(&Config{}, []byte(d), nil, nil)
+			refused := err != nil && strings.Contains(err.Error(), "want a lowercase DNS label")
 			if refused == tt.ok {
 				t.Errorf("host %q: err = %v, want accepted %v", tt.name, err, tt.ok)
 			}
@@ -288,8 +288,8 @@ func TestDecodeRefusals(t *testing.T) {
 		{"objectForScalar", `{"profiles": {"p": {"cpus": {"n": 1}}}}`, "profiles.p.cpus", "want a string, a number, true or false"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			err := build(&Config{}, []byte(tc.doc), nil)
-			var fe fieldErrors
+			err := build(&Config{}, []byte(tc.doc), nil, nil)
+			var fe FieldErrors
 			if !errors.As(err, &fe) || len(fe) != 1 || fe[0].Path != tc.path || !strings.Contains(fe[0].Message, tc.want) {
 				t.Errorf("err = %#v, want one refusal at %q holding %q", err, tc.path, tc.want)
 			}
@@ -303,7 +303,7 @@ func TestDecodeScalars(t *testing.T) {
 		"hosts": {"default": {"capacity": {"cpus": 1.5, "memory": "2GiB", "max_runners": "3"}, "egress": {"ipv6": true, "allow": [{"to": "fd00::1", "ports": [53, "8000-8100"]}]}}},
 		"profiles": {"p": {"scopes": ["acme/app"], "cpus": "0.5", "memory": "512MiB", "allow_root": false, "max_lifetime": null}}}`
 	cfg := &Config{}
-	if err := build(cfg, []byte(d), nil); err != nil {
+	if err := build(cfg, []byte(d), nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if c := host(t, cfg, "default").Capacity; c != (Capacity{MilliCPUs: 1500, Memory: 2 << 30, MaxRunners: 3}) {
@@ -323,7 +323,7 @@ func TestDecodeScalars(t *testing.T) {
 // Every refusal of one document is reported, each at its own path.
 func TestBuildReportsEveryPath(t *testing.T) {
 	d := object(jsonScopes, `"hosts": {"default": {"capacity": {"cpus": 0}, "dns": ["127.0.0.1"]}}`, jsonProfile(`"memory": "1MiB", "user": "root"`))
-	got := paths(t, build(&Config{}, []byte(d), nil))
+	got := paths(t, build(&Config{}, []byte(d), nil, nil))
 	want := []string{"hosts.default.capacity.memory", "hosts.default.capacity.cpus", "hosts.default.dns[0]", "profiles.p.user", "profiles.p.memory"}
 	if !slices.Equal(got, want) {
 		t.Errorf("paths = %q, want %q", got, want)

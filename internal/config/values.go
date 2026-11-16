@@ -203,11 +203,11 @@ func parsePrefix(raw string) (netip.Prefix, error) {
 }
 
 // problems collects every validation failure at its field path.
-type problems struct{ errs fieldErrors }
+type problems struct{ errs FieldErrors }
 
 func (p *problems) add(path string, err error) {
 	if err != nil {
-		p.errs = append(p.errs, fieldError{Path: path, Message: err.Error()})
+		p.errs = append(p.errs, FieldError{Path: path, Message: err.Error()})
 	}
 }
 

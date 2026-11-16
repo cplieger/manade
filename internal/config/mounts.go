@@ -8,22 +8,23 @@ import (
 )
 
 // fixedProtected are the paths in every host's container that hand a job
-// the host's daemon, its API, the domain list its next start trusts, the
-// supervisor's temporary files or the kernel's interfaces.
+// the host's daemon, its channel to the control plane, the domain list
+// its next start trusts, the supervisor's temporary files or the kernel's
+// interfaces.
 var fixedProtected = []string{
 	"/run/docker.sock", "/var/run/docker.sock", "/run/docker", "/var/lib/docker",
 	"/run/manade", "/tmp", "/proc", "/sys", "/dev",
 }
 
 // Protected answers the paths in host h's container that no job on a host
-// that is not open may reach. TLS_DIR and the registry credentials file come
-// from the host's own environment, known only on the host itself, which
-// checks its own at start; elsewhere TLS_DIR is its default.
+// that is not open may reach. The registry credentials file comes from the
+// host's own environment, known only on the host itself, which checks its
+// own section.
 func (c *Config) Protected(h *Host) []string {
+	out := slices.Clone(fixedProtected)
 	if c.Self == nil || c.Self.Name != h.Name {
-		return append([]string{hostTLSDir}, fixedProtected...)
+		return out
 	}
-	out := append([]string{c.Self.TLSDir, c.configDir()}, fixedProtected...)
 	if f := c.Self.RegistryAuth.File; f != "" {
 		out = append(out, f)
 	}

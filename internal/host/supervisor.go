@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -27,6 +28,7 @@ import (
 	"github.com/cplieger/manade/internal/host/probe"
 	"github.com/cplieger/manade/internal/host/resolver"
 	"github.com/cplieger/manade/internal/hostapi"
+	"github.com/cplieger/manade/internal/hostlink"
 	"github.com/cplieger/manade/internal/jobspec"
 )
 
@@ -40,67 +42,148 @@ const (
 // metaTimeout bounds a read of GitHub's meta endpoint.
 const metaTimeout = 30 * time.Second
 
-// Options are what a host runs with beyond its config.
+// ErrRestart ends the Run of a host that restarts into a fresh namespace:
+// the caller exits with a non-zero code, so the container's restart policy
+// boots it again on the state it saved.
+var ErrRestart = errors.New("the host restarts")
+
+// Options are what a host runs with beyond its environment.
 type Options struct {
-	Log *slog.Logger
-	// Reload loads the config again on a SIGHUP.
-	Reload func(ctx context.Context) (*config.Config, error)
-	// Hangup delivers each SIGHUP.
-	Hangup <-chan os.Signal
+	Log    *slog.Logger
 	Health *health.Status
 	// Version is the host's build version.
 	Version string
 }
 
+// The phases of a host's run.
+const (
+	// phaseWaiting has no section yet, so no daemon and no job.
+	phaseWaiting int32 = iota
+	// phaseBooting brings the first section up.
+	phaseBooting
+	// phaseUp serves the section it runs.
+	phaseUp
+)
+
 // supervisor is one run of a host.
 type supervisor struct {
-	// regAuth is the host's registry credentials, from its environment.
-	regAuth   config.RegistryAuth
-	outward   hostapi.Outward
-	served    atomic.Pointer[served]
-	lat       *latencies
-	dk        *docker.Client
-	log       *slog.Logger
-	images    *images.Manager
-	runners   *runnerSet
-	prober    *probe.Runner
-	oom       *platform.OOMTotal
-	net       *hostNet
-	configErr atomic.Pointer[string]
-	// pending is the change of egress posture waiting for the host's
-	// runners to end; changed wakes changes when a reload sets it.
-	pending *pendingChange
-	changed chan struct{}
+	self    *config.Self
+	outward hostapi.Outward
+	served  atomic.Pointer[served]
+	lat     *latencies
+	dk      *docker.Client
+	log     *slog.Logger
+	images  *images.Manager
+	runners *runnerSet
+	prober  *probe.Runner
+	oom     *platform.OOMTotal
+	net     *hostNet
+	// running, pending and refused are the section the host runs, one it
+	// accepted and has not applied, and the last one it refused, all under
+	// sectionMu; view is their status, read without the lock.
+	running *accepted
+	pending *pendingSection
+	refused *hostapi.SectionRefusal
+	// state is the host's state, saved unless unsaved, both under
+	// sectionMu.
+	state hostState
+	// unbootable is the section a boot of this run refused, under
+	// sectionMu: its settings delivered again would restart the host into
+	// the same refusal.
+	unbootable *hostapi.SectionRefusal
+	view       atomic.Pointer[hostapi.SectionStatus]
+	// seams are the kernel and daemon the host boots on.
+	seams *seams
+	// arrived hands the first section delivered to a waiting boot; changed
+	// wakes changes; restarting closes once the host announces its restart.
+	arrived    chan *accepted
+	changed    chan struct{}
+	restarting chan struct{}
+	// cancelRun ends the run with why, set before anything reads it.
+	cancelRun context.CancelCauseFunc
 	// ping asks the daemon for the health verdict: dk.Ping.
-	ping     func(ctx context.Context) error
-	opts     *Options
-	info     docker.Info
-	instance string
-	plat     jobspec.Platform
-	restored atomic.Uint64
-	// reloadMu serialises reloads and the changes they leave pending.
-	reloadMu sync.Mutex
-	serving  atomic.Bool
-	apiPort  uint16
+	ping        func(ctx context.Context) error
+	opts        *Options
+	info        docker.Info
+	instance    string
+	sectionPath string
+	plat        jobspec.Platform
+	restored    atomic.Uint64
+	// saveFailures counts the failed saves of state.
+	saveFailures atomic.Uint64
+	// sectionMu serialises deliveries and the applies they leave pending;
+	// rebuilding, under it, marks a rebuild running without it.
+	sectionMu  sync.Mutex
+	phase      atomic.Int32
+	serving    atomic.Bool
+	rebuilding bool
+	unsaved    bool
+	// restartOwed, under sectionMu, is a boot refusal's restart held until
+	// its state is saved.
+	restartOwed bool
 }
 
-// pendingChange is a reloaded config whose host section changes the
-// running posture's open or internet key.
-type pendingChange struct {
-	cfg *config.Config
-	h   *config.Host
-}
-
-// Run brings host cfg.Self up, serves its API until ctx ends and then stops
-// its daemon, which stops each runner. Any failure before the API serves
-// leaves no daemon; a guard or daemon failure later stops the daemon and
-// answers why.
-func Run(ctx context.Context, cfg *config.Config, opts *Options) error {
-	h, ok := cfg.Host(cfg.Self.Name)
-	if !ok {
-		return fmt.Errorf("MANADE_HOST %q names no hosts entry", cfg.Self.Name)
+// newSupervisor is a run of host self on p, its section saved at path.
+func newSupervisor(self *config.Self, opts *Options, path string, p *seams) *supervisor {
+	s := &supervisor{
+		self: self, log: opts.Log, opts: opts, lat: newLatencies(), instance: newInstanceID(), seams: p,
+		sectionPath: path,
+		arrived:     make(chan *accepted, 1), changed: make(chan struct{}, 1), restarting: make(chan struct{}),
 	}
-	s := &supervisor{log: opts.Log, opts: opts, regAuth: cfg.Self.RegistryAuth, lat: newLatencies(), instance: newInstanceID(), changed: make(chan struct{}, 1)}
+	s.publish()
+	return s
+}
+
+// Run boots host self on the section it saved or, with none, on the first
+// one the control plane delivers, and holds it until ctx ends, then stops its
+// daemon, which stops each runner. Throughout, it keeps one connection to
+// the control plane open on the hosts socket and serves the host API over
+// it. Any failure before the host is up leaves no daemon; a guard or daemon
+// failure later stops the daemon and answers why, and a restart answers
+// ErrRestart.
+func Run(ctx context.Context, self *config.Self, opts *Options) error {
+	return newSupervisor(self, opts, sectionPath, systemSeams(self, opts.Log)).runLinked(ctx, dialSocket(hostlink.SocketPath))
+}
+
+// runLinked is Run with the channel dialed by dial. The saved section is
+// read before the first dial, so every upgrade names its revision; the
+// channel and keepSaving outlive ctx until the run has stopped, so the
+// control plane reads the host through its shutdown.
+func (s *supervisor) runLinked(ctx context.Context, dial func(context.Context) (net.Conn, error)) error {
+	rctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+	s.cancelRun = cancel
+	s.bootSaved(ctx)
+	up := hostlink.NewUplink(&hostlink.UplinkOptions{
+		Dial: dial, Hello: s.hello, Handler: hostapi.NewServer(&backend{s: s}, s.instance, s.log).Handler(), Log: s.log,
+	})
+	uctx, stopUplink := context.WithCancel(context.WithoutCancel(ctx))
+	var wg sync.WaitGroup
+	wg.Go(func() { up.Run(uctx) })
+	wg.Go(func() { s.keepSaving(uctx) })
+	s.log.Info("The runner host dials the control plane", "host", s.self.Name, "instance", s.instance, "version", s.opts.Version)
+	err := s.run(ctx, rctx, cancel)
+	stopUplink()
+	wg.Wait()
+	return err
+}
+
+// hello is what each upgrade says of the host: the revision named is the
+// running section's, none before the first.
+func (s *supervisor) hello() hostlink.Hello {
+	h := hostlink.Hello{Name: s.self.Name, Build: s.opts.Version, Instance: s.instance}
+	if st := s.view.Load(); st.Hash != "" {
+		h.Section = strconv.FormatUint(st.Revision, 10)
+	}
+	return h
+}
+
+// run boots on the first section and holds the host until rctx ends,
+// answering nil when ctx ended it and why otherwise.
+func (s *supervisor) run(ctx, rctx context.Context, cancel context.CancelCauseFunc) error {
+	if s.awaitSection(rctx) == nil {
+		return ended(ctx, rctx)
+	}
 	ms, err := platform.Mountinfo(platform.System)
 	if err != nil {
 		return err
@@ -114,36 +197,268 @@ func Run(ctx context.Context, cfg *config.Config, opts *Options) error {
 	if err != nil {
 		return err
 	}
-	if s.oom, err = platform.LoadOOMTotal(ctx, oomFile); err != nil {
+	if s.oom, err = platform.LoadOOMTotal(rctx, oomFile); err != nil {
 		s.log.Warn("The saved OOM kill total was not read, so the total counts from this start", "error", err)
 	}
-	if s.net, err = bringUp(ctx, h, s.platform(cfg.Self.IPv6Echo), guardHooks{Restored: s.onRestored, Checked: s.onChecked}); err != nil {
+	if s.net, err = s.boot(rctx); err != nil {
 		return err
 	}
-	err = s.serve(ctx, cfg, h, cg, ms)
+	if s.net == nil {
+		return ended(ctx, rctx)
+	}
+	err = s.serve(rctx, cancel, cg, ms)
+	if err == nil {
+		err = ended(ctx, rctx)
+	}
 	return errors.Join(err, s.net.stop())
 }
 
-// serve runs everything above a host whose daemon is up, until ctx ends or
-// a part fails.
-func (s *supervisor) serve(ctx context.Context, cfg *config.Config, h *config.Host, cg *platform.Cgroup, ms []platform.Mount) error {
+// ended answers why rctx, a run under ctx, ended: nil when ctx did.
+func ended(ctx, rctx context.Context) error {
+	if ctx.Err() != nil {
+		return nil
+	}
+	return context.Cause(rctx)
+}
+
+// boot brings the host's network and daemon up on the section it boots on,
+// nil when ctx ends first. A section the host's network refuses there, or a
+// section not yet booted here that fails a later step (stepError), is
+// refused as a delivery is: the host boots on the section it ran before or
+// waits for another. A refusal whose namespace needs a fresh start ends the
+// run with ErrRestart once its state is saved (bootRefused, keepSaving).
+// Any other failure ends the run with its cause.
+func (s *supervisor) boot(ctx context.Context) (*hostNet, error) {
+	hooks := guardHooks{Restored: s.onRestored, Checked: s.onChecked}
+	off, err := netsetup.IPv6Off(s.seams.Root)
+	if err != nil {
+		return nil, err
+	}
+	b := &booting{on6: !off}
+	for {
+		next := s.awaitSection(ctx)
+		if next == nil {
+			return nil, nil
+		}
+		s.sectionMu.Lock()
+		unbooted := s.state.Unbooted
+		s.sectionMu.Unlock()
+		n, err := bringUp(ctx, next.host, s.seams, hooks)
+		errs := s.refusalOf(ctx, err, b, unbooted)
+		if errs == nil {
+			if err == nil && unbooted {
+				s.cameUp(ctx)
+			}
+			return n, err
+		}
+		if err := s.bootRefused(ctx, b, next, errs); err != nil {
+			return nil, err
+		}
+	}
+}
+
+// cameUp marks the section the host booted on, which was not booted here
+// before, as booted.
+func (s *supervisor) cameUp(ctx context.Context) {
+	s.sectionMu.Lock()
+	defer s.sectionMu.Unlock()
+	s.state = hostState{Section: s.state.Section}
+	_ = s.save(context.WithoutCancel(ctx))
+}
+
+// refusalOf answers the field errors of a boot's failure err that refuse
+// its section: the facts check's, or a later step's of a section not yet
+// booted on this host, which b records; nil when err is the host's own,
+// a stop's among them.
+func (s *supervisor) refusalOf(ctx context.Context, err error, b *booting, unbooted bool) []hostapi.FieldError {
+	if sr, ok := errors.AsType[*hostapi.SectionRefusedError](err); ok {
+		return sr.Errors
+	}
+	se, ok := errors.AsType[*stepError](err)
+	if !ok || !unbooted || ctx.Err() != nil {
+		return nil
+	}
+	b.written = true
+	return []hostapi.FieldError{{Path: "hosts." + s.self.Name + "." + se.at, Message: se.Error()}}
+}
+
+// booting is what the boots of one run left in the namespace.
+type booting struct {
+	// on6 is IPv6 on in the namespace as the run found it; written is a
+	// failed boot's steps past the facts check.
+	on6     bool
+	written bool
+}
+
+// bootRefused records next, the section a boot refused with errs, and
+// makes its fallback the section the host boots on, or with none leaves the
+// host waiting with no section, both saved in one state. It answers
+// ErrRestart when the namespace b left cannot boot the fallback, or a
+// waiting host would read it, as a fresh one would; a restart whose state
+// was not saved would boot the refused section again, so the host then
+// waits here with the refusal and owes the restart until a save succeeds.
+func (s *supervisor) bootRefused(ctx context.Context, b *booting, next *accepted, errs []hostapi.FieldError) error {
+	ctx = context.WithoutCancel(ctx)
+	s.sectionMu.Lock()
+	defer s.sectionMu.Unlock()
+	fb := s.fallback()
+	restart := b.written && (fb == nil || s.ipv6Lost(b, fb.host))
+	s.refuse(&next.raw, &hostapi.SectionRefusedError{Errors: errs})
+	s.unbootable = s.refused
+	st := hostState{}
+	if fb != nil {
+		st.Section = &fb.raw
+	}
+	if restart {
+		st.Refused = s.refused
+	}
+	s.state = st
+	saved := s.save(ctx) == nil
+	s.running = fb
+	if restart {
+		s.running = nil
+	}
+	switch {
+	case restart && saved:
+		s.log.Warn("The failed boot left the host's namespace unlike a fresh one, so the host restarts", "hash", next.hash)
+		return ErrRestart
+	case restart:
+		s.restartOwed = true
+		s.log.Error("The failed boot left the host's namespace unlike a fresh one, but the host waits to restart until its state is saved, since a restart would boot the refused section again", "hash", next.hash)
+	case fb == nil:
+		s.log.Warn("The host refused the section it was booting on, so it waits for the control plane's", "hash", next.hash)
+	default:
+		s.log.Warn("The host refused the section it was booting on, so it boots on the section it ran before", "hash", next.hash, "fallback", fb.hash)
+	}
+	if s.running == nil {
+		s.phase.Store(phaseWaiting)
+	}
+	s.publish()
+	return nil
+}
+
+// ipv6Lost reports whether a failed boot turned off IPv6, which section h
+// keeps on and only a fresh namespace gives back with its addresses.
+func (s *supervisor) ipv6Lost(b *booting, h *config.Host) bool {
+	if !b.on6 || (!h.Egress.IPv6 && !h.Egress.Open) {
+		return false
+	}
+	off, err := netsetup.IPv6Off(s.seams.Root)
+	return err != nil || off
+}
+
+// fallback answers the section the host ran before the one it boots, which
+// the state holds only while that one has not booted here, when it still
+// validates. A fallback refused in turn is booted, so it has none.
+// sectionMu is held.
+func (s *supervisor) fallback() *accepted {
+	if s.state.Fallback == nil {
+		return nil
+	}
+	fb, err := check(s.self, s.state.Fallback)
+	if err != nil {
+		s.log.Warn("The fallback section no longer validates", "error", err)
+		return nil
+	}
+	return fb
+}
+
+// bootSaved loads the host's state: the section it boots on, when it
+// still validates, and the refusal a boot saved before restarting, whose
+// settings are refused for this run only, so it leaves the state at once.
+// A refusal stays in the file while the state cannot be saved; saving any
+// change to the host's settings, or keepSaving, takes it out.
+func (s *supervisor) bootSaved(ctx context.Context) {
+	st, ok, err := readState(ctx, s.sectionPath)
+	if err != nil {
+		s.log.Error("The host's state could not be read, so it waits for the control plane's section", "error", err)
+	}
+	if !ok {
+		return
+	}
+	s.sectionMu.Lock()
+	defer s.sectionMu.Unlock()
+	s.state = st
+	if r := st.Refused; r != nil {
+		s.refused, s.unbootable = r, r
+		s.state.Refused = nil
+		_ = s.save(context.WithoutCancel(ctx))
+		s.publish()
+	}
+	next := s.savedSection(st.Section)
+	if next == nil {
+		return
+	}
+	s.running = next
+	s.phase.Store(phaseBooting)
+	s.publish()
+	s.log.Info("The host boots on the section it saved", "hash", next.hash, "revision", slog.Uint64Value(next.raw.Revision))
+}
+
+// awaitSection answers the section the host boots on: bootSaved's, or else
+// the first one delivered; nil when ctx ends first, or has ended once a
+// section is delivered, so a run cancelled while it waits ends with its
+// cause.
+func (s *supervisor) awaitSection(ctx context.Context) *accepted {
+	s.sectionMu.Lock()
+	booting, running := s.phase.Load() == phaseBooting, s.running
+	if booting {
+		// A delivery that came in after the boot's last refusal hands its
+		// section to arrived too: left there, the next delivery to a
+		// waiting host would block on it.
+		select {
+		case <-s.arrived:
+		default:
+		}
+	}
+	s.sectionMu.Unlock()
+	if booting {
+		return running
+	}
+	s.log.Info("The host waits for its first settings from the control plane", "host", s.self.Name)
+	select {
+	case <-ctx.Done():
+		return nil
+	case next := <-s.arrived:
+		// With both ready, select picks either (Go spec).
+		if ctx.Err() != nil {
+			return nil
+		}
+		return next
+	}
+}
+
+// savedSection answers sec, the section the state boots, nil when there is
+// none or it no longer validates, which the host reports; sectionMu is
+// held.
+func (s *supervisor) savedSection(sec *hostapi.Section) *accepted {
+	if sec == nil {
+		return nil
+	}
+	next, err := check(s.self, sec)
+	if err == nil {
+		return next
+	}
+	s.log.Error("The saved section does not validate, so the host waits for the control plane's", "error", err)
+	if sr, ok := errors.AsType[*hostapi.SectionRefusedError](err); ok {
+		s.refuse(sec, sr)
+	}
+	return nil
+}
+
+// serve brings up everything above a host whose daemon is up and holds it
+// until rctx ends or a part fails.
+func (s *supervisor) serve(rctx context.Context, cancel context.CancelCauseFunc, cg *platform.Cgroup, ms []platform.Mount) error {
 	if err := platform.SetOOMScoreAdj(platform.System, s.net.Daemon.PID(), platform.HostOOMScoreAdj); err != nil {
 		return fmt.Errorf("oom_score_adj of dockerd: %w", err)
 	}
 	var err error
-	if s.dk, err = docker.Dial(ctx, daemonSocket, s.lat.observe); err != nil {
+	if s.dk, err = docker.Dial(rctx, daemonSocket, s.lat.observe); err != nil {
 		return err
 	}
 	defer s.dk.Close()
 	s.ping = s.dk.Ping
-	usage, err := platform.DataUsage(dataRoot)
-	if err != nil {
-		return fmt.Errorf("reading the data volume: %w", err)
-	}
-	if derr := checkDisk(h, usage.Size); derr != nil {
-		return derr
-	}
-	if s.info, err = s.dk.Info(ctx); err != nil {
+	if s.info, err = s.dk.Info(rctx); err != nil {
 		return fmt.Errorf("reading the host daemon's info: %w", err)
 	}
 	s.log.Info("The host's daemon answered", "version", s.info.ServerVersion, "api_version", s.dk.APIVersion(),
@@ -157,35 +472,27 @@ func (s *supervisor) serve(ctx context.Context, cfg *config.Config, h *config.Ho
 		Pinning: !cg.Quota, PIDs: cg.PIDsController, Swap: cg.Swap,
 		Disk: s.net.Storage.Driver == platform.Overlay2 && platform.ProjectQuota(ms, dataRoot),
 	}
-	s.outward, s.apiPort = s.outwardAddrs(), cfg.Self.Listen.Port
-	sv := s.newServed(cfg, h)
+	s.outward = s.outwardAddrs()
+	h := s.running.host
+	sv := s.newServed(s.running.cfg, h)
 	s.served.Store(sv)
-	s.warnNoMemoryLimit(h, sv, cg)
-	rctx, cancel := context.WithCancelCause(ctx)
-	defer cancel(nil)
-	if berr := s.build(rctx, h, sv, cg); berr != nil {
-		return berr
-	}
-	ln, err := listen(ctx, cfg.Self)
-	if err != nil {
+	s.warnNoMemoryLimit(sv, cg)
+	if err := s.build(rctx, h, sv, cg); err != nil {
 		return err
 	}
-	s.run(rctx, cancel, ln)
-	if ctx.Err() != nil {
-		return nil
-	}
-	return context.Cause(rctx)
+	s.hold(rctx, cancel)
+	return nil
 }
 
 // warnNoMemoryLimit warns once of a host cgroup with no memory limit, which
-// admits no job memory, naming the limit that would admit h's capacity.
-func (s *supervisor) warnNoMemoryLimit(h *config.Host, sv *served, cg *platform.Cgroup) {
+// admits no job memory, naming the reserve a limit must leave.
+func (s *supervisor) warnNoMemoryLimit(sv *served, cg *platform.Cgroup) {
 	if cg.Memory != 0 {
 		return
 	}
-	m := memoryStatus(h, sv.Profiles, 0, 0)
-	s.log.Warn("The host has no memory limit, so it admits no job memory: give its container a memory limit of its capacity.memory plus its reserve",
-		"capacity_memory", h.Capacity.Memory, "reserve", m.Reserve, "limit_bytes", h.Capacity.Memory+m.Reserve)
+	m := memoryStatus(cg, sv.Profiles)
+	s.log.Warn("The host has no memory limit, so it admits no job memory: give its container a memory limit, of which jobs get all but the reserve",
+		"reserve_bytes", m.Reserve)
 }
 
 // build makes the image manager, the runner record and the prober, and
@@ -193,7 +500,7 @@ func (s *supervisor) warnNoMemoryLimit(h *config.Host, sv *served, cg *platform.
 // host's run, which each runner's work runs under.
 func (s *supervisor) build(ctx context.Context, h *config.Host, sv *served, cg *platform.Cgroup) error {
 	s.images = images.New(&images.Config{
-		Daemon: s.dk, Host: h, RegistryAuth: s.regAuth, Lookup: lookupRegistry, ByName: s.net.gitHubName, Log: s.log,
+		Daemon: s.dk, Host: h, RegistryAuth: s.self.RegistryAuth, Lookup: lookupRegistry, ByName: s.net.gitHubName, Log: s.log,
 		Keep:    images.Keep{Runner: func(n string) bool { return s.runners.holds(n) }, ProbeLeftover: func(r string) bool { return s.prober.Leftover(r) }},
 		Version: s.opts.Version, StateDir: stateDir, Binary: binaryPath, Profiles: sv.Profiles,
 		Tidied: func() { s.runners.tidied() },
@@ -205,12 +512,13 @@ func (s *supervisor) build(ctx context.Context, h *config.Host, sv *served, cg *
 			return fmt.Errorf("the host's cpuset %q: %w", cg.CPUSet, err)
 		}
 	}
-	s.runners = newRunners(ctx, &runnersConfig{Daemon: s.dk, Images: s.images, Served: sv, Log: s.log, CPUs: cpus, DataFree: dataFree})
+	jobs := &jobDaemon{Client: s.dk, network: jobNetworkSpec(s.net.Subnet, s.net.Job6), log: s.log}
+	s.runners = newRunners(ctx, &runnersConfig{Daemon: jobs, Images: s.images, Served: sv, Log: s.log, CPUs: cpus, DataFree: dataFree})
 	if err := s.runners.load(ctx); err != nil {
 		return err
 	}
 	s.prober = probe.NewRunner(&probe.Config{
-		Daemon: s.dk, Attach: func(ctx context.Context, id string) (probe.Stream, error) { return s.dk.Attach(ctx, id) },
+		Daemon: jobs, Attach: func(ctx context.Context, id string) (probe.Stream, error) { return s.dk.Attach(ctx, id) },
 		Sets: &probeSets{rules: s.net.rules, guard: s.net.rulesGuard, ipv6: h.Egress.IPv6}, Image: s.images,
 		Spec: func() *jobspec.Host { return s.served.Load().Spec }, Host: s.probeHost,
 		Log: s.log, Network: jobNetwork, Started: time.Now(),
@@ -221,9 +529,9 @@ func (s *supervisor) build(ctx context.Context, h *config.Host, sv *served, cg *
 	return nil
 }
 
-// run serves ln and holds the host until rctx ends or a part fails, which
+// hold runs the host's parts until rctx ends or a part fails, which
 // cancels it with why, then stops each part and waits for it.
-func (s *supervisor) run(rctx context.Context, cancel context.CancelCauseFunc, ln net.Listener) {
+func (s *supervisor) hold(rctx context.Context, cancel context.CancelCauseFunc) {
 	var wg sync.WaitGroup
 	wg.Go(func() {
 		if err := s.net.hold(rctx); err != nil {
@@ -232,21 +540,18 @@ func (s *supervisor) run(rctx context.Context, cancel context.CancelCauseFunc, l
 	})
 	wg.Go(func() { s.images.Run(rctx) })
 	wg.Go(func() { s.runners.run(rctx) })
-	wg.Go(func() { s.hangups(rctx, cancel) })
 	wg.Go(func() { s.changes(rctx, cancel) })
-	srv := hostapi.NewServer(&backend{s: s}, s.instance, s.log)
+	s.sectionMu.Lock()
+	s.phase.Store(phaseUp)
+	s.sectionMu.Unlock()
 	s.serving.Store(true)
-	s.log.Info("The runner host serves its API", "host", s.served.Load().Host, "instance", s.instance, "version", s.opts.Version)
+	s.log.Info("The runner host is up on its section", "host", s.self.Name, "hash", s.running.hash)
 	s.warnOpen()
-	err := srv.Serve(rctx, ln)
+	<-rctx.Done()
 	s.serving.Store(false)
 	if s.opts.Health != nil {
 		s.opts.Health.BeginDrain()
 	}
-	if err == nil {
-		err = context.Canceled
-	}
-	cancel(err)
 	wg.Wait()
 }
 
@@ -256,154 +561,12 @@ func (s *supervisor) warnOpen() {
 	}
 }
 
-// hangups reloads the config on each SIGHUP until ctx ends; a reload the
-// host cannot survive cancels ctx with why.
-func (s *supervisor) hangups(ctx context.Context, cancel context.CancelCauseFunc) {
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-s.opts.Hangup:
-			if err := s.reload(ctx); err != nil {
-				cancel(err)
-				return
-			}
-		}
-	}
-}
-
-// reload reads the config again and applies it. A config or section that
-// does not validate, or that the running host cannot take, keeps all of it,
-// and status says why. A section that changes the posture's open or internet
-// key is left pending, every start held, for changes to apply once the
-// runners have ended; any other is swapped in at once, which also drops a
-// change left pending. Only a failure a restore would answer is returned.
-func (s *supervisor) reload(ctx context.Context) error {
-	s.reloadMu.Lock()
-	defer s.reloadMu.Unlock()
-	cfg, err := s.opts.Reload(ctx)
-	if err == nil {
-		if _, ok := cfg.Host(s.served.Load().Host); !ok {
-			err = fmt.Errorf("the config no longer has hosts.%s", s.served.Load().Host)
-		}
-	}
-	if err != nil {
-		s.keep(fmt.Errorf("the reloaded config does not validate: %w", err))
-		return nil
-	}
-	h, _ := cfg.Host(s.served.Load().Host)
-	if err := s.net.applicable(h); err != nil {
-		s.keep(err)
-		return nil
-	}
-	s.configErr.Store(nil)
-	if s.net.postureChanged(h) {
-		s.pending = &pendingChange{cfg: cfg, h: h}
-		s.runners.holdEgress(fmt.Sprintf("the host applies a change of egress (open %t, internet %t) once every runner on it has exited or been removed",
-			h.Egress.Open, h.Egress.Internet))
-		s.log.Warn("The host takes no start until its runners have ended, then rebuilds its egress for the new section", "host", h.Name,
-			"open", h.Egress.Open, "internet", h.Egress.Internet)
-		select {
-		case s.changed <- struct{}{}:
-		default:
-		}
-		return nil
-	}
-	if s.pending != nil {
-		s.log.Info("The reloaded section keeps the running egress, so the change left pending is dropped", "host", h.Name)
-	}
-	s.pending = nil
-	s.runners.releaseEgress()
-	kept, fatal := s.net.swap(ctx, h)
-	if fatal != nil {
-		return fatal
-	}
-	if kept != nil {
-		s.keep(kept)
-		return nil
-	}
-	s.apply(cfg, h)
-	s.log.Info("The host reloaded its config", "host", h.Name)
-	return nil
-}
-
 // apply makes cfg what the host serves.
 func (s *supervisor) apply(cfg *config.Config, h *config.Host) {
 	sv := s.newServed(cfg, h)
 	s.served.Store(sv)
 	s.runners.setServed(sv)
 	s.images.Reload(h, sv.Profiles)
-}
-
-// changes applies each change of egress posture a reload leaves pending
-// once the host's runners have ended, until ctx ends; a change the host
-// cannot survive cancels ctx with why.
-func (s *supervisor) changes(ctx context.Context, cancel context.CancelCauseFunc) {
-	for {
-		idle := s.runners.egressIdle()
-		if idle == nil {
-			select {
-			case <-ctx.Done():
-				return
-			case <-s.changed:
-			}
-			continue
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-s.changed:
-			continue
-		case <-idle:
-		}
-		if err := s.applyChange(ctx); err != nil {
-			cancel(err)
-			return
-		}
-	}
-}
-
-// applyChange rebuilds the host's egress for the pending change, with no
-// probe running, once no runner holds it up. Success serves the new config
-// and takes starts again; a failure leaves the old posture up, every start
-// held and the failure in status until a later SIGHUP or a restart. Only a
-// failure to bring the old posture back is returned.
-func (s *supervisor) applyChange(ctx context.Context) error {
-	s.reloadMu.Lock()
-	defer s.reloadMu.Unlock()
-	c := s.pending
-	if c == nil || !s.runners.egressDrained() {
-		return nil
-	}
-	resume, err := s.prober.Pause(ctx)
-	if err != nil {
-		return nil
-	}
-	s.pending = nil
-	failed, fatal := s.net.change(ctx, c.h)
-	resume()
-	if fatal != nil {
-		return fatal
-	}
-	if failed != nil {
-		if ctx.Err() != nil {
-			return nil
-		}
-		s.runners.failEgress("the change of egress failed, so the host went back to its old egress and takes no start until a SIGHUP or a restart applies the section again: " + failed.Error())
-		s.keep(fmt.Errorf("the change of egress (open %t, internet %t) failed; the host takes no start: %w", c.h.Egress.Open, c.h.Egress.Internet, failed))
-		return nil
-	}
-	s.apply(c.cfg, c.h)
-	s.runners.releaseEgress()
-	s.log.Info("The host rebuilt its egress for the reloaded section and takes starts again", "host", c.h.Name,
-		"open", c.h.Egress.Open, "internet", c.h.Egress.Internet)
-	return nil
-}
-
-func (s *supervisor) keep(err error) {
-	msg := err.Error()
-	s.configErr.Store(&msg)
-	s.log.Error("The host kept its old config and rules", "error", err)
 }
 
 func (s *supervisor) newServed(cfg *config.Config, h *config.Host) *served {
@@ -441,7 +604,8 @@ func (s *supervisor) onRestored(string) { s.restored.Add(1) }
 const healthAsk = 3 * time.Second
 
 // onChecked records the health verdict after each guard check that left
-// the rules in place: healthy while the daemon answers and the API serves.
+// the rules in place: healthy while the daemon answers and the host serves
+// its section.
 func (s *supervisor) onChecked() {
 	if s.opts.Health == nil {
 		return
@@ -460,7 +624,7 @@ func (s *supervisor) probeHost() probe.Host {
 	h := s.host()
 	n := s.net
 	in := egress.ProbeInput{
-		Host: h, OutwardGateway: n.Gateway4, Original: n.Original, APIPort: s.apiPort,
+		Host: h, OutwardGateway: n.Gateway4, Original: n.Original,
 	}
 	ph := probe.Host{Sources: []netip.Addr{s.outward.Address}}
 	if h.Egress.IPv6 {
@@ -493,8 +657,9 @@ func (s *supervisor) outwardAddrs() hostapi.Outward {
 	return out
 }
 
-// platform is the real kernel and daemon, with the echo endpoint echoURL.
-func (s *supervisor) platform(echoURL string) *seams {
+// systemSeams is the real kernel and daemon, with host self's echo
+// endpoint and MANADE_BLOCK6.
+func systemSeams(self *config.Self, log *slog.Logger) *seams {
 	return &seams{
 		Run: platform.Exec, Lookup: netsetup.LookupVia, Random: rand.Reader,
 		PickStorage: func(dir string) (platform.StoragePick, error) {
@@ -510,8 +675,8 @@ func (s *supervisor) platform(echoURL string) *seams {
 			}
 			return c, nil
 		},
-		ListenDNS: listenDNS, FetchDomains: resolver.FetchMeta(httpclient.New(metaTimeout)), Upstreams: resolver.Upstreams, Echo: echoOverIPv6(), EchoURL: echoURL,
-		Log: s.log, Root: platform.System,
+		ListenDNS: listenDNS, FetchDomains: resolver.FetchMeta(httpclient.New(metaTimeout)), Upstreams: resolver.Upstreams, Echo: echoOverIPv6(), EchoURL: self.IPv6Echo, Block6: self.Ceiling.Block6,
+		Log: log, Root: platform.System,
 	}
 }
 
@@ -538,19 +703,6 @@ func socketGID() (uint32, error) {
 		return 0, errors.New("the host daemon's socket: no owner on this platform")
 	}
 	return sys.Gid, nil
-}
-
-// listen opens the API's listener: the Unix socket owned by APIUID, or TCP
-// with mutual TLS from TLSDir.
-func listen(ctx context.Context, self *config.Self) (net.Listener, error) {
-	if self.Listen.Socket != "" {
-		return hostapi.ListenUnix(self.Listen.Socket, self.APIUID)
-	}
-	tc, err := hostapi.ServerTLS(self.TLSDir, self.Name)
-	if err != nil {
-		return nil, err
-	}
-	return hostapi.ListenTLS(ctx, self.Listen.HostPort, tc)
 }
 
 func newInstanceID() string {

@@ -438,6 +438,16 @@ func TestStart(t *testing.T) {
 			t.Errorf("Start = %+v", res)
 		}
 	})
+	t.Run("a start whose network is gone fails matching ErrNetworkMissing with no inspect", func(t *testing.T) {
+		d := newDaemon(t, "1.51")
+		d.handle("POST /containers/{id}/start", func(w http.ResponseWriter, _ *http.Request) {
+			writeError(w, http.StatusNotFound, "failed to set up container networking: network manade not found")
+		})
+		res := d.dial(t).Start(t.Context(), "c1")
+		if res.Outcome != Failed || res.ID != "c1" || !errors.Is(res.Err, ErrNetworkMissing) || len(d.seen(http.MethodGet, "/containers/c1/json")) != 0 {
+			t.Errorf("Start = %+v", res)
+		}
+	})
 	for _, state := range []string{StateRunning, StateExited, StateDead} {
 		t.Run("a start answered after its timeout, the container "+state+", is started", func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {

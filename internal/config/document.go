@@ -84,14 +84,6 @@ func (d *document) apply(cfg *Config, p *problems) {
 	cfg.Scopes = d.scopes(p)
 	cfg.Hosts = d.hosts(refresh, p)
 	cfg.Profiles = d.profiles(p)
-	if cfg.Self != nil {
-		switch dh, ok := d.Hosts[cfg.Self.Name]; {
-		case !ok:
-			p.addf("hosts", "names no host %s, the MANADE_HOST of this host", quote(cfg.Self.Name))
-		case dh.Capacity == nil:
-			p.addf(hostPath(cfg.Self.Name)+".capacity", "required on the host itself: set cpus and memory, which size its memory reserve")
-		}
-	}
 	cfg.check(p)
 }
 

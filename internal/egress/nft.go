@@ -74,11 +74,14 @@ func (s *set) nft() string {
 	if s.timeout {
 		fmt.Fprintf(&b, "\t\tflags timeout\n\t\tsize %d\n", LearnedMax)
 	}
-	if len(s.elems) > 0 {
-		elems := make([]string, len(s.elems))
-		for i, l := range s.elems {
-			elems[i] = fmt.Sprintf("%s timeout %ds", l.Addr, seconds(l.Left))
-		}
+	elems := make([]string, 0, len(s.elems)+len(s.addrs))
+	for _, l := range s.elems {
+		elems = append(elems, fmt.Sprintf("%s timeout %ds", l.Addr, seconds(l.Left)))
+	}
+	for _, a := range s.addrs {
+		elems = append(elems, a.String())
+	}
+	if len(elems) > 0 {
 		fmt.Fprintf(&b, "\t\telements = { %s }\n", strings.Join(elems, ", "))
 	}
 	b.WriteString("\t}\n")
@@ -164,6 +167,9 @@ func (r *rule) matches() []match {
 	}
 	addIf("iifname", r.iif)
 	addIf("oifname", r.oif)
+	if r.mark {
+		ms = append(ms, match{left: "meta mark", right: []string{strconv.Itoa(Mark)}, text: fmt.Sprintf("0x%08x", Mark)})
+	}
 	f := r.matchFamily()
 	l3 := "ip"
 	if f == ipv6 {
@@ -179,11 +185,15 @@ func (r *rule) matches() []match {
 	if len(r.daddr) > 0 {
 		ms = append(ms, prefixMatch(l3+" daddr", r.daddr, r.notDaddr))
 	}
-	if r.saddrSet != "" {
-		ms = append(ms, match{left: l3 + " saddr", right: []string{"@" + r.saddrSet}, text: "@" + r.saddrSet})
+	setMatch := func(dir, name string) {
+		ms = append(ms, match{left: l3 + " " + dir, right: []string{"@" + name}, text: "@" + name})
 	}
 	if r.daddrSet != "" {
-		ms = append(ms, match{left: l3 + " daddr", right: []string{"@" + r.daddrSet}, text: "@" + r.daddrSet})
+		setMatch("daddr", r.daddrSet)
+	}
+	if src, dst, ok := r.probeSets(); ok {
+		setMatch("saddr", src)
+		setMatch("daddr", dst)
 	}
 	if r.ct != "" {
 		ms = append(ms, match{left: "ct state", right: sortedWords(strings.Split(r.ct, ",")), text: r.ct})
@@ -197,7 +207,18 @@ func (r *rule) matches() []match {
 }
 
 func (r *rule) hasL3() bool {
-	return r.saddr.IsValid() || len(r.daddr) > 0 || r.saddrSet != "" || r.daddrSet != "" || r.nd
+	return r.saddr.IsValid() || len(r.daddr) > 0 || r.daddrSet != "" || r.probe != anyFamily || r.nd
+}
+
+// probeSets answers a counting rule's probe source and target sets.
+func (r *rule) probeSets() (src, dst string, ok bool) {
+	switch r.probe {
+	case ipv4:
+		return setProbe4, setTarget4, true
+	case ipv6:
+		return setProbe6, setTarget6, true
+	}
+	return "", "", false
 }
 
 func (r *rule) portMatches() []match {

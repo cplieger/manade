@@ -3,11 +3,9 @@ package host
 import (
 	"context"
 	"errors"
-	"net"
 	"net/netip"
 	"slices"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -16,6 +14,7 @@ import (
 	"github.com/cplieger/manade/internal/egress"
 	"github.com/cplieger/manade/internal/host/platform"
 	"github.com/cplieger/manade/internal/host/resolver"
+	"github.com/cplieger/manade/internal/hostapi"
 )
 
 // metaBody is a GET /meta body in GitHub's shape, trimmed.
@@ -205,7 +204,8 @@ func TestAddLearned(t *testing.T) {
 
 // An internet: false host never learns the machine's /64, so no IPv6
 // address learned for a GitHub name could be checked against it: none is
-// learned, cold or after a change from an internet host that had a /64.
+// learned, cold or after a section turns internet off on a host that had a
+// /64.
 func TestAnInternetFalseHostLearnsNoIPv6(t *testing.T) {
 	inMachine64 := netip.MustParseAddr("2a01:e0a:1259:2710::153")
 	unlearned := func(t *testing.T, f *upFixture, n *hostNet) {
@@ -223,121 +223,21 @@ func TestAnInternetFalseHostLearnsNoIPv6(t *testing.T) {
 		f := v6Fixture(t, &echoes{replies: []func() ([]byte, error){answer("2a01:e0a:1259:2710::7008")}})
 		unlearned(t, f, upNet(t, f, closedV6Section()))
 	})
-	t.Run("after a change from internet with a /64 learned", func(t *testing.T) {
+	t.Run("after a section turns internet off on a host with a /64 learned", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			f := v6Fixture(t, &echoes{replies: []func() ([]byte, error){answer("2a01:e0a:1259:2710::7008")}})
-			n := upNet(t, f, v6Section())
-			stop := holding(t, n)
+			s, run := upOn(t, sectionOf(1, v6Host, smallJSON), f.platform())
+			changing(t, s, run)
 			synctest.Wait()
-			if st := n.iPv6Status(); st == nil || !st.Prefix.IsValid() {
+			if st := s.net.iPv6Status(); st == nil || !st.Prefix.IsValid() {
 				t.Fatalf("setup: IPv6Status = %+v, want a learned /64", st)
 			}
-			if failed, fatal := n.change(t.Context(), closedV6Section()); failed != nil || fatal != nil {
-				t.Fatalf("Change = %v, %v", failed, fatal)
+			put(t, s, sectionOf(2, closedV6Host, smallJSON))
+			synctest.Wait()
+			if st := s.sectionStatus(); st.State != hostapi.SectionRunning || st.Revision != 2 {
+				t.Fatalf("section = %+v", st)
 			}
-			unlearned(t, f, n)
-			if err := stop(); err != nil {
-				t.Errorf("Hold = %v", err)
-			}
+			unlearned(t, f, s.net)
 		})
 	})
-}
-
-// An internet: false posture refreshes its domain list every six hours;
-// one that a change replaced with an internet posture reads it no more.
-func TestTheDomainListRefreshesOnlyOnAnInternetFalsePosture(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		f := newUpFixture(t)
-		n := upNet(t, f, closedSection())
-		fetches := func() int { return strings.Count(strings.Join(f.events, " "), "domains") }
-		stop := holding(t, n)
-		time.Sleep(6*time.Hour + time.Minute)
-		synctest.Wait()
-		if got := fetches(); got != 2 {
-			t.Errorf("fetches after one refresh period = %d, want the start's and one refresh", got)
-		}
-		if failed, fatal := n.change(t.Context(), section()); failed != nil || fatal != nil {
-			t.Fatalf("Change = %v, %v", failed, fatal)
-		}
-		time.Sleep(6*time.Hour + time.Minute)
-		synctest.Wait()
-		if got := fetches(); got != 2 {
-			t.Errorf("fetches with internet on = %d, want none more", got)
-		}
-		if err := stop(); err != nil {
-			t.Errorf("Hold = %v", err)
-		}
-	})
-}
-
-// A job started before a change of egress.internet keeps the resolver
-// resolv.conf named at its start: it resolves after each change, and its
-// GitHub lookup is learned once internet is off.
-func TestARunningJobResolvesAcrossInternetChanges(t *testing.T) {
-	f := newUpFixture(t)
-	up := fakeUpstream(t, netip.MustParseAddr("140.82.121.10"))
-	udp, err := net.ListenPacket("udp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	tcp, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	job := jobResolver(udp.LocalAddr().String())
-	learned := func() bool {
-		_, ipset := f.kernel.payloads()
-		return slices.ContainsFunc(ipset, func(p string) bool { return strings.HasPrefix(p, "add manade-gh4 140.82.121.10 ") })
-	}
-	// The list read resolves api.github.com through the host's resolver, as
-	// the supervisor's HTTP client does, and needs that answer learned.
-	var learnedForTheList atomic.Bool
-	p := f.platform()
-	p.ListenDNS = func(context.Context) (net.PacketConn, net.Listener, error) { return udp, tcp, nil }
-	p.Upstreams = func([]netip.Addr) []netip.AddrPort { return []netip.AddrPort{up} }
-	p.FetchDomains = func(ctx context.Context) ([]byte, error) {
-		if _, err := job.LookupNetIP(ctx, "ip4", "api.github.com"); err != nil {
-			return nil, err
-		}
-		learnedForTheList.Store(learned())
-		return []byte(metaBody), nil
-	}
-	n, err := bringUp(t.Context(), section(), p, guardHooks{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = n.stop() })
-	stop := holding(t, n)
-	resolvAtStart := readAt(t, f.root, "/etc/resolv.conf")
-	resolves := func(when string) {
-		t.Helper()
-		addrs, err := job.LookupNetIP(t.Context(), "ip4", "codeload.github.com")
-		if err != nil || !slices.Equal(addrs, []netip.Addr{netip.MustParseAddr("140.82.121.10")}) {
-			t.Errorf("%s: the job's lookup = %v, %v, want the upstream's answer", when, addrs, err)
-		}
-		if got := readAt(t, f.root, "/etc/resolv.conf"); got != resolvAtStart {
-			t.Errorf("%s: resolv.conf = %q, want %q unchanged", when, got, resolvAtStart)
-		}
-	}
-	resolves("before any change")
-	if learned() {
-		t.Error("an internet host learned the job's answer")
-	}
-	if failed, fatal := n.change(t.Context(), closedSection()); failed != nil || fatal != nil {
-		t.Fatalf("Change to internet: false = %v, %v", failed, fatal)
-	}
-	if !learnedForTheList.Load() {
-		t.Error("api.github.com's address was not learned before the domain list was read")
-	}
-	resolves("after internet was turned off")
-	if !learned() {
-		t.Error("the job's GitHub lookup after internet was turned off was not learned")
-	}
-	if failed, fatal := n.change(t.Context(), section()); failed != nil || fatal != nil {
-		t.Fatalf("Change to internet = %v, %v", failed, fatal)
-	}
-	resolves("after internet was turned on again")
-	if err := stop(); err != nil {
-		t.Errorf("Hold = %v", err)
-	}
 }

@@ -12,12 +12,13 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
 func serve(t *testing.T, b *fakeBackend) *httptest.Server {
 	t.Helper()
-	srv := httptest.NewServer(NewServer(b, "inst-1", nil).handler())
+	srv := httptest.NewServer(NewServer(b, "inst-1", nil).Handler())
 	t.Cleanup(srv.Close)
 	return srv
 }
@@ -206,7 +207,7 @@ func TestDeleteRunner(t *testing.T) {
 	t.Run("an oversized diag is dropped with a warning and answers 204", func(t *testing.T) {
 		var logs bytes.Buffer
 		b := &fakeBackend{diag: make([]byte, DiagLimit+1)}
-		srv := httptest.NewServer(NewServer(b, "inst-1", slog.New(slog.NewTextHandler(&logs, nil))).handler())
+		srv := httptest.NewServer(NewServer(b, "inst-1", slog.New(slog.NewTextHandler(&logs, nil))).Handler())
 		t.Cleanup(srv.Close)
 		resp, body := do(t, http.MethodDelete, srv.URL+"/v1/runners/r1?diag=1", "")
 		if resp.StatusCode != http.StatusNoContent || len(body) != 0 || len(b.deleted) != 1 {
@@ -238,6 +239,23 @@ func TestDeleteRunner(t *testing.T) {
 			t.Errorf("answer %d, deleted %v", resp.StatusCode, b.deleted)
 		}
 	})
+}
+
+func TestABackendFailureIsLoggedClean(t *testing.T) {
+	var logs bytes.Buffer
+	b := &fakeBackend{err: errors.New("disk\u202eon\x01fire\nnext")}
+	srv := httptest.NewServer(NewServer(b, "inst-1", slog.New(slog.NewJSONHandler(&logs, nil))).Handler())
+	t.Cleanup(srv.Close)
+	if resp, _ := do(t, http.MethodDelete, srv.URL+"/v1/runners/r1", ""); resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("answer %d, want 500", resp.StatusCode)
+	}
+	var rec struct{ Msg, Error string }
+	if err := json.Unmarshal(logs.Bytes(), &rec); err != nil || strings.Count(logs.String(), "\n") != 1 {
+		t.Fatalf("logs = %q (%v), want one JSON line", logs.String(), err)
+	}
+	if rec.Msg != "A host API request failed" || rec.Error != "disk on fire\nnext" {
+		t.Errorf("logged %+v, want the error with its unsafe runes replaced", rec)
+	}
 }
 
 func TestLogs(t *testing.T) {
@@ -303,7 +321,7 @@ func TestEvents(t *testing.T) {
 	b := &fakeBackend{changes: make(chan Runner)}
 	s := NewServer(b, "inst-1", nil)
 	s.heartbeat = 20 * time.Millisecond
-	srv := httptest.NewServer(s.handler())
+	srv := httptest.NewServer(s.Handler())
 	t.Cleanup(srv.Close)
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL+"/v1/events", http.NoBody)
 	if err != nil {
@@ -347,6 +365,42 @@ func TestEvents(t *testing.T) {
 			t.Errorf("after the backend closed: %s", sc.Bytes())
 		}
 	}
+}
+
+// An events stream served over HTTP/2, as the host channel serves it, stays
+// open however long its lines are apart.
+func TestEventsStayOpenBetweenLinesOverHTTP2(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		b := &fakeBackend{changes: make(chan Runner)}
+		s := NewServer(b, "inst-1", nil)
+		s.heartbeat = time.Hour
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://host/v1/events", http.NoBody)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp, err := overH2C(t, s.Handler()).Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		sc := bufio.NewScanner(resp.Body)
+		if !sc.Scan() {
+			t.Fatalf("no first line: %v", sc.Err())
+		}
+		time.Sleep(3 * quickTimeout)
+		select {
+		case b.changes <- Runner{Name: "r1", State: StateRunning}:
+		case <-time.After(time.Minute):
+			t.Fatal("the stream's handler took no change after a silence")
+		}
+		if !sc.Scan() {
+			t.Fatalf("the stream ended after %s of silence: %v", 3*quickTimeout, sc.Err())
+		}
+		var ev Event
+		if err := json.Unmarshal(sc.Bytes(), &ev); err != nil || ev.Runner == nil || ev.Runner.Name != "r1" {
+			t.Errorf("line after the silence = %s, %v; want r1's change", sc.Bytes(), err)
+		}
+	})
 }
 
 func TestProbe(t *testing.T) {

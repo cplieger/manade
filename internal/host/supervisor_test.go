@@ -4,20 +4,19 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net"
 	"os"
 	"path/filepath"
-	"strings"
-	"sync"
+	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
+	"github.com/cplieger/go/filesafe"
 	"github.com/cplieger/go/health/v2"
 	"github.com/cplieger/manade/internal/config"
-	"github.com/cplieger/manade/internal/docker"
-	"github.com/cplieger/manade/internal/egress"
-	"github.com/cplieger/manade/internal/host/images"
-	"github.com/cplieger/manade/internal/host/probe"
 	"github.com/cplieger/manade/internal/hostapi"
+	"github.com/cplieger/manade/internal/hostlink"
 )
 
 func TestHealthFollowsTheGuardsCheck(t *testing.T) {
@@ -26,14 +25,14 @@ func TestHealthFollowsTheGuardsCheck(t *testing.T) {
 	var pingErr error
 	s := &supervisor{opts: &Options{Health: st}, ping: func(context.Context) error { return pingErr }}
 	exists := func() bool { _, err := os.Stat(marker); return err == nil }
-	t.Run("unhealthy before the API serves", func(t *testing.T) {
+	t.Run("unhealthy before the host serves its section", func(t *testing.T) {
 		s.onChecked()
 		if st.Healthy() || exists() {
-			t.Error("healthy before the API serves")
+			t.Error("healthy before the host serves its section")
 		}
 	})
 	s.serving.Store(true)
-	t.Run("healthy once a check passes with the API serving and the daemon answering", func(t *testing.T) {
+	t.Run("healthy once a check passes with the host serving and the daemon answering", func(t *testing.T) {
 		s.onChecked()
 		if !st.Healthy() || !exists() {
 			t.Error("unhealthy after a passing check")
@@ -97,252 +96,171 @@ func TestLatencies(t *testing.T) {
 	}
 }
 
-// reloadSupervisor is a supervisor of host lan, brought up on the fake
-// kernel, whose SIGHUP reads cfg.
-func reloadSupervisor(t *testing.T, cfg func() (*config.Config, error)) *supervisor {
-	t.Helper()
-	return reloadSupervisorOf(t, section(), cfg)
-}
-
-// reloadSupervisorOf is reloadSupervisor brought up with section h.
-func reloadSupervisorOf(t *testing.T, h *config.Host, cfg func() (*config.Config, error)) *supervisor {
-	t.Helper()
-	f := newUpFixture(t)
-	n, err := bringUp(t.Context(), h, f.platform(), guardHooks{})
+// The host dials the control plane's socket and serves its API over the
+// connection from before its first section until its run ends.
+func TestRunServesItsAPIOverTheChannel(t *testing.T) {
+	sock := filepath.Join(t.TempDir(), "hosts.sock")
+	ln, err := hostlink.ListenSocket(sock)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = n.stop() })
-	log := slog.New(slog.DiscardHandler)
-	s := &supervisor{log: log, net: n, changed: make(chan struct{}, 1), opts: &Options{Log: log, Reload: func(context.Context) (*config.Config, error) { return cfg() }}}
-	s.prober = probe.NewRunner(&probe.Config{Log: log})
-	sv := s.newServed(lanConfig(h, testProfile("small", 1)), h)
-	s.served.Store(sv)
-	s.images = images.New(&images.Config{Host: section(), Log: log, Profiles: sv.Profiles})
-	s.runners = newRunners(t.Context(), &runnersConfig{Served: sv, Images: s.images, Log: log})
-	return s
-}
-
-func lanConfig(h *config.Host, profiles ...config.Profile) *config.Config {
-	for i := range profiles {
-		profiles[i].Hosts = []string{h.Name}
-	}
-	return &config.Config{File: "/config/config.json", Self: &config.Self{Name: h.Name, TLSDir: "/tls"}, Hosts: []config.Host{*h}, Profiles: profiles}
-}
-
-func TestSupervisorReload(t *testing.T) {
-	t.Run("a config that does not validate keeps everything and names why", func(t *testing.T) {
-		s := reloadSupervisor(t, func() (*config.Config, error) { return nil, errors.New("profiles.small.memory: not a size") })
-		before := s.served.Load()
-		if err := s.reload(t.Context()); err != nil {
-			t.Fatal(err)
-		}
-		if msg := s.configErr.Load(); msg == nil || !strings.Contains(*msg, "profiles.small.memory") || s.served.Load() != before {
-			t.Errorf("configErr %v, served swapped %v", msg, s.served.Load() != before)
-		}
-	})
-	t.Run("a config without the host's section keeps everything", func(t *testing.T) {
-		other := section()
-		other.Name = "other"
-		s := reloadSupervisor(t, func() (*config.Config, error) { return lanConfig(other), nil })
-		if err := s.reload(t.Context()); err != nil {
-			t.Fatal(err)
-		}
-		if msg := s.configErr.Load(); msg == nil || !strings.Contains(*msg, "hosts.lan") {
-			t.Errorf("configErr = %v", msg)
-		}
-	})
-	t.Run("a section the running host cannot apply keeps everything", func(t *testing.T) {
-		h := section()
-		h.Egress.IPv6 = true
-		s := reloadSupervisor(t, func() (*config.Config, error) { return lanConfig(h), nil })
-		if err := s.reload(t.Context()); err != nil {
-			t.Fatal(err)
-		}
-		if msg := s.configErr.Load(); msg == nil || !strings.Contains(*msg, "egress.ipv6") {
-			t.Errorf("configErr = %v", msg)
-		}
-	})
-	t.Run("a valid config swaps what the host serves and clears the kept reason", func(t *testing.T) {
-		var bad bool
-		s := reloadSupervisor(t, func() (*config.Config, error) {
-			if bad {
-				return nil, errors.New("broken")
-			}
-			return lanConfig(section("10.0.0.50/32"), testProfile("small", 1), testProfile("large", 2)), nil
-		})
-		bad = true
-		_ = s.reload(t.Context())
-		bad = false
-		if err := s.reload(t.Context()); err != nil {
-			t.Fatal(err)
-		}
-		sv := s.served.Load()
-		if s.configErr.Load() != nil || len(sv.Profiles) != 2 || len(s.host().Egress.Allow) != 1 {
-			t.Errorf("configErr %v, %d profiles, allow %v", s.configErr.Load(), len(sv.Profiles), s.host().Egress.Allow)
-		}
-		if st := s.images.Status(); len(st) != 2 {
-			t.Errorf("images serve %d profiles, want both", len(st))
-		}
-	})
-}
-
-// changing runs s's posture hold and its change loop until the test ends.
-func changing(t *testing.T, s *supervisor) {
-	t.Helper()
-	ctx, cancel := context.WithCancelCause(t.Context())
-	var wg sync.WaitGroup
-	wg.Go(func() {
-		if err := s.net.hold(ctx); err != nil {
-			t.Errorf("Hold = %v", err)
-		}
-	})
-	wg.Go(func() { s.changes(ctx, cancel) })
+	srvCtx, stopSrv := context.WithCancel(t.Context())
+	srv := hostlink.NewServer(slog.New(slog.DiscardHandler))
+	served := make(chan error, 1)
+	go func() { served <- srv.Serve(srvCtx, ln) }()
 	t.Cleanup(func() {
-		cancel(nil)
-		wg.Wait()
+		stopSrv()
+		<-served
 	})
-}
-
-// settled waits until no change is pending and the posture applies h's
-// open and internet keys.
-func settled(t *testing.T, s *supervisor, h *config.Host) {
-	t.Helper()
-	waitFor(t, "the change applied", func() bool {
-		s.reloadMu.Lock()
-		defer s.reloadMu.Unlock()
-		return s.pending == nil && !s.net.postureChanged(h)
-	})
-}
-
-func TestSupervisorReloadChangesThePosture(t *testing.T) {
-	open := openSection()
-	for name, tc := range map[string]struct{ from, to *config.Host }{
-		"open to closed":        {open, section()},
-		"internet on to off":    {section(), closedSection()},
-		"internet off to on":    {closedSection(), section()},
-		"closed to open":        {section(), open},
-		"internet off and open": {closedSection(), open},
-	} {
-		t.Run(name, func(t *testing.T) {
-			s := reloadSupervisorOf(t, tc.from, func() (*config.Config, error) { return lanConfig(tc.to, testProfile("small", 1)), nil })
-			changing(t, s)
-			before := egress.PolicyHash(s.host())
-			if err := s.reload(t.Context()); err != nil {
-				t.Fatal(err)
-			}
-			settled(t, s, tc.to)
-			if msg := s.configErr.Load(); msg != nil {
-				t.Fatalf("kept: %s", *msg)
-			}
-			if after := egress.PolicyHash(s.host()); after == before || after != egress.PolicyHash(tc.to) {
-				t.Errorf("policy hash %s after the change, want the new section's %s", after, egress.PolicyHash(tc.to))
-			}
-			if (s.net.gitHubStatus() == nil) != tc.to.Egress.Internet {
-				t.Errorf("learning GitHub's addresses %v, want %v", s.net.gitHubStatus() != nil, !tc.to.Egress.Internet)
-			}
-			if st := s.runners.profileStatus(); len(st) != 1 || !st[0].Ready && st[0].Reason != hostapi.ReasonPulling {
-				t.Errorf("status %+v, want no egress hold once the change is applied", st)
-			}
-		})
+	s := waitingAs(t, &config.Self{Name: "lan"})
+	s.opts.Version = "v-test"
+	ctx, cancel := context.WithCancel(t.Context())
+	ran := make(chan error, 1)
+	go func() { ran <- s.runLinked(ctx, dialSocket(sock)) }()
+	var l *hostlink.Link
+	for deadline := time.Now().Add(10 * time.Second); l == nil; {
+		if time.Now().After(deadline) {
+			t.Fatal("the host did not connect")
+		}
+		l, _ = srv.Link("lan")
+		time.Sleep(10 * time.Millisecond)
+	}
+	if want := (hostlink.Hello{Name: "lan", Build: "v-test", Instance: s.instance}); l.Hello != want {
+		t.Errorf("hello = %+v, want %+v", l.Hello, want)
+	}
+	st, err := l.API.Status(t.Context())
+	if err != nil || st.Version != "v-test" || st.Section.State != hostapi.SectionWaiting || st.InstanceID != s.instance {
+		t.Errorf("status = %+v, %v; want the waiting host's", st, err)
+	}
+	if _, err := l.API.Runners(t.Context()); !errors.Is(err, hostapi.ErrWaitingForSection) {
+		t.Errorf("runners = %v, want ErrWaitingForSection", err)
+	}
+	cancel()
+	if err := <-ran; err != nil {
+		t.Errorf("runLinked = %v, want nil after ctx ended", err)
+	}
+	select {
+	case <-l.Done():
+	case <-time.After(10 * time.Second):
+		t.Error("the host's connection stayed open after its run ended")
 	}
 }
 
-// A SIGHUP that changes open or internet starts nothing while a runner
-// runs, then rebuilds the egress once it has ended.
-func TestSupervisorReloadWaitsForTheRunners(t *testing.T) {
-	s := reloadSupervisorOf(t, openSection(), func() (*config.Config, error) { return lanConfig(section(), testProfile("small", 1)), nil })
-	changing(t, s)
-	s.runners.mu.Lock()
-	s.runners.ctrs["r1"] = &hostapi.Container{Name: "r1", State: docker.StateRunning}
-	s.runners.mu.Unlock()
-	if err := s.reload(t.Context()); err != nil {
+// A run saves its state again while the last save failed: a refusal
+// carried from the last start leaves the file once saves succeed.
+func TestARunSavesItsStateAgain(t *testing.T) {
+	s := waitingAs(t, &config.Self{Name: "lan"})
+	refused := &hostapi.SectionRefusal{Hash: "a1", Errors: []hostapi.FieldError{{Path: "hosts.lan.dns", Message: "no answer"}}}
+	if err := writeState(t.Context(), s.sectionPath, &hostState{Refused: refused}); err != nil {
 		t.Fatal(err)
 	}
-	st := s.runners.profileStatus()
-	if len(st) != 1 || st[0].Ready || st[0].Reason != hostapi.ReasonEgressChangePending || !strings.Contains(st[0].Detail, "r1") {
-		t.Errorf("status %+v, want small not ready while r1 runs", st)
+	var failing atomic.Bool
+	failing.Store(true)
+	inner, retry := writeFile, saveRetry
+	writeFile = func(ctx context.Context, path string, b []byte, opts ...filesafe.WriteOption) (filesafe.Result, error) {
+		if failing.Load() {
+			return filesafe.Result{}, &filesafe.WriteError{Phase: filesafe.PhaseRename, Err: syscall.EROFS}
+		}
+		return inner(ctx, path, b, opts...)
 	}
-	if _, err := s.runners.accept(t.Context(), request("r2", "small")); err == nil {
-		t.Error("a POST was taken while the change waits")
+	saveRetry = 10 * time.Millisecond
+	t.Cleanup(func() { writeFile, saveRetry = inner, retry })
+	ctx, cancel := context.WithCancel(t.Context())
+	ran := make(chan error, 1)
+	go func() {
+		ran <- s.runLinked(ctx, func(context.Context) (net.Conn, error) { return nil, errors.New("no control plane") })
+	}()
+	waitFor(t, "a failed save", func() bool { return s.sectionStatus().SaveFailures > 0 })
+	failing.Store(false)
+	waitFor(t, "the refusal out of the file", func() bool {
+		st, _, err := readState(t.Context(), s.sectionPath)
+		return err == nil && st.Refused == nil
+	})
+	select {
+	case err := <-ran:
+		t.Fatalf("runLinked = %v once its state was saved, want it waiting", err)
+	case <-time.After(200 * time.Millisecond):
 	}
-	time.Sleep(50 * time.Millisecond)
-	if !s.host().Egress.Open {
-		t.Fatal("the egress changed with r1 running")
-	}
-	s.runners.mu.Lock()
-	s.runners.ctrs["r1"].State = docker.StateExited
-	s.runners.changed("r1")
-	s.runners.mu.Unlock()
-	settled(t, s, section())
-	if s.host().Egress.Open || s.net.section().Egress.Open {
-		t.Error("the host is still open once r1 ended")
+	cancel()
+	if err := <-ran; err != nil {
+		t.Errorf("runLinked = %v", err)
 	}
 }
 
-func TestSupervisorReloadAfterAPendingChange(t *testing.T) {
-	t.Run("a section back on the running posture drops the change", func(t *testing.T) {
-		next := lanConfig(section(), testProfile("small", 1))
-		s := reloadSupervisorOf(t, openSection(), func() (*config.Config, error) { return next, nil })
-		s.runners.mu.Lock()
-		s.runners.ctrs["r1"] = &hostapi.Container{Name: "r1", State: docker.StateRunning}
-		s.runners.mu.Unlock()
-		if err := s.reload(t.Context()); err != nil {
-			t.Fatal(err)
+// A run waiting with a boot refusal's restart owed, its state unsaved,
+// ends with ErrRestart once a retry puts that state at its path, durable
+// or not, as bootRefused restarts on either.
+func TestARunTakesTheRestartItsStateOwed(t *testing.T) {
+	for _, durable := range []bool{true, false} {
+		t.Run(map[bool]string{true: "a durable save", false: "a save whose directory sync fails"}[durable], func(t *testing.T) {
+			s := waitingAs(t, &config.Self{Name: "lan"})
+			refused := &hostapi.SectionRefusal{Hash: "a1", Errors: []hostapi.FieldError{{Path: "hosts.lan.dns", Message: "no answer"}}}
+			s.state, s.unsaved, s.restartOwed = hostState{Refused: refused}, true, true
+			inner, retry := writeFile, saveRetry
+			writeFile = func(ctx context.Context, path string, b []byte, opts ...filesafe.WriteOption) (filesafe.Result, error) {
+				res, err := inner(ctx, path, b, opts...)
+				res.Durable = res.Durable && durable
+				return res, err
+			}
+			saveRetry = 10 * time.Millisecond
+			t.Cleanup(func() { writeFile, saveRetry = inner, retry })
+			ran := make(chan error, 1)
+			go func() {
+				ran <- s.runLinked(t.Context(), func(context.Context) (net.Conn, error) { return nil, errors.New("no control plane") })
+			}()
+			select {
+			case err := <-ran:
+				if !errors.Is(err, ErrRestart) {
+					t.Errorf("runLinked = %v, want ErrRestart", err)
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatal("the run still waits after its state was saved")
+			}
+			if st, _, err := readState(t.Context(), s.sectionPath); err != nil || st.Refused == nil {
+				t.Errorf("saved %+v, %v; want the refusal", st, err)
+			}
+		})
+	}
+}
+
+// A first section that reaches a waiting host after its run was cancelled
+// to restart is never booted: the boot and the run answer the restart.
+func TestASectionDeliveredAfterTheRestartBootsNothing(t *testing.T) {
+	s := waitingOn(t, lanSelf(), newUpFixture(t).platform())
+	next, err := check(s.self, sectionOf(1, lanHost, smallJSON))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rctx, cancel := context.WithCancelCause(t.Context())
+	defer cancel(nil)
+	s.cancelRun = cancel
+	cancel(ErrRestart)
+	for range 20 {
+		s.arrived <- next
+		if n, err := s.boot(rctx); n != nil || err != nil {
+			t.Fatalf("boot = %v, %v; want nil, nil", n, err)
 		}
-		next = lanConfig(openSection(), testProfile("small", 1))
-		if err := s.reload(t.Context()); err != nil {
-			t.Fatal(err)
+		select {
+		case <-s.arrived:
+		default:
 		}
-		if s.pending != nil || s.runners.egressIdle() != nil {
-			t.Error("the dropped change still holds starts")
-		}
-	})
-	t.Run("a change woken by a dropped hold waits for the new hold's runners", func(t *testing.T) {
-		next := lanConfig(section(), testProfile("small", 1))
-		s := reloadSupervisorOf(t, openSection(), func() (*config.Config, error) { return next, nil })
-		s.runners.mu.Lock()
-		s.runners.ctrs["r1"] = &hostapi.Container{Name: "r1", State: docker.StateRunning}
-		s.runners.mu.Unlock()
-		if err := s.reload(t.Context()); err != nil {
-			t.Fatal(err)
-		}
-		old := s.runners.egressIdle()
-		next = lanConfig(openSection(), testProfile("small", 1))
-		if err := s.reload(t.Context()); err != nil {
-			t.Fatal(err)
-		}
-		next = lanConfig(section(), testProfile("small", 1))
-		if err := s.reload(t.Context()); err != nil {
-			t.Fatal(err)
-		}
-		if !closed(old) {
-			t.Fatal("setup: the dropped hold's channel is open")
-		}
-		if err := s.applyChange(t.Context()); err != nil {
-			t.Fatal(err)
-		}
-		if !s.net.section().Egress.Open || s.pending == nil {
-			t.Error("the change was applied with r1 still running under the new hold")
-		}
-	})
-	t.Run("a change that fails holds starts and names why", func(t *testing.T) {
-		s := reloadSupervisorOf(t, section(), func() (*config.Config, error) { return lanConfig(closedSection(), testProfile("small", 1)), nil })
-		s.net.seams.FetchDomains = func(context.Context) ([]byte, error) { return nil, errors.New("403 rate limit exceeded") }
-		changing(t, s)
-		if err := s.reload(t.Context()); err != nil {
-			t.Fatal(err)
-		}
-		waitFor(t, "the change failed", func() bool { return s.configErr.Load() != nil })
-		if msg := *s.configErr.Load(); !strings.Contains(msg, "rate limit") {
-			t.Errorf("configErr = %q, want the failure", msg)
-		}
-		st := s.runners.profileStatus()
-		if len(st) != 1 || st[0].Reason != hostapi.ReasonEgressChangeFailed || !strings.Contains(st[0].Detail, "rate limit") {
-			t.Errorf("status %+v, want small held naming the failure", st)
-		}
-		if !s.host().Egress.Internet || !s.net.section().Egress.Internet {
-			t.Error("a failed change left the new section served")
-		}
-	})
+	}
+	s.arrived <- next
+	if err := s.run(t.Context(), rctx, cancel); !errors.Is(err, ErrRestart) {
+		t.Errorf("run = %v, want ErrRestart", err)
+	}
+}
+
+func TestHelloNamesTheRunningSection(t *testing.T) {
+	s := waitingAs(t, &config.Self{Name: "lan"})
+	if h := s.hello(); h.Section != "" {
+		t.Errorf("hello before a section = %+v, want no revision", h)
+	}
+	if err := writeSection(t.Context(), s.sectionPath, sectionOf(7, lanHost, smallJSON)); err != nil {
+		t.Fatal(err)
+	}
+	s.bootSaved(t.Context())
+	if h := s.hello(); h.Section != "7" || h.Name != "lan" || h.Instance != s.instance {
+		t.Errorf("hello after booting on the saved section = %+v, want revision 7 of host lan", h)
+	}
 }

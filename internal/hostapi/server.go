@@ -8,10 +8,10 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
 	"net/http"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/cplieger/go/textsafe"
@@ -46,6 +46,14 @@ type Backend interface {
 	Probe(ctx context.Context) (ProbeReport, error)
 	// ProbeDeadline bounds a probe request: two runs of the current plan.
 	ProbeDeadline() time.Duration
+	// PutSection checks section with the one parser, the host's ceiling and
+	// its own facts, then writes it and applies it by how it changes the
+	// section the host runs, answering how. A section it refuses fails with
+	// a *SectionRefusedError and changes nothing.
+	PutSection(ctx context.Context, section *Section) (SectionAnswer, error)
+	// Restarting is closed once the host announces a restart to apply its
+	// section.
+	Restarting() <-chan struct{}
 }
 
 // The errors a Backend fails with, each with its own answer.
@@ -55,7 +63,31 @@ var (
 	ErrUnknownRunner  = errors.New("the host holds no such runner")
 	// ErrProbeTimeout is a probe request that passed its deadline.
 	ErrProbeTimeout = errors.New("the probe request passed its deadline")
+	// ErrWaitingForSection is a request the host cannot serve before its
+	// first section: no daemon runs yet.
+	ErrWaitingForSection = errors.New("the host is waiting for its first settings")
+	// ErrStarting is a request the host cannot serve while it brings its
+	// first section up.
+	ErrStarting = errors.New("the host is starting on its section")
+	// ErrApplying is a section delivered while the host rebuilds its
+	// egress for the one before; it changes nothing, so the control plane
+	// delivers it again.
+	ErrApplying = errors.New("the host is applying a section")
 )
+
+// SectionRefusedError is a section the host refused, each refusal at its
+// settings field path.
+type SectionRefusedError struct {
+	Errors []FieldError
+}
+
+func (e *SectionRefusedError) Error() string {
+	lines := make([]string, len(e.Errors))
+	for i, fe := range e.Errors {
+		lines[i] = fe.Path + ": " + fe.Message
+	}
+	return "the host refused the section: " + strings.Join(lines, "; ")
+}
 
 // NotReadyError is a runner refused because its profile is not ready.
 type NotReadyError struct {
@@ -80,6 +112,10 @@ const (
 	codeNotReady       = "not_ready"
 	codeUnknownRunner  = "unknown_runner"
 	codeProbeTimeout   = "probe_timeout"
+	codeSectionRefused = "section_refused"
+	codeWaiting        = "waiting_for_section"
+	codeStarting       = "starting"
+	codeApplying       = "applying"
 	codeInternal       = "internal"
 )
 
@@ -90,6 +126,8 @@ type errorBody struct {
 	Profile string `json:"profile,omitempty"`
 	Reason  Reason `json:"reason,omitempty"`
 	Detail  string `json:"detail,omitempty"`
+	// Errors are a refused section's field errors.
+	Errors []FieldError `json:"errors,omitempty"`
 }
 
 // errorTextLimit caps an error answer's message.
@@ -117,39 +155,8 @@ func NewServer(backend Backend, instanceID string, log *slog.Logger) *Server {
 	return &Server{backend: backend, instanceID: instanceID, log: log, heartbeat: Heartbeat}
 }
 
-// Serve answers on ln until ctx ends, then closes ln and waits up to
-// quickTimeout for the requests in flight, whose contexts end with ctx.
-func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
-	srv := &http.Server{
-		Handler:           s.handler(),
-		ReadHeaderTimeout: 10 * time.Second,
-		ReadTimeout:       quickTimeout,
-		IdleTimeout:       2 * time.Minute,
-		MaxHeaderBytes:    16 << 10,
-		BaseContext:       func(net.Listener) context.Context { return ctx },
-		ErrorLog:          slog.NewLogLogger(s.log.Handler(), slog.LevelWarn),
-	}
-	done := make(chan error, 1)
-	go func() { done <- srv.Serve(ln) }()
-	select {
-	case err := <-done:
-		return fmt.Errorf("host API: %w", err)
-	case <-ctx.Done():
-	}
-	sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), quickTimeout)
-	defer cancel()
-	err := srv.Shutdown(sctx)
-	if serr := <-done; !errors.Is(serr, http.ErrServerClosed) {
-		err = errors.Join(err, serr)
-	}
-	if err != nil {
-		return fmt.Errorf("host API shutdown: %w", err)
-	}
-	return nil
-}
-
-// handler answers every route under /v1.
-func (s *Server) handler() http.Handler {
+// Handler answers every route under /v1.
+func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("GET /v1/status", s.bounded(quickTimeout, s.status))
 	mux.Handle("POST /v1/runners", s.bounded(quickTimeout, s.createRunner))
@@ -159,17 +166,26 @@ func (s *Server) handler() http.Handler {
 	mux.Handle("GET /v1/runners/{name}/diag", s.bounded(callBound, s.diag))
 	mux.HandleFunc("GET /v1/events", s.events)
 	mux.HandleFunc("POST /v1/probe", s.probe)
+	mux.Handle("PUT /v1/section", s.bounded(callBound, s.putSection))
 	return mux
 }
 
-// bounded cuts h's context and its answer's write at bound.
+// bounded cuts h's context at bound, its answer's write quickTimeout later,
+// and the request's read at quickTimeout.
 func (s *Server) bounded(bound time.Duration, h http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), bound)
 		defer cancel()
+		s.readDeadline(w, quickTimeout)
 		s.writeDeadline(w, bound+quickTimeout)
 		h(w, r.WithContext(ctx))
 	})
+}
+
+func (s *Server) readDeadline(w http.ResponseWriter, d time.Duration) {
+	if err := http.NewResponseController(w).SetReadDeadline(time.Now().Add(d)); err != nil && !errors.Is(err, http.ErrNotSupported) {
+		s.log.Warn("The host API could not bound a request's read", "error", err)
+	}
 }
 
 func (s *Server) writeDeadline(w http.ResponseWriter, d time.Duration) {
@@ -186,7 +202,7 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) createRunner(w http.ResponseWriter, r *http.Request) {
 	var req RunnerRequest
-	if err := decodeBody(w, r, &req); err != nil {
+	if err := decodeBody(w, r, requestLimit, &req); err != nil {
 		s.writeJSON(w, http.StatusBadRequest, &errorBody{Code: codeBadRequest, Message: err.Error()})
 		return
 	}
@@ -200,6 +216,24 @@ func (s *Server) createRunner(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.writeJSON(w, http.StatusOK, &RunnerAnswer{InstanceID: s.instanceID, Runner: run})
+}
+
+func (s *Server) putSection(w http.ResponseWriter, r *http.Request) {
+	var sec Section
+	if err := decodeBody(w, r, SectionLimit, &sec); err != nil {
+		s.writeJSON(w, http.StatusBadRequest, &errorBody{Code: codeBadRequest, Message: err.Error()})
+		return
+	}
+	if sec.Settings.Kind() != '{' {
+		s.writeJSON(w, http.StatusBadRequest, &errorBody{Code: codeBadRequest, Message: "settings is not an object"})
+		return
+	}
+	ans, err := s.backend.PutSection(r.Context(), &sec)
+	if err != nil {
+		s.writeBackendError(w, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, &ans)
 }
 
 // checkRequest refuses a request no profile could serve.
@@ -312,17 +346,14 @@ func (s *Server) runnerName(w http.ResponseWriter, r *http.Request) (string, boo
 func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), eventsBound)
 	defer cancel()
-	rc := http.NewResponseController(w)
 	changes := s.backend.Subscribe(ctx)
 	w.Header().Set("Content-Type", "application/x-ndjson")
 	w.WriteHeader(http.StatusOK)
 	enc := json.NewEncoder(w)
 	tick := time.NewTicker(s.heartbeat)
 	defer tick.Stop()
-	write := func(ev *Event) bool {
-		s.writeDeadline(w, quickTimeout)
-		return enc.Encode(ev) == nil && rc.Flush() == nil
-	}
+	restarting := s.backend.Restarting()
+	write := func(ev *Event) bool { return s.writeLine(w, enc, ev) }
 	if !write(&Event{Type: EventHeartbeat, Time: time.Now(), InstanceID: s.instanceID}) {
 		return
 	}
@@ -330,6 +361,11 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 		var ev Event
 		select {
 		case <-ctx.Done():
+			select {
+			case <-restarting:
+				write(&Event{Type: EventRestarting, Time: time.Now(), InstanceID: s.instanceID})
+			default:
+			}
 			return
 		case run, open := <-changes:
 			if !open {
@@ -338,12 +374,31 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 			ev = Event{Type: EventRunner, Runner: &run}
 		case <-tick.C:
 			ev = Event{Type: EventHeartbeat}
+		case <-restarting:
+			write(&Event{Type: EventRestarting, Time: time.Now(), InstanceID: s.instanceID})
+			return
 		}
 		ev.Time, ev.InstanceID = time.Now(), s.instanceID
 		if !write(&ev) {
 			return
 		}
 	}
+}
+
+// writeLine writes and flushes one events line within quickTimeout.
+func (s *Server) writeLine(w http.ResponseWriter, enc *json.Encoder, ev *Event) bool {
+	s.writeDeadline(w, quickTimeout)
+	rc := http.NewResponseController(w)
+	if enc.Encode(ev) != nil || rc.Flush() != nil {
+		return false
+	}
+	// Go's HTTP/2 server resets a stream whose write deadline passes even
+	// while the handler waits between writes, so the bound ends once the
+	// line is written.
+	if err := rc.SetWriteDeadline(time.Time{}); err != nil && !errors.Is(err, http.ErrNotSupported) {
+		s.log.Warn("The host API could not lift an events line's write bound", "error", err)
+	}
+	return true
 }
 
 func (s *Server) probe(w http.ResponseWriter, r *http.Request) {
@@ -357,16 +412,16 @@ func (s *Server) probe(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, http.StatusOK, &rep)
 		return
 	}
-	if ctx.Err() != nil && r.Context().Err() == nil {
+	if ctx.Err() != nil && r.Context().Err() == nil && !errors.Is(err, ErrWaitingForSection) && !errors.Is(err, ErrStarting) {
 		err = fmt.Errorf("%w of %s", ErrProbeTimeout, bound)
 	}
 	s.writeBackendError(w, err)
 }
 
-// decodeBody reads one JSON object of at most requestLimit bytes, refusing
-// unknown fields and trailing data.
-func decodeBody(w http.ResponseWriter, r *http.Request, v any) error {
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, requestLimit))
+// decodeBody reads one JSON object of at most limit bytes, refusing unknown
+// fields and trailing data.
+func decodeBody(w http.ResponseWriter, r *http.Request, limit int64, v any) error {
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, limit))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(v); err != nil {
 		return fmt.Errorf("the body is not a request: %w", err)
@@ -382,7 +437,17 @@ func (s *Server) writeBackendError(w http.ResponseWriter, err error) {
 	body := errorBody{Message: msg}
 	var status int
 	nr, isNotReady := errors.AsType[*NotReadyError](err)
+	sr, isRefused := errors.AsType[*SectionRefusedError](err)
 	switch {
+	case isRefused:
+		status, body.Code, body.Errors = http.StatusUnprocessableEntity, codeSectionRefused, sr.Errors
+		body.Message = "the host refused the section"
+	case errors.Is(err, ErrWaitingForSection):
+		status, body.Code = http.StatusServiceUnavailable, codeWaiting
+	case errors.Is(err, ErrStarting):
+		status, body.Code = http.StatusServiceUnavailable, codeStarting
+	case errors.Is(err, ErrApplying):
+		status, body.Code = http.StatusServiceUnavailable, codeApplying
 	case isNotReady:
 		status, body.Code, body.Profile, body.Reason = http.StatusConflict, codeNotReady, nr.Profile, nr.Reason
 		body.Detail, _ = textsafe.SanitizeSingleLineCapped(nr.Detail, errorTextLimit, "…")
@@ -396,7 +461,7 @@ func (s *Server) writeBackendError(w http.ResponseWriter, err error) {
 		status, body.Code = http.StatusGatewayTimeout, codeProbeTimeout
 	default:
 		status, body.Code = http.StatusInternalServerError, codeInternal
-		s.log.Warn("A host API request failed", "error", err)
+		s.log.Warn("A host API request failed", "error", textsafe.NewUntrusted(err.Error()))
 	}
 	s.writeJSON(w, status, &body)
 }
@@ -424,5 +489,5 @@ func (s *Server) writeBytes(w http.ResponseWriter, contentType string, b []byte,
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Content-Length", strconv.Itoa(len(b)))
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(b) //nolint:gosec // G705: a log tail or tar, served as text/plain or a tar with nosniff to the orchestrator, never a browser
+	_, _ = w.Write(b) //nolint:gosec // G705: a log tail or tar, served as text/plain or a tar with nosniff to the control plane, never a browser
 }

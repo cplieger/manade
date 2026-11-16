@@ -2,12 +2,6 @@
   "description": "Staging entries for symbols whose production reader is not built yet. Each reason names the code that will read the symbol; that change deletes the entry, and a stale entry fails the run.",
   "ignore": [
     {
-      "code": "DS1501",
-      "symbol": "go://github.com/cplieger/manade/internal/hostapi#EventType",
-      "path": "internal/hostapi/types.go",
-      "reason": "staging: the orchestrator (build plan item 7) reads the events stream; delete this entry there"
-    },
-    {
       "code": "DS1301",
       "symbol": "go://github.com/cplieger/manade/internal/config#Config.HeadReserveAfter",
       "path": "internal/config/config.go",
@@ -59,229 +53,223 @@
       "code": "DS1102",
       "symbol": "go://github.com/cplieger/manade/internal/hostapi#APIError",
       "path": "internal/hostapi/client.go",
-      "reason": "staging: the orchestrator (build plan item 7, batch 4) calls the host API through this client and reads its answers; delete this entry there"
-    },
-    {
-      "code": "DS1102",
-      "symbol": "go://github.com/cplieger/manade/internal/hostapi#Client",
-      "path": "internal/hostapi/client.go",
-      "reason": "staging: the orchestrator (build plan item 7, batch 4) calls the host API through this client and reads its answers; delete this entry there"
-    },
-    {
-      "code": "DS1102",
-      "symbol": "go://github.com/cplieger/manade/internal/hostapi#NewClient",
-      "path": "internal/hostapi/client.go",
-      "reason": "staging: the orchestrator (build plan item 7, batch 4) calls the host API through this client and reads its answers; delete this entry there"
+      "reason": "staging: the pool (design section 19 batch 3) calls each host's API over its link and reads its answers; delete this entry there"
     },
     {
       "code": "DS1002",
       "symbol": "go://github.com/cplieger/manade/internal/hostapi#decodeAnswer",
       "path": "internal/hostapi/client.go",
-      "reason": "staging: the orchestrator (build plan item 7, batch 4) calls the host API through this client and reads its answers; delete this entry there"
+      "reason": "staging: the pool (design section 19 batch 3) calls each host's API over its link and reads its answers; delete this entry there"
     },
     {
       "code": "DS1002",
       "symbol": "go://github.com/cplieger/manade/internal/hostapi#answerError",
       "path": "internal/hostapi/client.go",
-      "reason": "staging: the orchestrator (build plan item 7, batch 4) calls the host API through this client and reads its answers; delete this entry there"
+      "reason": "staging: the pool (design section 19 batch 3) calls each host's API over its link and reads its answers; delete this entry there"
     },
     {
       "code": "DS1501",
       "symbol": "go://github.com/cplieger/manade/internal/hostapi#ErrProbeTimeout",
       "path": "internal/hostapi/server.go",
-      "reason": "staging: the orchestrator (build plan item 7, batch 4) calls the host API through this client and reads its answers; delete this entry there"
-    },
-    {
-      "code": "DS1102",
-      "symbol": "go://github.com/cplieger/manade/internal/hostapi#ClientTLS",
-      "path": "internal/hostapi/tls.go",
-      "reason": "staging: the orchestrator (build plan item 7, batch 4) calls the host API through this client and reads its answers; delete this entry there"
+      "reason": "staging: the pool (design section 19 batch 3) calls each host's API over its link and reads its answers; delete this entry there"
     },
     {
       "code": "DS1501",
       "symbol": "go://github.com/cplieger/manade/internal/hostapi#Heartbeat",
       "path": "internal/hostapi/types.go",
-      "reason": "staging: the orchestrator (build plan item 7, batch 4) calls the host API through this client and reads its answers; delete this entry there"
-    },
-    {
-      "code": "DS1102",
-      "symbol": "go://github.com/cplieger/manade/internal/hostapi#clientSlack",
-      "path": "internal/hostapi/types.go",
-      "reason": "staging: the orchestrator (build plan item 7, batch 4) calls the host API through this client and reads its answers; delete this entry there"
+      "reason": "staging: the pool (design section 19 batch 3) calls each host's API over its link and reads its answers; delete this entry there"
     },
     {
       "code": "DS1501",
       "symbol": "go://github.com/cplieger/manade/internal/hostapi#LogTailDefault",
       "path": "internal/hostapi/types.go",
-      "reason": "staging: the orchestrator (build plan item 7, batch 4) calls the host API through this client and reads its answers; delete this entry there"
+      "reason": "staging: the pool (design section 19 batch 3) calls each host's API over its link and reads its answers; delete this entry there"
     },
     {
       "code": "DS1501",
       "symbol": "go://github.com/cplieger/manade/internal/hostapi#LogTailMax",
       "path": "internal/hostapi/types.go",
-      "reason": "staging: the orchestrator (build plan item 7, batch 4) calls the host API through this client and reads its answers; delete this entry there"
+      "reason": "staging: the pool (design section 19 batch 3) calls each host's API over its link and reads its answers; delete this entry there"
     },
     {
       "code": "DS1002",
       "symbol": "go://github.com/cplieger/manade/internal/hostapi#answerLimit",
       "path": "internal/hostapi/types.go",
-      "reason": "staging: the orchestrator (build plan item 7, batch 4) calls the host API through this client and reads its answers; delete this entry there"
+      "reason": "staging: the pool (design section 19 batch 3) calls each host's API over its link and reads its answers; delete this entry there"
     },
     {
       "code": "DS1002",
       "symbol": "go://github.com/cplieger/manade/internal/hostapi#eventLimit",
       "path": "internal/hostapi/types.go",
-      "reason": "staging: the orchestrator (build plan item 7, batch 4) calls the host API through this client and reads its answers; delete this entry there"
-    },
-    {
-      "code": "DS1501",
-      "symbol": "go://github.com/cplieger/manade/internal/hostapi#RunnerAnswer",
-      "path": "internal/hostapi/types.go",
-      "reason": "staging: the orchestrator (build plan item 7, batch 4) calls the host API through this client and reads its answers; delete this entry there"
-    },
-    {
-      "code": "DS1501",
-      "symbol": "go://github.com/cplieger/manade/internal/hostapi#RunnerList",
-      "path": "internal/hostapi/types.go",
-      "reason": "staging: the orchestrator (build plan item 7, batch 4) calls the host API through this client and reads its answers; delete this entry there"
+      "reason": "staging: the pool (design section 19 batch 3) calls each host's API over its link and reads its answers; delete this entry there"
     },
     {
       "code": "DS1501",
       "symbol": "go://github.com/cplieger/manade/internal/hostapi#EventRunner",
       "path": "internal/hostapi/types.go",
-      "reason": "staging: the orchestrator (build plan item 7, batch 4) calls the host API through this client and reads its answers; delete this entry there"
+      "reason": "staging: the pool (design section 19 batch 3) calls each host's API over its link and reads its answers; delete this entry there"
     },
     {
       "code": "DS1501",
       "symbol": "go://github.com/cplieger/manade/internal/hostapi#EventHeartbeat",
       "path": "internal/hostapi/types.go",
-      "reason": "staging: the orchestrator (build plan item 7, batch 4) calls the host API through this client and reads its answers; delete this entry there"
-    },
-    {
-      "code": "DS1501",
-      "symbol": "go://github.com/cplieger/manade/internal/hostapi#Event",
-      "path": "internal/hostapi/types.go",
-      "reason": "staging: the orchestrator (build plan item 7, batch 4) calls the host API through this client and reads its answers; delete this entry there"
+      "reason": "staging: the pool (design section 19 batch 3) calls each host's API over its link and reads its answers; delete this entry there"
     },
     {
       "code": "DS1501",
       "symbol": "go://github.com/cplieger/manade/internal/hostapi#APIError",
       "path": "internal/hostapi/client.go",
-      "reason": "staging: the orchestrator (build plan item 7, batch 4) calls the host API through this client and reads its answers; delete this entry there"
-    },
-    {
-      "code": "DS1102",
-      "symbol": "go://github.com/cplieger/manade/internal/hostapi#Client.CloseIdleConnections",
-      "path": "internal/hostapi/client.go",
-      "reason": "staging: the orchestrator (build plan item 7, batch 4) calls the host API through this client and reads its answers; delete this entry there"
+      "reason": "staging: the pool (design section 19 batch 3) calls each host's API over its link and reads its answers; delete this entry there"
     },
     {
       "code": "DS1102",
       "symbol": "go://github.com/cplieger/manade/internal/hostapi#Client.Status",
       "path": "internal/hostapi/client.go",
-      "reason": "staging: the orchestrator (build plan item 7, batch 4) calls the host API through this client and reads its answers; delete this entry there"
+      "reason": "staging: the pool (design section 19 batch 3) calls each host's API over its link and reads its answers; delete this entry there"
     },
     {
       "code": "DS1102",
       "symbol": "go://github.com/cplieger/manade/internal/hostapi#Client.CreateRunner",
       "path": "internal/hostapi/client.go",
-      "reason": "staging: the orchestrator (build plan item 7, batch 4) calls the host API through this client and reads its answers; delete this entry there"
+      "reason": "staging: the pool (design section 19 batch 3) calls each host's API over its link and reads its answers; delete this entry there"
     },
     {
       "code": "DS1102",
       "symbol": "go://github.com/cplieger/manade/internal/hostapi#Client.Runners",
       "path": "internal/hostapi/client.go",
-      "reason": "staging: the orchestrator (build plan item 7, batch 4) calls the host API through this client and reads its answers; delete this entry there"
+      "reason": "staging: the pool (design section 19 batch 3) calls each host's API over its link and reads its answers; delete this entry there"
     },
     {
       "code": "DS1102",
       "symbol": "go://github.com/cplieger/manade/internal/hostapi#Client.DeleteRunner",
       "path": "internal/hostapi/client.go",
-      "reason": "staging: the orchestrator (build plan item 7, batch 4) calls the host API through this client and reads its answers; delete this entry there"
+      "reason": "staging: the pool (design section 19 batch 3) calls each host's API over its link and reads its answers; delete this entry there"
     },
     {
       "code": "DS1102",
       "symbol": "go://github.com/cplieger/manade/internal/hostapi#Client.Logs",
       "path": "internal/hostapi/client.go",
-      "reason": "staging: the orchestrator (build plan item 7, batch 4) calls the host API through this client and reads its answers; delete this entry there"
+      "reason": "staging: the pool (design section 19 batch 3) calls each host's API over its link and reads its answers; delete this entry there"
     },
     {
       "code": "DS1102",
       "symbol": "go://github.com/cplieger/manade/internal/hostapi#Client.Diag",
       "path": "internal/hostapi/client.go",
-      "reason": "staging: the orchestrator (build plan item 7, batch 4) calls the host API through this client and reads its answers; delete this entry there"
+      "reason": "staging: the pool (design section 19 batch 3) calls each host's API over its link and reads its answers; delete this entry there"
     },
     {
       "code": "DS1102",
       "symbol": "go://github.com/cplieger/manade/internal/hostapi#Client.Probe",
       "path": "internal/hostapi/client.go",
-      "reason": "staging: the orchestrator (build plan item 7, batch 4) calls the host API through this client and reads its answers; delete this entry there"
+      "reason": "staging: the pool (design section 19 batch 3) calls each host's API over its link and reads its answers; delete this entry there"
     },
     {
       "code": "DS1102",
       "symbol": "go://github.com/cplieger/manade/internal/hostapi#Client.Events",
       "path": "internal/hostapi/client.go",
-      "reason": "staging: the orchestrator (build plan item 7, batch 4) calls the host API through this client and reads its answers; delete this entry there"
+      "reason": "staging: the pool (design section 19 batch 3) calls each host's API over its link and reads its answers; delete this entry there"
     },
     {
       "code": "DS1002",
       "symbol": "go://github.com/cplieger/manade/internal/hostapi#Client.callJSON",
       "path": "internal/hostapi/client.go",
-      "reason": "staging: the orchestrator (build plan item 7, batch 4) calls the host API through this client and reads its answers; delete this entry there"
+      "reason": "staging: the pool (design section 19 batch 3) calls each host's API over its link and reads its answers; delete this entry there"
     },
     {
       "code": "DS1002",
       "symbol": "go://github.com/cplieger/manade/internal/hostapi#Client.callBytes",
       "path": "internal/hostapi/client.go",
-      "reason": "staging: the orchestrator (build plan item 7, batch 4) calls the host API through this client and reads its answers; delete this entry there"
+      "reason": "staging: the pool (design section 19 batch 3) calls each host's API over its link and reads its answers; delete this entry there"
     },
     {
       "code": "DS1002",
       "symbol": "go://github.com/cplieger/manade/internal/hostapi#Client.send",
       "path": "internal/hostapi/client.go",
-      "reason": "staging: the orchestrator (build plan item 7, batch 4) calls the host API through this client and reads its answers; delete this entry there"
-    },
-    {
-      "code": "DS1501",
-      "symbol": "go://github.com/cplieger/manade/internal/hostapi#Client.CreateRunner",
-      "path": "internal/hostapi/client.go",
-      "reason": "staging: the orchestrator (build plan item 7, batch 4) calls the host API through this client and reads its answers; delete this entry there"
-    },
-    {
-      "code": "DS1501",
-      "symbol": "go://github.com/cplieger/manade/internal/hostapi#Client.Runners",
-      "path": "internal/hostapi/client.go",
-      "reason": "staging: the orchestrator (build plan item 7, batch 4) calls the host API through this client and reads its answers; delete this entry there"
-    },
-    {
-      "code": "DS1501",
-      "symbol": "go://github.com/cplieger/manade/internal/hostapi#Client.DeleteRunner",
-      "path": "internal/hostapi/client.go",
-      "reason": "staging: the orchestrator (build plan item 7, batch 4) calls the host API through this client and reads its answers; delete this entry there"
-    },
-    {
-      "code": "DS1501",
-      "symbol": "go://github.com/cplieger/manade/internal/hostapi#Client.Logs",
-      "path": "internal/hostapi/client.go",
-      "reason": "staging: the orchestrator (build plan item 7, batch 4) calls the host API through this client and reads its answers; delete this entry there"
+      "reason": "staging: the pool (design section 19 batch 3) calls each host's API over its link and reads its answers; delete this entry there"
     },
     {
       "code": "DS1501",
       "symbol": "go://github.com/cplieger/manade/internal/hostapi#Client.Diag",
       "path": "internal/hostapi/client.go",
-      "reason": "staging: the orchestrator (build plan item 7, batch 4) calls the host API through this client and reads its answers; delete this entry there"
+      "reason": "staging: the pool (design section 19 batch 3) calls each host's API over its link and reads its answers; delete this entry there"
+    },
+    {
+      "code": "DS1102",
+      "symbol": "go://github.com/cplieger/manade/internal/egress#ReplaceTarget",
+      "path": "internal/egress/refresh.go",
+      "reason": "staging: an enrolled host's dial targets (enrolment, design section 19 batch 4) fill and re-resolve the exception sets; delete this entry there"
+    },
+    {
+      "code": "DS1301",
+      "symbol": "go://github.com/cplieger/manade/internal/config#Capacity.MaxRunners",
+      "path": "internal/config/host.go",
+      "reason": "staging: the pool's admission (design section 19 batch 3) caps each host's runners with it; delete this entry there"
+    },
+    {
+      "code": "DS1102",
+      "symbol": "go://github.com/cplieger/manade/internal/hostapi#Client.PutSection",
+      "path": "internal/hostapi/client.go",
+      "reason": "staging: the applier (the batch that adopts the settings store, design section 21 b4-7) delivers each host its section; delete this entry there"
+    },
+    {
+      "code": "DS1301",
+      "symbol": "go://github.com/cplieger/manade/internal/hostlink#Link.API",
+      "path": "internal/hostlink/server.go",
+      "reason": "staging: the pool (design section 19 batch 3) calls each host's API over its link and reads its answers; delete this entry there"
+    },
+    {
+      "code": "DS1102",
+      "symbol": "go://github.com/cplieger/manade/internal/hostlink#Server.Link",
+      "path": "internal/hostlink/server.go",
+      "reason": "staging: the pool (design section 19 batch 3) calls each host's API over its link and reads its answers; delete this entry there"
+    },
+    {
+      "code": "DS1102",
+      "symbol": "go://github.com/cplieger/manade/internal/hostlink#Uplink.State",
+      "path": "internal/hostlink/uplink.go",
+      "reason": "staging: an enrolled host's status reports its newest dial address's last failure (enrolment, design section 19 batch 4); delete this entry there"
+    },
+    {
+      "code": "DS1301",
+      "symbol": "go://github.com/cplieger/manade/internal/hostlink#UplinkState.Err",
+      "path": "internal/hostlink/uplink.go",
+      "reason": "staging: an enrolled host's status reports its newest dial address's last failure (enrolment, design section 19 batch 4); delete this entry there"
+    },
+    {
+      "code": "DS1301",
+      "symbol": "go://github.com/cplieger/manade/internal/hostlink#UplinkState.Connected",
+      "path": "internal/hostlink/uplink.go",
+      "reason": "staging: an enrolled host's status reports its newest dial address's last failure (enrolment, design section 19 batch 4); delete this entry there"
     },
     {
       "code": "DS1501",
-      "symbol": "go://github.com/cplieger/manade/internal/hostapi#Client.Probe",
-      "path": "internal/hostapi/client.go",
-      "reason": "staging: the orchestrator (build plan item 7, batch 4) calls the host API through this client and reads its answers; delete this entry there"
+      "symbol": "go://github.com/cplieger/manade/internal/egress#DialTarget",
+      "path": "internal/egress/policy.go",
+      "reason": "staging: an enrolled host's dial targets (enrolment, design section 19 batch 4) fill and re-resolve the exception sets; delete this entry there"
     },
     {
       "code": "DS1501",
-      "symbol": "go://github.com/cplieger/manade/internal/hostapi#Client.Events",
-      "path": "internal/hostapi/client.go",
-      "reason": "staging: the orchestrator (build plan item 7, batch 4) calls the host API through this client and reads its answers; delete this entry there"
+      "symbol": "go://github.com/cplieger/manade/internal/egress#TargetNewest",
+      "path": "internal/egress/policy.go",
+      "reason": "staging: an enrolled host's dial targets (enrolment, design section 19 batch 4) fill and re-resolve the exception sets; delete this entry there"
+    },
+    {
+      "code": "DS1501",
+      "symbol": "go://github.com/cplieger/manade/internal/egress#TargetLastGood",
+      "path": "internal/egress/policy.go",
+      "reason": "staging: an enrolled host's dial targets (enrolment, design section 19 batch 4) fill and re-resolve the exception sets; delete this entry there"
+    },
+    {
+      "code": "DS1501",
+      "symbol": "go://github.com/cplieger/manade/internal/egress#TargetJoin",
+      "path": "internal/egress/policy.go",
+      "reason": "staging: an enrolled host's dial targets (enrolment, design section 19 batch 4) fill and re-resolve the exception sets; delete this entry there"
+    },
+    {
+      "code": "DS1501",
+      "symbol": "go://github.com/cplieger/manade/internal/egress#ReplaceTarget",
+      "path": "internal/egress/refresh.go",
+      "reason": "staging: an enrolled host's dial targets (enrolment, design section 19 batch 4) fill and re-resolve the exception sets; delete this entry there"
     }
   ]
 }

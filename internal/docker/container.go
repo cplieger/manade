@@ -275,7 +275,9 @@ func (c *Client) InspectSettled(ctx context.Context, name string) (Container, bo
 // Start starts container id. A start that times out is followed by an
 // inspect: a container past created counts as started, and one still
 // created gets the start issued again, whose own error alone fails the
-// start. Docker's 304 for a container already running is a success.
+// start. Docker's 304 for a container already running is a success. A start
+// refused because the container's network is gone fails with an error
+// matching ErrNetworkMissing and leaves the container created.
 func (c *Client) Start(ctx context.Context, id string) Result {
 	timedOut, err := c.startOnce(ctx, id)
 	switch {

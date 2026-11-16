@@ -201,14 +201,14 @@ func newProbeTest(t *testing.T) *probeTest {
 	pt := &probeTest{d: newFakeDaemon(), sets: &fakeSets{}, image: &fakeImage{id: "sha256:probe-0"}, done: make(chan struct{})}
 	t.Cleanup(func() { close(pt.done) })
 	pt.host = &config.Host{Name: "nas", DNS: []netip.Addr{netip.MustParseAddr("1.1.1.1")}, Egress: config.Egress{Internet: true}}
-	cfg := &config.Config{File: "/config/config.json", Self: &config.Self{Name: "nas", TLSDir: "/tls"}}
+	cfg := &config.Config{Self: &config.Self{Name: "nas"}}
 	spec := jobspec.NewHost(cfg, pt.host, &jobspec.Platform{Network: "manade"})
 	pt.r = NewRunner(&Config{
 		Daemon: pt.d, Attach: pt.attachFn, Sets: pt.sets, Image: pt.image,
 		Spec: func() *jobspec.Host { return spec },
 		Host: func() Host {
 			return Host{
-				Input:   egress.ProbeInput{Host: pt.host, OutwardGateway: netip.MustParseAddr("192.168.1.1"), APIPort: 7464},
+				Input:   egress.ProbeInput{Host: pt.host, OutwardGateway: netip.MustParseAddr("192.168.1.1")},
 				Sources: []netip.Addr{netip.MustParseAddr("192.168.1.20")},
 			}
 		},
@@ -315,7 +315,7 @@ func TestARunProves(t *testing.T) {
 		for _, c := range rep.Checks {
 			targets = append(targets, c.Target)
 		}
-		if !slices.Contains(targets, "172.18.0.2:8471") || !slices.Contains(targets, "172.18.0.1:7464") {
+		if !slices.Contains(targets, "172.18.0.2:8471") || !slices.Contains(targets, "172.18.0.1:1") {
 			t.Errorf("targets = %q", targets)
 		}
 	})
@@ -434,6 +434,32 @@ func TestOneRunAtATime(t *testing.T) {
 			t.Errorf("created runs = %q, want two whole runs one after the other", runs)
 		}
 	})
+}
+
+// A run in flight reports its deadline, one run of the plan after its
+// start: Deadline bounds a request by two.
+func TestARunningProbeReportsItsDeadline(t *testing.T) {
+	pt := newProbeTest(t)
+	if got := pt.r.RunningUntil(); !got.IsZero() {
+		t.Errorf("before a run, RunningUntil = %v, want zero", got)
+	}
+	pt.hold = make(chan struct{})
+	run := pt.r.Deadline() / 2
+	before := time.Now()
+	done := make(chan error, 1)
+	go func() { _, err := pt.r.Run(t.Context()); done <- err }()
+	waitFor(t, "the run's probe", func() bool { return len(pt.d.callList()) >= 4 })
+	after := time.Now()
+	if got := pt.r.RunningUntil(); got.Before(before.Add(run)) || got.After(after.Add(run)) {
+		t.Errorf("during the run, RunningUntil = %v, want between %v and %v", got, before.Add(run), after.Add(run))
+	}
+	close(pt.hold)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if got := pt.r.RunningUntil(); !got.IsZero() {
+		t.Errorf("after the run, RunningUntil = %v, want zero", got)
+	}
 }
 
 func TestARunOutlivesItsClient(t *testing.T) {

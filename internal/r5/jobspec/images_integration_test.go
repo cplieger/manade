@@ -25,14 +25,13 @@ import (
 //
 //	docker build -t ghcr.io/cplieger/manade-runner:base-dev -f images/base/Dockerfile .
 //	(then build, browser and docker)
-//	go test -tags integration -run TestImages ./internal/jobspec/
+//	go test -tags integration -run TestImages ./internal/r5/jobspec/
 func TestImages(t *testing.T) {
 	c, pool := dial(t)
 	info, err := c.Info(t.Context())
 	if err != nil {
 		t.Fatalf("Info: %v", err)
 	}
-	before := volumes(t)
 	const elevated = "runner_image: docker, allow_privilege_escalation: true, scopes: [acme/app]"
 	tests := []struct {
 		name, image, body, arg string
@@ -101,12 +100,15 @@ func TestImages(t *testing.T) {
 			if !tt.wantOK && (code == 0 || !has("manade-dockerd-run: dockerd exited before it answered")) {
 				t.Errorf("exit %d, want the wrapper's refusal; logs:\n%s", code, strings.Join(logs, "\n"))
 			}
+			mounted := volumesOf(t, id)
 			if err := c.RemoveOwned(t.Context(), id); err != nil {
 				t.Fatalf("RemoveOwned: %v", err)
 			}
 			removed = true
-			if after := volumes(t); !slices.Equal(after, before) {
-				t.Errorf("volumes after removal = %v, want %v", after, before)
+			for _, v := range mounted {
+				if daemonGet(t, "/volumes/"+v, nil) != http.StatusNotFound {
+					t.Errorf("volume %s outlived its container", v)
+				}
 			}
 		})
 	}
@@ -131,32 +133,47 @@ func shippedImage(t *testing.T, c *docker.Client, name string) docker.Image {
 	return img
 }
 
-// volumes lists the daemon's volume names, sorted. The pool's client has no
-// volume call, because the pool never makes one.
-func volumes(t *testing.T) []string {
+// volumesOf names the volumes container id mounts. Only these are checked
+// after its removal: the daemon's whole list also holds other packages'
+// volumes, which their tests create and remove in parallel.
+func volumesOf(t *testing.T, id string) []string {
+	t.Helper()
+	var ctr struct{ Mounts []struct{ Type, Name string } }
+	if status := daemonGet(t, "/containers/"+id+"/json", &ctr); status != http.StatusOK {
+		t.Fatalf("GET /containers/%s/json: status %d", id, status)
+	}
+	var names []string
+	for _, m := range ctr.Mounts {
+		if m.Type == "volume" {
+			names = append(names, m.Name)
+		}
+	}
+	return names
+}
+
+// daemonGet reads path from the daemon into out when it answers 200, and
+// answers the status. The pool's client has no volume call, because the pool
+// never makes one.
+func daemonGet(t *testing.T, path string, out any) int {
 	t.Helper()
 	hc := &http.Client{Timeout: 30 * time.Second, Transport: &http.Transport{
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 			return (&net.Dialer{}).DialContext(ctx, "unix", socketPath())
 		},
 	}}
-	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://docker/volumes", http.NoBody)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://docker"+path, http.NoBody)
 	if err != nil {
 		t.Fatal(err)
 	}
 	resp, err := hc.Do(req)
 	if err != nil {
-		t.Fatalf("GET /volumes: %v", err)
+		t.Fatalf("GET %s: %v", path, err)
 	}
 	defer resp.Body.Close()
-	var body struct{ Volumes []struct{ Name string } }
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil || resp.StatusCode != http.StatusOK {
-		t.Fatalf("GET /volumes: %s, %v", resp.Status, err)
+	if resp.StatusCode == http.StatusOK && out != nil {
+		if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
 	}
-	names := make([]string, 0, len(body.Volumes))
-	for _, v := range body.Volumes {
-		names = append(names, v.Name)
-	}
-	slices.Sort(names)
-	return names
+	return resp.StatusCode
 }

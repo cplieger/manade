@@ -11,7 +11,7 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
-	"slices"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -23,6 +23,7 @@ import (
 	"github.com/cplieger/manade/internal/host/netsetup"
 	"github.com/cplieger/manade/internal/host/platform"
 	"github.com/cplieger/manade/internal/host/resolver"
+	"github.com/cplieger/manade/internal/hostapi"
 )
 
 // The job network every runner joins, on the bridge the rules match.
@@ -72,6 +73,41 @@ type seams struct {
 	EchoURL string
 	Log     *slog.Logger
 	Root    platform.Root
+	// Block6 is the host's MANADE_BLOCK6.
+	Block6 []netip.Prefix
+	// original is resolv.conf as the process's first boot read it: a boot
+	// tried again in the same namespace reads the host's own file there.
+	original struct {
+		err  error
+		v    egress.Resolvers
+		once sync.Once
+	}
+}
+
+// readOriginal answers the resolvers the container's resolv.conf named
+// before any boot of this process rewrote it.
+func (p *seams) readOriginal() (egress.Resolvers, error) {
+	p.original.once.Do(func() { p.original.v, p.original.err = netsetup.ReadOriginal(p.Root) })
+	return p.original.v, p.original.err
+}
+
+// stepError is a boot step after the facts check that failed on what the
+// section's field at, under hosts.<name>, decides: the section's failure,
+// where any other boot failure is the host's own.
+type stepError struct {
+	err error
+	at  string
+}
+
+func (e *stepError) Error() string { return e.err.Error() }
+func (e *stepError) Unwrap() error { return e.err }
+
+// step answers err as section field at's failure, nil for nil.
+func step(at string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return &stepError{at: at, err: err}
 }
 
 // hostNet is a host whose namespace, rules and daemon are up.
@@ -106,14 +142,28 @@ type hostNet struct {
 	NoBridgeNF bool
 }
 
-// bringUp brings host h up: it checks the cgroup namespace and picks the storage
-// driver and the rule backend, writes resolv.conf, reads the routes, picks
-// the job subnets, brings h's posture up (its rules loaded and compared),
-// starts the host's resolver, reads an internet: false host's domain list,
-// resolves GitHub's API name, and only then starts the daemon and creates
-// the job network. Any failure before the daemon starts leaves no daemon
-// and no resolver; one after stops both.
+// bringUp brings host h up in bring's order. A section h the host's network
+// refuses answers a *hostapi.SectionRefusedError before it writes anything
+// in the namespace, and a later step that fails on what h decides answers a
+// *stepError. A failure before the daemon starts leaves no daemon and no
+// resolver; one after stops both. Either turns IPv6 forwarding off again
+// for an egress.ipv6 section.
 func bringUp(ctx context.Context, h *config.Host, p *seams, hooks guardHooks) (*hostNet, error) {
+	n, err := bring(ctx, h, p, hooks)
+	if _, refused := errors.AsType[*hostapi.SectionRefusedError](err); err != nil && !refused && h.Egress.IPv6 {
+		if ferr := netsetup.DisableIPv6Forwarding(p.Root); ferr != nil {
+			p.Log.Error("IPv6 forwarding was left on after a failed boot", "error", ferr)
+		}
+	}
+	return n, err
+}
+
+// bring checks the cgroup namespace, picks the storage driver, rule backend
+// and job subnets, writes resolv.conf, brings h's posture up (its rules
+// loaded and compared), starts the host's resolver, reads an internet:
+// false host's domain list, resolves GitHub's API name, and only then
+// starts the daemon and creates the job network.
+func bring(ctx context.Context, h *config.Host, p *seams, hooks guardHooks) (*hostNet, error) {
 	if err := platform.CheckPrivateNamespace(p.Root); err != nil {
 		return nil, err
 	}
@@ -126,14 +176,22 @@ func bringUp(ctx context.Context, h *config.Host, p *seams, hooks guardHooks) (*
 	if n.Kernel, err = platform.ProbeKernel(ctx, run); err != nil {
 		return nil, err
 	}
+	facts, err := readNetFacts(p.Root, n.Kernel, h, true)
+	if err != nil {
+		return nil, err
+	}
+	plan, refusals := facts.plan(h)
+	if len(refusals) > 0 {
+		return nil, refusedError(refusals)
+	}
 	n.rules = &ruleLoader{Run: run, Kernel: n.Kernel, Root: p.Root}
-	if err := n.namespace(ctx, h); err != nil {
+	if err := n.namespace(ctx, h, facts, plan); err != nil {
 		return nil, err
 	}
 	pst := n.newPosture(h)
 	n.posture.Store(pst)
 	if err := pst.guard.bring(ctx); err != nil {
-		return nil, err
+		return nil, step("egress", err)
 	}
 	if err := n.serveDNS(ctx); err != nil {
 		return nil, err
@@ -151,61 +209,131 @@ func (n *hostNet) checkAndStart(ctx context.Context, p *posture) error {
 	}
 	if p.guard.want.BridgeNF6 {
 		if err := netsetup.SetBridgeNF6(n.rules.Root); err != nil {
-			return fmt.Errorf("egress.ipv6 needs %s at 1 in the host's namespace: %w", platform.BridgeNFCall6, err)
+			return step("egress.ipv6", fmt.Errorf("egress.ipv6 needs %s at 1 in the host's namespace: %w", platform.BridgeNFCall6, err))
 		}
 	}
 	return n.startDaemon(ctx, n.seams)
 }
 
-func (n *hostNet) namespace(ctx context.Context, h *config.Host) error {
+// netFacts is what a boot reads of the host's network before it writes
+// anything there.
+type netFacts struct {
+	kernel *platform.Kernel
+	routes netsetup.Routes
+	// addrs6 are the namespace's global IPv6 addresses, read only for an
+	// egress.ipv6 section when read6 is set.
+	addrs6 []netip.Addr
+	read6  bool
+}
+
+// readNetFacts reads the routes of the namespace at root and, when read6
+// and section h has egress.ipv6, its global IPv6 addresses. It writes
+// nothing.
+func readNetFacts(root platform.Root, k *platform.Kernel, h *config.Host, read6 bool) (*netFacts, error) {
+	routes, err := netsetup.ReadRoutes(root)
+	if err != nil {
+		return nil, err
+	}
+	f := &netFacts{kernel: k, routes: routes, read6: read6 && h.Egress.IPv6}
+	if f.read6 {
+		if f.addrs6, err = netsetup.GlobalAddrs6(root); err != nil {
+			return nil, err
+		}
+	}
+	return f, nil
+}
+
+// netPlan is the job subnet a section boots with and, for egress.ipv6, the
+// /64 of the host's own address.
+type netPlan struct {
+	subnet netip.Prefix
+	own64  netip.Prefix
+}
+
+// plan answers the job network section h boots with, or what of h the
+// facts refuse: a network.subnet an on-link route shadows, no free pool for
+// an unset one, and egress.ipv6 with no IPv6 address, default route or nat
+// table; with the addresses unread, the nat table alone.
+func (f *netFacts) plan(h *config.Host) (netPlan, []config.FieldError) {
+	at := "hosts." + h.Name + "."
+	var p netPlan
+	var out []config.FieldError
+	var err error
+	if h.Subnet.IsValid() {
+		p.subnet, err = h.Subnet, netsetup.CheckSubnet(h, f.routes.OnLink)
+	} else {
+		p.subnet, err = netsetup.PickSubnet(h, f.routes.OnLink)
+	}
+	if err != nil {
+		out = append(out, config.FieldError{Path: at + "network.subnet", Message: strings.TrimPrefix(err.Error(), "netsetup: job subnet: ")})
+	}
+	switch {
+	case !h.Egress.IPv6:
+	case f.read6:
+		if p.own64, err = netsetup.CheckIPv6(f.addrs6, f.routes, f.kernel.IPv6NAT); err != nil {
+			out = append(out, config.FieldError{Path: at + "egress.ipv6", Message: strings.TrimPrefix(err.Error(), "netsetup: egress.ipv6 is true, but ")})
+		}
+	case !f.kernel.IPv6NAT:
+		out = append(out, config.FieldError{Path: at + "egress.ipv6", Message: "the host's kernel has no IPv6 nat table, which egress.ipv6 needs"})
+	}
+	return p, out
+}
+
+// bootRefusals answers what of section h the host's network refuses, read
+// as a boot on p reads it.
+func bootRefusals(ctx context.Context, p *seams, h *config.Host) ([]config.FieldError, error) {
+	k, err := platform.ProbeKernel(ctx, platform.Bounded(p.Run))
+	if err != nil {
+		return nil, err
+	}
+	f, err := readNetFacts(p.Root, k, h, true)
+	if err != nil {
+		return nil, err
+	}
+	_, out := f.plan(h)
+	return out, nil
+}
+
+// namespace writes resolv.conf and, for egress.ipv6, the namespace's IPv6
+// forwarding and the job /64, over the facts and plan a boot checked.
+func (n *hostNet) namespace(ctx context.Context, h *config.Host, f *netFacts, plan netPlan) error {
 	p := n.seams
 	var err error
-	if n.Original, err = netsetup.ReadOriginal(p.Root); err != nil {
+	if n.Original, err = p.readOriginal(); err != nil {
 		return err
 	}
 	err = netsetup.WriteResolvConf(p.Root, netsetup.ResolvConf())
 	if err != nil {
 		return err
 	}
-	routes, err := netsetup.ReadRoutes(p.Root)
-	if err != nil {
-		return err
+	n.Gateway4, n.Gateway6, n.Subnet = f.routes.Gateway4, f.routes.Gateway6, plan.subnet
+	if !h.Egress.IPv6 {
+		return nil
 	}
-	n.Gateway4, n.Gateway6 = routes.Gateway4, routes.Gateway6
-	if h.Egress.IPv6 {
-		err = n.ipv6(ctx, p, routes)
-		if err != nil {
-			return err
-		}
+	n.Own64, n.Addr6 = plan.own64, f.addrs6[0]
+	if err = netsetup.EnableIPv6Forwarding(p.Root); err != nil {
+		return step("egress.ipv6", err)
 	}
-	if h.Subnet.IsValid() {
-		n.Subnet = h.Subnet
-		return netsetup.CheckSubnet(h, routes.OnLink)
-	}
-	n.Subnet, err = netsetup.PickSubnet(h, routes.OnLink)
-	return err
+	n.Job6, err = netsetup.JobPrefix6(ctx, p.Root.Path(stateDir+"/job-ipv6"), f.routes.OnLink, p.Random)
+	return step("egress.ipv6", err)
 }
 
-func (n *hostNet) ipv6(ctx context.Context, p *seams, routes netsetup.Routes) error {
-	addrs, err := netsetup.GlobalAddrs6(p.Root)
-	if err != nil {
-		return err
-	}
-	if n.Own64, err = netsetup.CheckIPv6(addrs, routes, n.Kernel.IPv6NAT); err != nil {
-		return err
-	}
-	n.Addr6 = addrs[0]
-	err = netsetup.EnableIPv6Forwarding(p.Root)
-	if err != nil {
-		return err
-	}
-	n.Job6, err = netsetup.JobPrefix6(ctx, p.Root.Path(stateDir+"/job-ipv6"), routes.OnLink, p.Random)
-	return err
-}
+// staleDaemonFiles are what a daemon that did not stop cleanly leaves in
+// the container's writable layer for its next run: Docker's restart
+// policy restarts the same container, and the daemon refuses to start while
+// its pid file names a live process, which a restarted container's PIDs,
+// counted from 1 again, often do (moby pkg/pidfile). /run/docker holds
+// every other socket the daemon makes.
+var staleDaemonFiles = []string{"/run/docker.pid", daemonSocket, "/run/docker"}
 
 func (n *hostNet) startDaemon(ctx context.Context, p *seams) error {
 	v4, _ := platform.BridgeNF(p.Root)
 	n.NoBridgeNF = !v4
+	for _, f := range staleDaemonFiles {
+		if err := os.RemoveAll(p.Root.Path(f)); err != nil {
+			return fmt.Errorf("removing %s, left by an earlier daemon: %w", f, err)
+		}
+	}
 	d, err := p.StartDaemon(&daemonSpec{Kernel: n.Kernel, Storage: n.Storage.Driver, NoBridgeNF: n.NoBridgeNF})
 	if err != nil {
 		return err
@@ -225,11 +353,10 @@ func (n *hostNet) startDaemon(ctx context.Context, p *seams) error {
 	if err != nil {
 		return fail(err)
 	}
-	spec := &docker.NetworkSpec{Name: jobNetwork, Bridge: jobBridge, Subnet: n.Subnet, Subnet6: n.Job6}
-	err = c.EnsureNetwork(ctx, spec)
+	err = c.EnsureNetwork(ctx, jobNetworkSpec(n.Subnet, n.Job6))
 	c.Close()
 	if err != nil {
-		return fail(fmt.Errorf("creating the job network: %w", err))
+		return fail(step("network.subnet", fmt.Errorf("creating the job network: %w", err)))
 	}
 	return nil
 }
@@ -279,25 +406,4 @@ func (n *hostNet) hold(ctx context.Context) error {
 // and waits for both.
 func (n *hostNet) stop() error {
 	return errors.Join(n.Daemon.Stop(), n.resolver.shutdown())
-}
-
-// restartOnly names the keys whose change the running host cannot apply:
-// the job network's shape, which runners are attached to, and the
-// resolvers every running job's lookups go to.
-func restartOnly(old, h *config.Host) error {
-	var keys []string
-	at := "hosts." + h.Name + "."
-	if !slices.Equal(old.DNS, h.DNS) {
-		keys = append(keys, at+"dns")
-	}
-	if old.Egress.IPv6 != h.Egress.IPv6 {
-		keys = append(keys, at+"egress.ipv6")
-	}
-	if old.Subnet != h.Subnet {
-		keys = append(keys, at+"network.subnet")
-	}
-	if len(keys) == 0 {
-		return nil
-	}
-	return fmt.Errorf("%s changed, which takes a restart of the host; restart it to apply the new section", strings.Join(keys, ", "))
 }

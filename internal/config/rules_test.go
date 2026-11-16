@@ -61,32 +61,6 @@ func TestHostEgressAccepted(t *testing.T) {
 	}
 }
 
-func TestHostTLSDirUnderConfig(t *testing.T) {
-	t.Parallel()
-	for _, tc := range []struct {
-		name, tls string
-		refused   bool
-	}{
-		{"under", "/config/tls", true},
-		{"equal", "/config", true},
-		{"ownMount", "/tls", false},
-		{"siblingPrefix", "/configtls", false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			cfg := &Config{File: "/config/config.json", Self: &Self{Name: "h", TLSDir: tc.tls}}
-			err := buildDoc(cfg, oneHost("", ""))
-			if !tc.refused {
-				if err != nil {
-					t.Fatalf("err = %v", err)
-				}
-				return
-			}
-			wantErr(t, err, `TLS_DIR: "`+tc.tls+`" lies at or under the config file's directory "/config"`, "a mount of their own")
-		})
-	}
-}
-
 func TestElevatedHostNeedsScopes(t *testing.T) {
 	t.Parallel()
 	const doc = scopes + `hosts:
@@ -301,7 +275,7 @@ func TestJSONDocument(t *testing.T) {
   }
 }`
 	cfg := &Config{}
-	if err := build(cfg, []byte(d), nil); err != nil {
+	if err := build(cfg, []byte(d), nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if len(cfg.Hosts) != 3 || len(cfg.Profiles) != 4 || len(cfg.Scopes) != 2 {

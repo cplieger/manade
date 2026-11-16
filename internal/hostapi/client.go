@@ -4,12 +4,11 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/tls"
 	"encoding/json"
+	jsonv2 "encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -17,7 +16,6 @@ import (
 
 	"github.com/cplieger/go/httpclient"
 	"github.com/cplieger/go/textsafe"
-	"github.com/cplieger/manade/internal/config"
 )
 
 // APIError is an error answer the client has no sentinel for.
@@ -41,41 +39,15 @@ type Client struct {
 	base   string
 }
 
-// NewClient reaches host name at addr. An addr with HostPort needs tlsCfg,
-// ClientTLS's config: the client verifies the host's certificate against
-// name, never against the address's hostname, so the certificate binds the
-// host wherever it moves.
-func NewClient(name string, addr config.Address, tlsCfg *tls.Config) (*Client, error) {
-	tr := &http.Transport{MaxIdleConns: 4, IdleConnTimeout: 90 * time.Second, TLSHandshakeTimeout: 10 * time.Second}
-	var base string
-	switch {
-	case addr.Socket != "":
-		socket := addr.Socket
-		tr.DialContext = func(ctx context.Context, _, _ string) (net.Conn, error) {
-			var d net.Dialer
-			return d.DialContext(ctx, "unix", socket)
-		}
-		base = "http://" + name
-	case addr.HostPort != "" && tlsCfg != nil:
-		cfg := tlsCfg.Clone()
-		cfg.ServerName = name
-		tr.TLSClientConfig = cfg
-		tr.ForceAttemptHTTP2 = false
-		base = "https://" + addr.HostPort
-	case addr.HostPort != "":
-		return nil, fmt.Errorf("host %s: an https address needs the orchestrator's TLS files", name)
-	default:
-		return nil, fmt.Errorf("host %s: no address", name)
-	}
+// NewClient calls a host through rt, the client of the connection the host
+// opened (hostlink's), which carries every call.
+func NewClient(rt http.RoundTripper) *Client {
 	return &Client{
-		api:    &http.Client{Transport: tr, Timeout: deleteBound + 2*clientSlack, CheckRedirect: httpclient.RefuseAllRedirects},
-		stream: &http.Client{Transport: tr, CheckRedirect: httpclient.RefuseAllRedirects},
-		base:   base,
-	}, nil
+		api:    &http.Client{Transport: rt, Timeout: deleteBound + 2*clientSlack, CheckRedirect: httpclient.RefuseAllRedirects},
+		stream: &http.Client{Transport: rt, CheckRedirect: httpclient.RefuseAllRedirects},
+		base:   "http://host",
+	}
 }
-
-// CloseIdleConnections closes the client's idle connections.
-func (c *Client) CloseIdleConnections() { c.api.CloseIdleConnections() }
 
 // Status reads the host's status.
 func (c *Client) Status(ctx context.Context) (Status, error) {
@@ -149,6 +121,14 @@ func (c *Client) Probe(ctx context.Context, deadline time.Duration) (ProbeReport
 	return rep, err
 }
 
+// PutSection delivers section to the host. A section the host refuses fails
+// with a *SectionRefusedError naming each field it refused.
+func (c *Client) PutSection(ctx context.Context, section *Section) (SectionAnswer, error) {
+	var ans SectionAnswer
+	err := c.callJSON(ctx, "section", callBound, http.MethodPut, "/v1/section", section, &ans)
+	return ans, err
+}
+
 // Events calls fn with each line of the host's events stream until ctx
 // ends, the host ends the stream (nil) or the link fails. A stream that
 // stays silent past three heartbeats is a failed link.
@@ -214,7 +194,10 @@ func (c *Client) callBytes(ctx context.Context, op string, bound time.Duration, 
 func (c *Client) send(ctx context.Context, hc *http.Client, op, method, path string, in any) (io.ReadCloser, int, error) {
 	var body io.Reader = http.NoBody
 	if in != nil {
-		b, err := json.Marshal(in)
+		// v2 adds no newline and escapes neither HTML nor U+2028 and
+		// U+2029, so a section within SectionLimit stays within the host's
+		// body cap.
+		b, err := jsonv2.Marshal(in)
 		if err != nil {
 			return nil, 0, fmt.Errorf("host API %s: %w", op, err)
 		}
@@ -276,6 +259,19 @@ func answerError(op string, resp *http.Response) error {
 		return fmt.Errorf("%w: %s", ErrUnknownRunner, msg)
 	case codeProbeTimeout:
 		return fmt.Errorf("%w: %s", ErrProbeTimeout, msg)
+	case codeWaiting:
+		return fmt.Errorf("%w: %s", ErrWaitingForSection, msg)
+	case codeStarting:
+		return fmt.Errorf("%w: %s", ErrStarting, msg)
+	case codeApplying:
+		return fmt.Errorf("%w: %s", ErrApplying, msg)
+	case codeSectionRefused:
+		out := &SectionRefusedError{Errors: make([]FieldError, len(body.Errors))}
+		for i, fe := range body.Errors {
+			out.Errors[i].Path, _ = textsafe.SanitizeSingleLineCapped(fe.Path, errorTextLimit, "…")
+			out.Errors[i].Message, _ = textsafe.SanitizeSingleLineCapped(fe.Message, errorTextLimit, "…")
+		}
+		return out
 	}
 	return &APIError{Op: op, Status: resp.StatusCode, Code: body.Code, Message: msg}
 }

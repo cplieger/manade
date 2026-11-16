@@ -4,28 +4,20 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"slices"
 
 	"github.com/cplieger/manade/internal/config"
 )
 
-// PolicyHash answers the hash of host section h, every field dns included,
-// which a host reports and the orchestrator checks against its own copy
-// before it gives the host work.
+// PolicyHash answers the hash of the part of host section h its rules are
+// built from: dns, egress and network.subnet. A host reports it, and a proof
+// counts only while it is the running section's, so a change to a profile,
+// images.refresh or capacity keeps the proof.
 func PolicyHash(h *config.Host) string {
-	return digest("manade policy\n", h)
-}
-
-// ProfileHash answers the hash of the profiles that list host, in the
-// order profiles holds them.
-func ProfileHash(profiles []config.Profile, host string) string {
-	docs := []*config.Profile{}
-	for i := range profiles {
-		if slices.Contains(profiles[i].Hosts, host) {
-			docs = append(docs, &profiles[i])
-		}
-	}
-	return digest("manade profiles\n", docs)
+	return digest("manade policy\n", struct {
+		DNS    any
+		Subnet any
+		Egress config.Egress
+	}{h.DNS, h.Subnet, h.Egress})
 }
 
 // digest hashes v's JSON, which encoding/json writes in field order, so a

@@ -91,3 +91,9 @@ ip6 nat POSTROUTING -j MANADE-NAT
 # stale ipsets, destroyed where the kernel holds them
 manade-probe6
 manade-target6
+manade-cp4
+manade-cp6
+manade-cplast4
+manade-cplast6
+manade-cpjoin4
+manade-cpjoin6

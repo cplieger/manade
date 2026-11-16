@@ -36,7 +36,7 @@ func doc(y string) []byte {
 }
 
 // buildDoc builds fixture y into cfg with no previous model.
-func buildDoc(cfg *Config, y string) error { return build(cfg, doc(y), nil) }
+func buildDoc(cfg *Config, y string) error { return build(cfg, doc(y), nil, nil) }
 
 // withProfile builds header plus one profile "p" whose body is the flow
 // mapping's contents.
@@ -48,12 +48,6 @@ func withProfile(body string) string {
 func withOpenProfile(body string) string {
 	return scopes + "hosts:\n  default:\n    capacity: {cpus: 16, memory: 64GiB}\n    egress: {open: true}\n" +
 		"profiles:\n  p: {" + body + "}\n"
-}
-
-// withHosts builds scopes, the hosts block hosts (indented under hosts:)
-// and one plain profile "p" listing every host named in names.
-func withHosts(hosts, names string) string {
-	return scopes + "hosts:\n" + hosts + "profiles:\n  p: {hosts: [" + names + "], scopes: [acme/app], cpus: 1, memory: 512MiB}\n"
 }
 
 // object joins top-level members into one JSON document.
@@ -71,7 +65,7 @@ func jsonProfile(body string) string { return `"profiles": {"p": {` + body + `}}
 // mustBuildJSON builds JSON document d into cfg with no previous model.
 func mustBuildJSON(t *testing.T, cfg *Config, d string) *Config {
 	t.Helper()
-	if err := build(cfg, []byte(d), nil); err != nil {
+	if err := build(cfg, []byte(d), nil, nil); err != nil {
 		t.Fatalf("build: %v", err)
 	}
 	return cfg
@@ -104,7 +98,7 @@ func paths(t *testing.T, err error) []string {
 	if err == nil {
 		return nil
 	}
-	var fe fieldErrors
+	var fe FieldErrors
 	if !errors.As(err, &fe) {
 		t.Fatalf("err = %v, want field errors", err)
 	}
@@ -131,28 +125,4 @@ func host(t *testing.T, cfg *Config, name string) *Host {
 		t.Fatalf("no host %q", name)
 	}
 	return h
-}
-
-// wantLine asserts that a line of err names key and holds every substring:
-// quote bounds a long path, so a temporary directory's path is not matched.
-func wantLine(t *testing.T, err error, key string, subs ...string) {
-	t.Helper()
-	if err == nil {
-		t.Fatalf("err = nil, want a line for %s", key)
-	}
-	for line := range strings.Lines(err.Error()) {
-		if strings.HasPrefix(strings.TrimPrefix(line, "config: "), key+": ") && containsAll(line, subs) {
-			return
-		}
-	}
-	t.Errorf("err = %q, want a line for %s holding %q", err, key, subs)
-}
-
-func containsAll(s string, subs []string) bool {
-	for _, sub := range subs {
-		if !strings.Contains(s, sub) {
-			return false
-		}
-	}
-	return true
 }
