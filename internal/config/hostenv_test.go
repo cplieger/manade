@@ -103,6 +103,19 @@ func TestLoadHost(t *testing.T) {
 		if _, err := loadHost(t, d, map[string]string{"MANADE_HOST": "default"}); err != nil {
 			t.Errorf("another host's section without capacity: err = %v", err)
 		}
+		for name, tc := range map[string]struct{ section, want string }{
+			"invalid": {"{capacity: {cpus: x, memory: y}}", "hosts.nas.capacity.memory: "},
+			"empty":   {"{capacity: {}}", "hosts.nas.capacity.cpus: required"},
+		} {
+			t.Run(name, func(t *testing.T) {
+				d := withHosts("  nas: "+tc.section+"\n  default: {capacity: {cpus: 8, memory: 24GiB}}\n", "nas, default")
+				_, err := loadHost(t, d, map[string]string{"MANADE_HOST": "nas"})
+				wantErr(t, err, tc.want)
+				if err != nil && strings.Contains(err.Error(), "required on the host itself") {
+					t.Errorf("err = %q calls a set capacity missing", err)
+				}
+			})
+		}
 	})
 	tests := []struct {
 		name string

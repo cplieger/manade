@@ -18,8 +18,7 @@ import (
 // File is the store's name under DATA_DIR.
 const File = "manade.db"
 
-// compaction compacts at open when half the file, and at least 64 MiB, is
-// free: run history is the bulk, and its retention frees pages daily.
+// compaction compacts at open when half the file, and at least 64 MiB, is free.
 var compaction = bolttable.CompactPolicy{MinFreeRatio: 0.5, MinFreeBytes: 64 << 20}
 
 // Options configures Open.
@@ -39,8 +38,10 @@ type Store struct {
 // Open opens or creates the file at path. Another holder of the file fails
 // it with an error matching bolttable.ErrLocked. A file stamped by a later
 // store format fails it naming both builds, and one holding a namespace
-// this schema does not declare fails it with a *bolttable.FormatError;
-// either way Open writes nothing to the file.
+// this schema does not declare fails it with a *bolttable.FormatError.
+// Either way the file is left as it was, unless a later build opens it
+// between the stamp's read and the lock, when Open's compaction may already
+// have run.
 func Open(path string, o Options) (*Store, error) {
 	log := cmp.Or(o.Log, slog.Default())
 	if err := checkStamp(path, o.Build); err != nil {

@@ -96,7 +96,7 @@ type docHost struct {
 		Subnet scalar `json:"subnet"`
 	} `json:"network"`
 	Egress docEgress `json:"egress"`
-	// Refused by name, so the refusal names what replaces each.
+	// Refused by name, so each refusal says what replaces the key or why it is gone.
 	Address      jsontext.Value `json:"address"`
 	RegistryAuth jsontext.Value `json:"registry_auth"`
 }

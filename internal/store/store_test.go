@@ -222,6 +222,24 @@ func TestOpenRecordsTheBuildAndFormat(t *testing.T) {
 	}
 }
 
+// A file an older build wrote, before a namespace this build declares
+// existed, opens and gains it: the read-only check leaves that file to Open.
+func TestOpenCompletesAFileLackingANamespace(t *testing.T) {
+	path := testPath(t)
+	db, err := bolttable.Open(path, bolttable.NewSchema(schemaName), bolttable.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s := mustOpen(t, path, "v1.0.0-dev.3")
+	defer mustClose(t, s)
+	if got := readStampOf(t, s); got != (stamp{Format: 1, Build: "v1.0.0-dev.3"}) {
+		t.Errorf("stamp = %+v, want format 1 and build v1.0.0-dev.3", got)
+	}
+}
+
 // A refused file is left byte for byte as it was: no compaction, no
 // namespace created, no stamp rewritten, and its lock free.
 func TestOpenRefusesALaterFileUnchanged(t *testing.T) {

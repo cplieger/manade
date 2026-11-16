@@ -1,5 +1,5 @@
 {
-  "description": "Staging entries for revision 6 packages whose production reader a later build step adds. Each reason names that step; the step deletes the entry, and a stale entry fails the run.",
+  "description": "Staging entries for symbols whose production reader is not built yet. Each reason names the code that will read the symbol; that change deletes the entry, and a stale entry fails the run.",
   "ignore": [
     {
       "code": "DS1501",

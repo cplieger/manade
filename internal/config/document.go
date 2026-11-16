@@ -10,9 +10,9 @@ import (
 	"time"
 )
 
-// document is the settings document's shape, JSON with revision 6's field
-// vocabulary. A number, a boolean, a size or a duration decodes as a scalar,
-// so the section parsers read it with its own path in the error.
+// document is the settings document's shape, JSON with the field names the
+// YAML settings file used. A number, a boolean, a size or a duration decodes
+// as a scalar, so the section parsers read it with its own path in the error.
 type document struct {
 	Hosts    map[string]docHost    `json:"hosts"`
 	Profiles map[string]docProfile `json:"profiles"`
@@ -85,11 +85,11 @@ func (d *document) apply(cfg *Config, p *problems) {
 	cfg.Hosts = d.hosts(refresh, p)
 	cfg.Profiles = d.profiles(p)
 	if cfg.Self != nil {
-		switch h, ok := cfg.Host(cfg.Self.Name); {
+		switch dh, ok := d.Hosts[cfg.Self.Name]; {
 		case !ok:
 			p.addf("hosts", "names no host %s, the MANADE_HOST of this host", quote(cfg.Self.Name))
-		case h.Capacity == (Capacity{}):
-			p.addf(hostPath(h.Name)+".capacity", "required on the host itself: set cpus and memory, which size its memory reserve")
+		case dh.Capacity == nil:
+			p.addf(hostPath(cfg.Self.Name)+".capacity", "required on the host itself: set cpus and memory, which size its memory reserve")
 		}
 	}
 	cfg.check(p)
