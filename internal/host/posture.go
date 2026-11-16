@@ -74,10 +74,10 @@ func (n *hostNet) want(p *posture, h *config.Host) wanted {
 func (n *hostNet) ready(ctx context.Context, p *posture) error {
 	if p.gh != nil {
 		if err := p.gh.source.Start(ctx); err != nil {
-			return err
+			return step("egress.internet", err)
 		}
 	}
-	return netsetup.CheckName(ctx, p.host.Load(), n.seams.Lookup)
+	return step("dns", netsetup.CheckName(ctx, p.host.Load(), n.seams.Lookup))
 }
 
 // rulesGuard answers the running posture's guard.

@@ -196,7 +196,7 @@ func listedOver(t *testing.T, l *hostlink.Link, name string) (hostapi.Runner, bo
 	return hostapi.Runner{}, false
 }
 
-// D5: a start the daemon answers late is never a failed start. Over the
+// A start the daemon answers late is never a failed start. Over the
 // channel, the control plane's POST is answered before the daemon's start,
 // its list and status answer while the start is held, the events stream
 // stays open through it, and the runner ends running from one start with
@@ -275,7 +275,7 @@ func TestASlowStartOverTheChannelIsStarted(t *testing.T) {
 	}
 }
 
-// D5: the host's own removals are never a runner's error exit. Every line
+// The host's own removals are never a runner's error exit. Every line
 // the control plane reads over the channel for a runner the host removed
 // names who removed it: a DELETE's stop, whose exit carries a code, and a
 // failed start's cleanup, which never lists exited.
@@ -517,7 +517,7 @@ func profileOver(t *testing.T, l *hostlink.Link, name string) hostapi.ProfileSta
 	return hostapi.ProfileStatus{}
 }
 
-// D7: a create the daemon refuses because the image in service is gone
+// A create the daemon refuses because the image in service is gone
 // takes the image out of service. Over the channel, the runner fails naming
 // it, status reports the profile not ready with image_missing while the
 // image is pulled again at once, a start meanwhile is refused with that

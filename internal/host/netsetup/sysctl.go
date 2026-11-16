@@ -85,6 +85,9 @@ func IPv6Off(r platform.Root) (bool, error) {
 // masquerade needs and a daemon run with --ip6tables=false does not set.
 func EnableIPv6Forwarding(r platform.Root) error { return write(r, forwardingIPv6, "1") }
 
+// DisableIPv6Forwarding turns IPv6 forwarding off again.
+func DisableIPv6Forwarding(r platform.Root) error { return write(r, forwardingIPv6, "0") }
+
 // SetBridgeNF6 sets bridge-nf-call-ip6tables to 1, so bridged IPv6 between
 // jobs crosses the forward chain; the caller sets it only where the
 // namespace has it (platform.BridgeNF).

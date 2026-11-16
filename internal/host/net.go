@@ -23,6 +23,7 @@ import (
 	"github.com/cplieger/manade/internal/host/netsetup"
 	"github.com/cplieger/manade/internal/host/platform"
 	"github.com/cplieger/manade/internal/host/resolver"
+	"github.com/cplieger/manade/internal/hostapi"
 )
 
 // The job network every runner joins, on the bridge the rules match.
@@ -74,6 +75,39 @@ type seams struct {
 	Root    platform.Root
 	// Block6 is the host's MANADE_BLOCK6.
 	Block6 []netip.Prefix
+	// original is resolv.conf as the process's first boot read it: a boot
+	// tried again in the same namespace reads the host's own file there.
+	original struct {
+		err  error
+		v    egress.Resolvers
+		once sync.Once
+	}
+}
+
+// readOriginal answers the resolvers the container's resolv.conf named
+// before any boot of this process rewrote it.
+func (p *seams) readOriginal() (egress.Resolvers, error) {
+	p.original.once.Do(func() { p.original.v, p.original.err = netsetup.ReadOriginal(p.Root) })
+	return p.original.v, p.original.err
+}
+
+// stepError is a boot step after the facts check that failed on what the
+// section's field at, under hosts.<name>, decides: the section's failure,
+// where any other boot failure is the host's own.
+type stepError struct {
+	err error
+	at  string
+}
+
+func (e *stepError) Error() string { return e.err.Error() }
+func (e *stepError) Unwrap() error { return e.err }
+
+// step answers err as section field at's failure, nil for nil.
+func step(at string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return &stepError{at: at, err: err}
 }
 
 // hostNet is a host whose namespace, rules and daemon are up.
@@ -108,15 +142,28 @@ type hostNet struct {
 	NoBridgeNF bool
 }
 
-// bringUp brings host h up: the cgroup namespace checked, the storage driver,
-// rule backend and job subnets picked, resolv.conf written, h's posture up
-// (its rules loaded and compared), the host's resolver started, an internet:
-// false host's domain list read and GitHub's API name resolved, and only then
-// the daemon started and the job network created. A section h the host's
-// network refuses answers a *hostapi.SectionRefusedError before anything is
-// written. A failure before the daemon starts leaves no daemon and no
-// resolver; one after stops both.
+// bringUp brings host h up in bring's order. A section h the host's network
+// refuses answers a *hostapi.SectionRefusedError before it writes anything
+// in the namespace, and a later step that fails on what h decides answers a
+// *stepError. A failure before the daemon starts leaves no daemon and no
+// resolver; one after stops both. Either turns IPv6 forwarding off again
+// for an egress.ipv6 section.
 func bringUp(ctx context.Context, h *config.Host, p *seams, hooks guardHooks) (*hostNet, error) {
+	n, err := bring(ctx, h, p, hooks)
+	if _, refused := errors.AsType[*hostapi.SectionRefusedError](err); err != nil && !refused && h.Egress.IPv6 {
+		if ferr := netsetup.DisableIPv6Forwarding(p.Root); ferr != nil {
+			p.Log.Error("IPv6 forwarding was left on after a failed boot", "error", ferr)
+		}
+	}
+	return n, err
+}
+
+// bring checks the cgroup namespace, picks the storage driver, rule backend
+// and job subnets, writes resolv.conf, brings h's posture up (its rules
+// loaded and compared), starts the host's resolver, reads an internet:
+// false host's domain list, resolves GitHub's API name, and only then
+// starts the daemon and creates the job network.
+func bring(ctx context.Context, h *config.Host, p *seams, hooks guardHooks) (*hostNet, error) {
 	if err := platform.CheckPrivateNamespace(p.Root); err != nil {
 		return nil, err
 	}
@@ -144,7 +191,7 @@ func bringUp(ctx context.Context, h *config.Host, p *seams, hooks guardHooks) (*
 	pst := n.newPosture(h)
 	n.posture.Store(pst)
 	if err := pst.guard.bring(ctx); err != nil {
-		return nil, err
+		return nil, step("egress", err)
 	}
 	if err := n.serveDNS(ctx); err != nil {
 		return nil, err
@@ -162,7 +209,7 @@ func (n *hostNet) checkAndStart(ctx context.Context, p *posture) error {
 	}
 	if p.guard.want.BridgeNF6 {
 		if err := netsetup.SetBridgeNF6(n.rules.Root); err != nil {
-			return fmt.Errorf("egress.ipv6 needs %s at 1 in the host's namespace: %w", platform.BridgeNFCall6, err)
+			return step("egress.ipv6", fmt.Errorf("egress.ipv6 needs %s at 1 in the host's namespace: %w", platform.BridgeNFCall6, err))
 		}
 	}
 	return n.startDaemon(ctx, n.seams)
@@ -252,7 +299,7 @@ func bootRefusals(ctx context.Context, p *seams, h *config.Host) ([]config.Field
 func (n *hostNet) namespace(ctx context.Context, h *config.Host, f *netFacts, plan netPlan) error {
 	p := n.seams
 	var err error
-	if n.Original, err = netsetup.ReadOriginal(p.Root); err != nil {
+	if n.Original, err = p.readOriginal(); err != nil {
 		return err
 	}
 	err = netsetup.WriteResolvConf(p.Root, netsetup.ResolvConf())
@@ -264,12 +311,11 @@ func (n *hostNet) namespace(ctx context.Context, h *config.Host, f *netFacts, pl
 		return nil
 	}
 	n.Own64, n.Addr6 = plan.own64, f.addrs6[0]
-	err = netsetup.EnableIPv6Forwarding(p.Root)
-	if err != nil {
-		return err
+	if err = netsetup.EnableIPv6Forwarding(p.Root); err != nil {
+		return step("egress.ipv6", err)
 	}
 	n.Job6, err = netsetup.JobPrefix6(ctx, p.Root.Path(stateDir+"/job-ipv6"), f.routes.OnLink, p.Random)
-	return err
+	return step("egress.ipv6", err)
 }
 
 // staleDaemonFiles are what a daemon that did not stop cleanly leaves in
@@ -310,7 +356,7 @@ func (n *hostNet) startDaemon(ctx context.Context, p *seams) error {
 	err = c.EnsureNetwork(ctx, jobNetworkSpec(n.Subnet, n.Job6))
 	c.Close()
 	if err != nil {
-		return fail(fmt.Errorf("creating the job network: %w", err))
+		return fail(step("network.subnet", fmt.Errorf("creating the job network: %w", err)))
 	}
 	return nil
 }

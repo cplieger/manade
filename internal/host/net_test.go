@@ -88,6 +88,8 @@ type upFixture struct {
 	root      platform.Root
 	lookups   []string
 	events    []string
+	// mu serialises lookups, which a first delivery asks at once.
+	mu sync.Mutex
 }
 
 func newUpFixture(t *testing.T) *upFixture {
@@ -119,6 +121,8 @@ func (f *upFixture) platform() *seams {
 			return f.kernel.run(ctx, stdin, name, args...)
 		},
 		Lookup: func(_ context.Context, s netip.Addr, name string) ([]netip.Addr, error) {
+			f.mu.Lock()
+			defer f.mu.Unlock()
 			f.events = append(f.events, "lookup")
 			f.lookups = append(f.lookups, s.String()+" "+name)
 			return []netip.Addr{netip.MustParseAddr("140.82.112.6")}, f.lookupErr

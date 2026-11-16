@@ -8,7 +8,9 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"slices"
 	"strings"
+	"sync"
 
 	"github.com/cplieger/manade/internal/config"
 	"github.com/cplieger/manade/internal/egress"
@@ -96,4 +98,28 @@ func CheckName(ctx context.Context, h *config.Host, lookup Lookup) error {
 	}
 	return fmt.Errorf("netsetup: %s did not resolve through the host's resolver, which forwards to hosts.%s.dns (%s): %w; list resolvers the host can reach on port 53",
 		egress.GitHubAPI, h.Name, strings.Join(dns, ", "), err)
+}
+
+// CheckUpstreams resolves egress.GitHubAPI through each resolver h's dns
+// lists, asked directly and at once; it fails when none answers, naming
+// each lookup's error.
+func CheckUpstreams(ctx context.Context, h *config.Host, lookup Lookup) error {
+	errs := make([]error, len(h.DNS))
+	var wg sync.WaitGroup
+	for i, a := range h.DNS {
+		wg.Go(func() {
+			addrs, err := lookup(ctx, a, egress.GitHubAPI)
+			if err == nil && len(addrs) == 0 {
+				err = errors.New("no address")
+			}
+			if err != nil {
+				errs[i] = fmt.Errorf("%s: %w", a, err)
+			}
+		})
+	}
+	wg.Wait()
+	if slices.Contains(errs, nil) {
+		return nil
+	}
+	return fmt.Errorf("%s did not resolve through any resolver listed, asked on port 53: %w", egress.GitHubAPI, errors.Join(errs...))
 }
