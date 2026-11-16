@@ -5,7 +5,8 @@ FROM ghcr.io/actions/actions-runner:2.338.2@sha256:6d0b2d80d80f143f77dcb676e5092
 # runner bundles, its container hooks and Docker's static binaries outside
 # apt, with no licence text. Each but the container hooks (below) is fetched
 # at the version the binary reports, or copied from the runner's own tree, so
-# a base digest bump keeps them in step.
+# a base digest bump keeps them in step. The runner's --version can print
+# its HostContext trace lines too, so only the one version line is kept.
 FROM runner AS licenses
 USER root
 RUN install -d -o runner /out
@@ -24,7 +25,9 @@ RUN fetch() { \
     } \
     && docker_v=$(docker --version | sed -E 's/^Docker version ([^,]+),.*/\1/') \
     && dotnet_v=$(jq -er '.runtimeOptions.includedFrameworks[] | select(.name == "Microsoft.NETCore.App") | .version' /home/runner/bin/Runner.Listener.runtimeconfig.json) \
-    && fetch actions-runner "actions/runner/v$(env -u ACTIONS_RUNNER_PRINT_LOG_TO_STDOUT /home/runner/bin/Runner.Listener --version)" \
+    && runner_v=$(env -u ACTIONS_RUNNER_PRINT_LOG_TO_STDOUT /home/runner/bin/Runner.Listener --version | grep -Ex '[0-9]+(\.[0-9]+){2}') \
+    && [[ $runner_v =~ ^[0-9]+(\.[0-9]+){2}$ ]] \
+    && fetch actions-runner "actions/runner/v${runner_v}" \
     && fetch dotnet-runtime "dotnet/runtime/v${dotnet_v}" LICENSE.TXT THIRD-PARTY-NOTICES.TXT \
     && fetch runner-container-hooks "actions/runner-container-hooks/v${RUNNER_CONTAINER_HOOKS_VERSION}" \
     && fetch docker-cli "docker/cli/v${docker_v}" \
