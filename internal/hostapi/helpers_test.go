@@ -8,10 +8,14 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
 	"math/big"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -122,6 +126,63 @@ func (f *fakeBackend) PutSection(_ context.Context, s *Section) (SectionAnswer, 
 }
 
 func (f *fakeBackend) Restarting() <-chan struct{} { return f.restarting }
+
+// overH2C serves h over HTTP/2 with prior knowledge on one in-memory
+// connection, as the host channel serves the host API, and answers a client
+// of it. It runs inside a synctest bubble until the test ends.
+func overH2C(t *testing.T, h http.Handler) *http.Client {
+	t.Helper()
+	srvConn, cliConn := net.Pipe()
+	var h2c http.Protocols
+	h2c.SetUnencryptedHTTP2(true)
+	srv := &http.Server{Handler: h, Protocols: &h2c}
+	ln := &oneListener{conn: srvConn, closed: make(chan struct{})}
+	done := make(chan struct{})
+	go func() {
+		_ = srv.Serve(ln)
+		close(done)
+	}()
+	var dialed atomic.Bool
+	tr := &http.Transport{Protocols: &h2c, DialContext: func(context.Context, string, string) (net.Conn, error) {
+		if dialed.Swap(true) {
+			return nil, errors.New("the test's connection was dialed already")
+		}
+		return cliConn, nil
+	}}
+	t.Cleanup(func() {
+		tr.CloseIdleConnections()
+		_ = srv.Close()
+		<-done
+	})
+	return &http.Client{Transport: tr}
+}
+
+// oneListener accepts conn once, then waits for Close.
+type oneListener struct {
+	conn   net.Conn
+	closed chan struct{}
+	mu     sync.Mutex
+	once   sync.Once
+}
+
+func (l *oneListener) Accept() (net.Conn, error) {
+	l.mu.Lock()
+	c := l.conn
+	l.conn = nil
+	l.mu.Unlock()
+	if c != nil {
+		return c, nil
+	}
+	<-l.closed
+	return nil, net.ErrClosed
+}
+
+func (l *oneListener) Close() error {
+	l.once.Do(func() { close(l.closed) })
+	return nil
+}
+
+func (*oneListener) Addr() net.Addr { return &net.UnixAddr{Name: "memory", Net: "unix"} }
 
 func validRequest() RunnerRequest {
 	return RunnerRequest{Profile: "small", RunnerName: "manade-small-0123456789ab", Scope: "acme/app", RunnerID: 42, JITConfig: "eyJqaXQiOiJ0ZXN0In0="}

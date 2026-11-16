@@ -1122,13 +1122,20 @@ func (r *runnerSet) inspect(ctx context.Context, id string) (state string, found
 // failed fails rr for a create or start the daemon refused, removing any
 // container the call left; a refusal for space holds further starts and
 // runs the tidy pass at once. The record fails before the removal, so a
-// list in between shows the container as its orphan, never as exited.
+// list in between shows the container as its orphan, never as exited, and
+// names its cleanup already, so the failed line the events stream carries
+// says what a later list says.
 func (r *runnerSet) failed(ctx context.Context, rr *record, res docker.Result, call string) {
 	err := res.Err
 	var hold *spaceHold
 	if isNoSpace(err) {
 		err = fmt.Errorf("%w (%s): %w", errSpace, dataRoot, err)
 		hold = r.holdForSpace()
+	}
+	if res.ID != "" {
+		r.mu.Lock()
+		rr.rec.RemovedBy = removedByFailed
+		r.mu.Unlock()
 	}
 	r.setState(rr, hostapi.RecordFailed, "the "+call+" failed: "+err.Error())
 	if res.ID != "" {
@@ -1145,9 +1152,6 @@ func (r *runnerSet) failed(ctx context.Context, rr *record, res docker.Result, c
 // so a DELETE cannot cut it before a space hold's baseline is read.
 func (r *runnerSet) removeFailed(ctx context.Context, rr *record, id string) {
 	name := rr.rec.Request.RunnerName
-	r.mu.Lock()
-	rr.rec.RemovedBy = removedByFailed
-	r.mu.Unlock()
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), docker.CallTimeout)
 	defer cancel()
 	if err := r.daemon.RemoveOwned(ctx, id); err != nil {

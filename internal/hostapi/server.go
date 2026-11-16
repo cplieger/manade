@@ -378,7 +378,6 @@ func (s *Server) runnerName(w http.ResponseWriter, r *http.Request) (string, boo
 func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), eventsBound)
 	defer cancel()
-	rc := http.NewResponseController(w)
 	changes := s.backend.Subscribe(ctx)
 	w.Header().Set("Content-Type", "application/x-ndjson")
 	w.WriteHeader(http.StatusOK)
@@ -386,10 +385,7 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	tick := time.NewTicker(s.heartbeat)
 	defer tick.Stop()
 	restarting := s.backend.Restarting()
-	write := func(ev *Event) bool {
-		s.writeDeadline(w, quickTimeout)
-		return enc.Encode(ev) == nil && rc.Flush() == nil
-	}
+	write := func(ev *Event) bool { return s.writeLine(w, enc, ev) }
 	if !write(&Event{Type: EventHeartbeat, Time: time.Now(), InstanceID: s.instanceID}) {
 		return
 	}
@@ -419,6 +415,22 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+}
+
+// writeLine writes and flushes one events line within quickTimeout.
+func (s *Server) writeLine(w http.ResponseWriter, enc *json.Encoder, ev *Event) bool {
+	s.writeDeadline(w, quickTimeout)
+	rc := http.NewResponseController(w)
+	if enc.Encode(ev) != nil || rc.Flush() != nil {
+		return false
+	}
+	// Go's HTTP/2 server resets a stream whose write deadline passes even
+	// while the handler waits between writes, so the bound ends once the
+	// line is written.
+	if err := rc.SetWriteDeadline(time.Time{}); err != nil && !errors.Is(err, http.ErrNotSupported) {
+		s.log.Warn("The host API could not lift an events line's write bound", "error", err)
+	}
+	return true
 }
 
 func (s *Server) probe(w http.ResponseWriter, r *http.Request) {

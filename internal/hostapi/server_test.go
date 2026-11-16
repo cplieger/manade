@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -347,6 +348,42 @@ func TestEvents(t *testing.T) {
 			t.Errorf("after the backend closed: %s", sc.Bytes())
 		}
 	}
+}
+
+// An events stream served over HTTP/2, as the host channel serves it, stays
+// open however long its lines are apart.
+func TestEventsStayOpenBetweenLinesOverHTTP2(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		b := &fakeBackend{changes: make(chan Runner)}
+		s := NewServer(b, "inst-1", nil)
+		s.heartbeat = time.Hour
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://host/v1/events", http.NoBody)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp, err := overH2C(t, s.Handler()).Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		sc := bufio.NewScanner(resp.Body)
+		if !sc.Scan() {
+			t.Fatalf("no first line: %v", sc.Err())
+		}
+		time.Sleep(3 * quickTimeout)
+		select {
+		case b.changes <- Runner{Name: "r1", State: StateRunning}:
+		case <-time.After(time.Minute):
+			t.Fatal("the stream's handler took no change after a silence")
+		}
+		if !sc.Scan() {
+			t.Fatalf("the stream ended after %s of silence: %v", 3*quickTimeout, sc.Err())
+		}
+		var ev Event
+		if err := json.Unmarshal(sc.Bytes(), &ev); err != nil || ev.Runner == nil || ev.Runner.Name != "r1" {
+			t.Errorf("line after the silence = %s, %v; want r1's change", sc.Bytes(), err)
+		}
+	})
 }
 
 func TestProbe(t *testing.T) {
