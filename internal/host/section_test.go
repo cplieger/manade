@@ -48,8 +48,17 @@ func sectionOf(revision uint64, host string, profiles ...string) *hostapi.Sectio
 // the run was cancelled.
 func upSupervisor(t *testing.T, sec *hostapi.Section) (s *supervisor, f *upFixture, run context.Context) {
 	t.Helper()
+	f = newUpFixture(t)
+	s, run = upOn(t, sec, f.platform())
+	return s, f, run
+}
+
+// upOn is upSupervisor on platform p.
+func upOn(t *testing.T, sec *hostapi.Section, p *seams) (s *supervisor, run context.Context) {
+	t.Helper()
 	log := slog.New(slog.DiscardHandler)
-	s = newSupervisor(lanSelf(), &Options{Log: log}, filepath.Join(t.TempDir(), "section.json"))
+	dir := t.TempDir()
+	s = newSupervisor(lanSelf(), &Options{Log: log}, filepath.Join(dir, "section.json"))
 	first, err := check(s.self, sec)
 	if err != nil {
 		t.Fatal(err)
@@ -57,13 +66,15 @@ func upSupervisor(t *testing.T, sec *hostapi.Section) (s *supervisor, f *upFixtu
 	if err := writeSection(t.Context(), s.sectionPath, sec); err != nil {
 		t.Fatal(err)
 	}
-	f = newUpFixture(t)
-	if s.net, err = bringUp(t.Context(), first.host, f.platform(), guardHooks{}); err != nil {
+	if s.oom, err = platform.LoadOOMTotal(t.Context(), filepath.Join(dir, "oom-kills.json")); err != nil {
+		t.Fatal(err)
+	}
+	if s.net, err = bringUp(t.Context(), first.host, p, guardHooks{}); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = s.net.stop() })
 	s.running = first
-	s.prober = probe.NewRunner(&probe.Config{Log: log})
+	s.prober = probe.NewRunner(&probe.Config{Log: log, Host: s.probeHost})
 	sv := s.newServed(first.cfg, first.host)
 	s.served.Store(sv)
 	s.images = images.New(&images.Config{Host: first.host, Log: log, Profiles: sv.Profiles})
@@ -71,7 +82,7 @@ func upSupervisor(t *testing.T, sec *hostapi.Section) (s *supervisor, f *upFixtu
 	run, s.cancelRun = context.WithCancelCause(t.Context())
 	s.phase.Store(phaseUp)
 	s.publish()
-	return s, f, run
+	return s, run
 }
 
 // changing runs s's posture hold and its change loop under run until the

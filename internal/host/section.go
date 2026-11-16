@@ -177,7 +177,7 @@ func (n *hostNet) hostRefusals(h *config.Host, r row) ([]config.FieldError, erro
 // deliver checks a section the control plane delivered and, once the host
 // accepts it, saves it before it answers how it applies. Before the host's
 // first section it hands the section to the waiting boot; during that boot
-// it answers hostapi.ErrStarting.
+// it answers hostapi.ErrStarting, and during a rebuild hostapi.ErrApplying.
 func (s *supervisor) deliver(ctx context.Context, sec *hostapi.Section) (hostapi.SectionAnswer, error) {
 	next, err := check(s.self, sec)
 	s.sectionMu.Lock()
@@ -202,6 +202,9 @@ func (s *supervisor) deliver(ctx context.Context, sec *hostapi.Section) (hostapi
 		return s.answer(), nil
 	case phaseBooting:
 		return hostapi.SectionAnswer{}, hostapi.ErrStarting
+	}
+	if s.rebuilding {
+		return hostapi.SectionAnswer{}, hostapi.ErrApplying
 	}
 	return s.deliverUp(ctx, next)
 }
@@ -348,7 +351,14 @@ func (s *supervisor) applyPending(ctx context.Context) error {
 		close(s.restarting)
 		return ErrRestart
 	}
+	// The rebuild may wait out a running probe and GitHub's domain list, so
+	// it runs unlocked; deliver refuses every section meanwhile, which
+	// leaves p the pending section when it ends.
+	s.rebuilding = true
+	s.sectionMu.Unlock()
 	failed, fatal := s.rebuild(ctx, p)
+	s.sectionMu.Lock()
+	s.rebuilding = false
 	switch {
 	case fatal != nil:
 		return fatal

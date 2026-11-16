@@ -153,7 +153,7 @@ func (s *supervisor) status(ctx context.Context) hostapi.Status {
 	h := s.host()
 	n := s.net
 	st := hostapi.Status{
-		Version: s.opts.Version, PolicyHash: egress.PolicyHash(n.section()), Section: s.sectionStatus(),
+		Version: s.opts.Version, PolicyHash: egress.PolicyHash(h), Section: s.sectionStatus(),
 		Daemon:        hostapi.DaemonStatus{Version: s.info.ServerVersion, StorageDriver: s.info.Driver},
 		Rules:         hostapi.RulesStatus{Backend: backendName(n.Kernel.Backend), Restored: s.restored.Load(), RawOff: n.Kernel.RawOff},
 		DNS:           hostapi.DNSStatus{Configured: h.DNS, Original: n.Original.Addrs, OriginalUnknown: n.Original.Unknown},

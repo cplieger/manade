@@ -109,6 +109,16 @@ func TestPutSection(t *testing.T) {
 			t.Errorf("err = %v", err)
 		}
 	})
+	t.Run("applyingTheSectionBefore", func(t *testing.T) {
+		b := &fakeBackend{err: ErrApplying}
+		r, body := do(t, http.MethodPut, serve(t, b).URL+"/v1/section", `{"settings": {}, "revision": 2}`)
+		if e := errorOf(t, body); r.StatusCode != http.StatusServiceUnavailable || e.Code != codeApplying {
+			t.Errorf("status %d, body %s", r.StatusCode, body)
+		}
+		if _, err := linkClient(t, b).PutSection(t.Context(), &Section{Settings: []byte(`{}`)}); !errors.Is(err, ErrApplying) {
+			t.Errorf("err = %v", err)
+		}
+	})
 	for name, body := range map[string]string{
 		"settingsNotAnObject": `{"settings": [], "revision": 1}`,
 		"noSettings":          `{"revision": 1}`,

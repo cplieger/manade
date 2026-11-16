@@ -80,9 +80,6 @@ func (n *hostNet) ready(ctx context.Context, p *posture) error {
 	return netsetup.CheckName(ctx, p.host.Load(), n.seams.Lookup)
 }
 
-// section answers the section the running posture applies.
-func (n *hostNet) section() *config.Host { return n.posture.Load().host.Load() }
-
 // rulesGuard answers the running posture's guard.
 func (n *hostNet) rulesGuard() *guard { return n.posture.Load().guard }
 

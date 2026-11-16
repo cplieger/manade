@@ -308,6 +308,10 @@ func readAt(t *testing.T, r platform.Root, p string) string {
 
 func pfx(s string) netip.Prefix { return netip.MustParsePrefix(s) }
 
+// section answers the section n's posture holds, which during a rebuild is
+// the one being built.
+func (n *hostNet) section() *config.Host { return n.posture.Load().host.Load() }
+
 // section is an internet host named "lan" with the default resolvers and
 // the given allow entries.
 func section(allow ...string) *config.Host {

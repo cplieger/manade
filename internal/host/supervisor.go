@@ -98,11 +98,13 @@ type supervisor struct {
 	sectionPath string
 	plat        jobspec.Platform
 	restored    atomic.Uint64
-	// sectionMu serialises deliveries and the applies they leave pending.
-	sectionMu sync.Mutex
-	phase     atomic.Int32
-	serving   atomic.Bool
-	apiPort   uint16
+	// sectionMu serialises deliveries and the applies they leave pending;
+	// rebuilding, under it, marks a rebuild running without it.
+	sectionMu  sync.Mutex
+	phase      atomic.Int32
+	serving    atomic.Bool
+	rebuilding bool
+	apiPort    uint16
 }
 
 func newSupervisor(self *config.Self, opts *Options, path string) *supervisor {

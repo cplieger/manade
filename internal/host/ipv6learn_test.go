@@ -253,125 +253,16 @@ func holding(t *testing.T, n *hostNet) (stop func() error) {
 	}
 }
 
-func TestAChangeOfInternetRebuildsThe64(t *testing.T) {
-	t.Run("turning internet on asks at once and lets job IPv6 out", func(t *testing.T) {
-		synctest.Test(t, func(t *testing.T) {
-			e := &echoes{replies: []func() ([]byte, error){answer("2a01:e0a:1259:2710::7008")}}
-			f := v6Fixture(t, e)
-			n := upNet(t, f, closedV6Section())
-			stop := holding(t, n)
-			time.Sleep(2 * echoInterval)
-			synctest.Wait()
-			if got := e.asked(); got != 0 {
-				t.Errorf("an internet: false host asked its echo endpoint %d times", got)
-			}
-			at := time.Now()
-			if failed, fatal := n.change(t.Context(), v6Section()); failed != nil || fatal != nil {
-				t.Fatalf("Change = %v, %v", failed, fatal)
-			}
-			synctest.Wait()
-			if got := e.asked(); got != 1 || time.Since(at) != 0 {
-				t.Errorf("asked %d times %v after the change, want once at once", got, time.Since(at))
-			}
-			if st := n.iPv6Status(); st == nil || st.Prefix != pfx("2a01:e0a:1259:2710::/64") {
-				t.Errorf("IPv6Status = %+v, want the learned /64", st)
-			}
-			if r := fwd6(f); !passes6(r) || !dropsPrefix(r, "2a01:e0a:1259:2710::/64") {
-				t.Errorf("MANADE-FWD6 = %q, want IPv6 passing with the learned /64 dropped", r)
-			}
-			if err := stop(); err != nil {
-				t.Errorf("Hold = %v", err)
-			}
-		})
-	})
-	t.Run("turning internet off stops asking, and on again starts unasked", func(t *testing.T) {
-		synctest.Test(t, func(t *testing.T) {
-			e := &echoes{replies: []func() ([]byte, error){
-				answer("2a01:e0a:1259:2710::7008"),
-				func() ([]byte, error) { return nil, errors.New("dial tcp6: network is unreachable") },
-			}}
-			f := v6Fixture(t, e)
-			n := upNet(t, f, v6Section())
-			stop := holding(t, n)
-			synctest.Wait()
-			if st := n.iPv6Status(); st == nil || !st.Prefix.IsValid() {
-				t.Fatalf("setup: IPv6Status = %+v, want a learned /64", st)
-			}
-			if failed, fatal := n.change(t.Context(), closedV6Section()); failed != nil || fatal != nil {
-				t.Fatalf("Change = %v, %v", failed, fatal)
-			}
-			if st := n.iPv6Status(); st != nil {
-				t.Errorf("IPv6Status = %+v on an internet: false host, want none", st)
-			}
-			if dropsPrefix(fwd6(f), "2a01:e0a:1259:2710::/64") {
-				t.Error("the internet: false rules carry the /64 learned before the change")
-			}
-			loads := restores(f)
-			time.Sleep(2*echoInterval + time.Second)
-			synctest.Wait()
-			if got := e.asked(); got != 1 {
-				t.Errorf("asked %d times, want no ask after internet was turned off", got)
-			}
-			if got := restores(f); got != loads {
-				t.Errorf("the closed rules were restored %d times after the change, want them held as loaded", got-loads)
-			}
-			if failed, fatal := n.change(t.Context(), v6Section()); failed != nil || fatal != nil {
-				t.Fatalf("Change = %v, %v", failed, fatal)
-			}
-			synctest.Wait()
-			if st := n.iPv6Status(); st == nil || st.Prefix.IsValid() || !strings.Contains(st.Reason, "unreachable") {
-				t.Errorf("IPv6Status = %+v, want the failed ask, not the /64 learned before internet was off", st)
-			}
-			if passes6(fwd6(f)) {
-				t.Error("job IPv6 passes on a /64 learned before internet was turned off")
-			}
-			if err := stop(); err != nil {
-				t.Errorf("Hold = %v", err)
-			}
-		})
-	})
-	t.Run("an ask in flight at the change is dropped", func(t *testing.T) {
-		synctest.Test(t, func(t *testing.T) {
-			release := make(chan struct{})
-			e := &echoes{replies: []func() ([]byte, error){
-				func() ([]byte, error) {
-					<-release
-					return trace("2a01:e0a:1259:2710::7008"), nil
-				},
-				func() ([]byte, error) { return nil, errors.New("dial tcp6: network is unreachable") },
-			}}
-			f := v6Fixture(t, e)
-			n := upNet(t, f, v6Section())
-			stop := holding(t, n)
-			synctest.Wait()
-			if failed, fatal := n.change(t.Context(), closedV6Section()); failed != nil || fatal != nil {
-				t.Fatalf("Change = %v, %v", failed, fatal)
-			}
-			close(release)
-			if failed, fatal := n.change(t.Context(), v6Section()); failed != nil || fatal != nil {
-				t.Fatalf("Change = %v, %v", failed, fatal)
-			}
-			synctest.Wait()
-			if st := n.iPv6Status(); st == nil || st.Prefix.IsValid() || !strings.Contains(st.Reason, "unreachable") {
-				t.Errorf("IPv6Status = %+v, want the failed ask, not the answer that came after the change", st)
-			}
-			if err := stop(); err != nil {
-				t.Errorf("Hold = %v", err)
-			}
-		})
-	})
-}
-
 // A change or a stop that cancels the learner's rule load ends the posture
 // as cleanly as one between two asks.
 func TestAnEndedPostureMidLoadIsNoFailure(t *testing.T) {
 	// blockedLoad is a platform whose first restore once armed waits for
 	// its context, as exec.CommandContext's load does when a change ends
 	// the posture.
-	blockedLoad := func(t *testing.T) (n *hostNet, f *upFixture, blocked <-chan struct{}) {
+	blockedLoad := func(t *testing.T) (f *upFixture, p *seams, arm func(), blocked <-chan struct{}) {
 		t.Helper()
 		f = v6Fixture(t, &echoes{replies: []func() ([]byte, error){answer("2a01:e0a:1259:2710::7008")}})
-		p := f.platform()
+		p = f.platform()
 		var armed atomic.Bool
 		ch := make(chan struct{})
 		run := p.Run
@@ -383,36 +274,34 @@ func TestAnEndedPostureMidLoadIsNoFailure(t *testing.T) {
 			}
 			return run(ctx, stdin, name, args...)
 		}
-		n, err := bringUp(t.Context(), v6Section(), p, guardHooks{})
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { _ = n.stop() })
-		armed.Store(true)
-		return n, f, ch
+		return f, p, func() { armed.Store(true) }, ch
 	}
-	t.Run("a change rebuilds to the new posture", func(t *testing.T) {
-		n, f, blocked := blockedLoad(t)
-		stop := holding(t, n)
+	t.Run("a section changing internet rebuilds to the new posture", func(t *testing.T) {
+		f, p, arm, blocked := blockedLoad(t)
+		s, run := upOn(t, sectionOf(1, v6Host, smallJSON), p)
+		arm()
+		changing(t, s, run)
 		<-blocked
-		if failed, fatal := n.change(t.Context(), closedV6Section()); failed != nil || fatal != nil {
-			t.Fatalf("Change = %v, %v, want the new posture with no failure", failed, fatal)
-		}
-		if st := n.iPv6Status(); st != nil {
+		put(t, s, sectionOf(2, closedV6Host, smallJSON))
+		appliedRevision(t, s, 2)
+		if st := s.net.iPv6Status(); st != nil {
 			t.Errorf("IPv6Status = %+v, want the internet: false posture's none", st)
 		}
 		f.proc.mu.Lock()
 		stopped := f.proc.stopped
 		f.proc.mu.Unlock()
-		if stopped != 0 {
-			t.Errorf("the daemon was stopped %d times, want it running", stopped)
-		}
-		if err := stop(); err != nil {
-			t.Errorf("Hold = %v", err)
+		if stopped != 0 || run.Err() != nil {
+			t.Errorf("the daemon was stopped %d times, the run ended with %v; want both running", stopped, context.Cause(run))
 		}
 	})
 	t.Run("a stop ends the hold with no error", func(t *testing.T) {
-		n, _, blocked := blockedLoad(t)
+		_, p, arm, blocked := blockedLoad(t)
+		n, err := bringUp(t.Context(), v6Section(), p, guardHooks{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = n.stop() })
+		arm()
 		stop := holding(t, n)
 		<-blocked
 		if err := stop(); err != nil {

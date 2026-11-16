@@ -259,6 +259,8 @@ func answerError(op string, resp *http.Response) error {
 		return fmt.Errorf("%w: %s", ErrWaitingForSection, msg)
 	case codeStarting:
 		return fmt.Errorf("%w: %s", ErrStarting, msg)
+	case codeApplying:
+		return fmt.Errorf("%w: %s", ErrApplying, msg)
 	case codeSectionRefused:
 		out := &SectionRefusedError{Errors: make([]FieldError, len(body.Errors))}
 		for i, fe := range body.Errors {

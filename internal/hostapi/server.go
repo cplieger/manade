@@ -70,6 +70,10 @@ var (
 	// ErrStarting is a request the host cannot serve while it brings its
 	// first section up.
 	ErrStarting = errors.New("the host is starting on its section")
+	// ErrApplying is a section delivered while the host rebuilds its
+	// egress for the one before; it changes nothing, so the control plane
+	// delivers it again.
+	ErrApplying = errors.New("the host is applying a section")
 )
 
 // SectionRefusedError is a section the host refused, each refusal at its
@@ -112,6 +116,7 @@ const (
 	codeSectionRefused = "section_refused"
 	codeWaiting        = "waiting_for_section"
 	codeStarting       = "starting"
+	codeApplying       = "applying"
 	codeInternal       = "internal"
 )
 
@@ -461,6 +466,8 @@ func (s *Server) writeBackendError(w http.ResponseWriter, err error) {
 		status, body.Code = http.StatusServiceUnavailable, codeWaiting
 	case errors.Is(err, ErrStarting):
 		status, body.Code = http.StatusServiceUnavailable, codeStarting
+	case errors.Is(err, ErrApplying):
+		status, body.Code = http.StatusServiceUnavailable, codeApplying
 	case isNotReady:
 		status, body.Code, body.Profile, body.Reason = http.StatusConflict, codeNotReady, nr.Profile, nr.Reason
 		body.Detail, _ = textsafe.SanitizeSingleLineCapped(nr.Detail, errorTextLimit, "…")
