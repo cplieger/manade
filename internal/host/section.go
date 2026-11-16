@@ -1,10 +1,12 @@
 package host
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net/netip"
 	"path/filepath"
@@ -108,7 +110,9 @@ func refusedError(fe []config.FieldError) *hostapi.SectionRefusedError {
 // which name fields of a section.
 const stateLimit = 3 * hostapi.SectionLimit
 
-// readState answers the host's state at path, false when there is none.
+// readState answers the host's state at path, false when there is none. A
+// file holding anything but one hostState is an error, so a file of another
+// shape is never read as an empty state.
 func readState(ctx context.Context, path string) (hostState, bool, error) {
 	var st hostState
 	b, err := filesafe.ReadBounded(ctx, path, stateLimit)
@@ -118,8 +122,13 @@ func readState(ctx context.Context, path string) (hostState, bool, error) {
 	if err != nil {
 		return st, false, err
 	}
-	if err := json.Unmarshal(b, &st); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&st); err != nil {
 		return hostState{}, false, fmt.Errorf("%s: %w", path, err)
+	}
+	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
+		return hostState{}, false, fmt.Errorf("%s: more than one state", path)
 	}
 	return st, true, nil
 }
@@ -128,16 +137,23 @@ func readState(ctx context.Context, path string) (hostState, bool, error) {
 // failed, so a crash may lose it.
 var errNotDurable = errors.New("the state's directory was not synced")
 
+// writeFile is filesafe.WriteFile, a var so a test can fail a save.
+var writeFile = filesafe.WriteFile
+
 // writeState replaces the state at path whole: a temporary file, fsync,
 // rename and the directory's fsync, so a crash leaves the old state or the
-// new one; errNotDurable when only the last step failed. A var so a test
-// can fail it.
-var writeState = func(ctx context.Context, path string, st *hostState) error {
-	b, err := json.Marshal(st)
-	if err != nil {
+// new one; errNotDurable when only the last step failed. A state readState
+// would refuse as too large is refused before anything is written.
+func writeState(ctx context.Context, path string, st *hostState) error {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	// HTML escaping turns each <, > and & of a section's settings into six
+	// bytes, so two sections within the delivery cap could pass stateLimit.
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(st); err != nil {
 		return err
 	}
-	res, err := filesafe.WriteFile(ctx, path, b, filesafe.WithMode(0o600), filesafe.WithMkdirAll(true))
+	res, err := writeFile(ctx, path, buf.Bytes(), filesafe.WithMode(0o600), filesafe.WithMkdirAll(true), filesafe.WithMaxBytes(stateLimit))
 	if err != nil {
 		return fmt.Errorf("writing %s: %w", filepath.Base(path), err)
 	}
@@ -183,7 +199,8 @@ func (s *supervisor) commit(ctx context.Context, st hostState) error {
 var saveRetry = time.Minute
 
 // keepSaving saves the host's state again while its last save failed,
-// until ctx ends.
+// until ctx ends. A save that succeeds with a restart owed ends the run
+// with ErrRestart.
 func (s *supervisor) keepSaving(ctx context.Context) {
 	t := time.NewTicker(saveRetry)
 	defer t.Stop()
@@ -198,6 +215,10 @@ func (s *supervisor) keepSaving(ctx context.Context) {
 			_ = s.save(ctx)
 			if !s.unsaved {
 				s.log.Info("The host's state was saved")
+				if s.restartOwed {
+					s.log.Warn("The host saved the state its failed boot left, so it restarts into a fresh namespace")
+					s.cancelRun(ErrRestart)
+				}
 			}
 		}
 		s.sectionMu.Unlock()
@@ -293,7 +314,8 @@ func (s *supervisor) deliver(ctx context.Context, sec *hostapi.Section) (hostapi
 
 // deliverFirst saves next, the host's first section, marked not booted,
 // and hands it to the waiting boot once the host accepts it as
-// firstRefusals judges it; sectionMu is held.
+// firstRefusals judges it. A restart a boot refusal owed is dropped, since
+// next's boot decides again. sectionMu is held.
 func (s *supervisor) deliverFirst(ctx context.Context, next *accepted) (hostapi.SectionAnswer, error) {
 	refusals, err := s.firstRefusals(ctx, next.host)
 	if err != nil {
@@ -307,7 +329,7 @@ func (s *supervisor) deliverFirst(ctx context.Context, next *accepted) (hostapi.
 	if err := s.commit(ctx, hostState{Section: &next.raw, Unbooted: true}); err != nil {
 		return hostapi.SectionAnswer{}, err
 	}
-	s.running, s.refused = next, nil
+	s.running, s.refused, s.restartOwed = next, nil, false
 	s.phase.Store(phaseBooting)
 	s.publish()
 	s.arrived <- next

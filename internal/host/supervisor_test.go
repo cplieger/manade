@@ -156,15 +156,15 @@ func TestARunSavesItsStateAgain(t *testing.T) {
 	}
 	var failing atomic.Bool
 	failing.Store(true)
-	inner, retry := writeState, saveRetry
-	writeState = func(ctx context.Context, path string, st *hostState) error {
+	inner, retry := writeFile, saveRetry
+	writeFile = func(ctx context.Context, path string, b []byte, opts ...filesafe.WriteOption) (filesafe.Result, error) {
 		if failing.Load() {
-			return &filesafe.WriteError{Phase: filesafe.PhaseRename, Err: syscall.EROFS}
+			return filesafe.Result{}, &filesafe.WriteError{Phase: filesafe.PhaseRename, Err: syscall.EROFS}
 		}
-		return inner(ctx, path, st)
+		return inner(ctx, path, b, opts...)
 	}
 	saveRetry = 10 * time.Millisecond
-	t.Cleanup(func() { writeState, saveRetry = inner, retry })
+	t.Cleanup(func() { writeFile, saveRetry = inner, retry })
 	ctx, cancel := context.WithCancel(t.Context())
 	ran := make(chan error, 1)
 	go func() {
@@ -176,9 +176,40 @@ func TestARunSavesItsStateAgain(t *testing.T) {
 		st, _, err := readState(t.Context(), s.sectionPath)
 		return err == nil && st.Refused == nil
 	})
+	select {
+	case err := <-ran:
+		t.Fatalf("runLinked = %v once its state was saved, want it waiting", err)
+	case <-time.After(200 * time.Millisecond):
+	}
 	cancel()
 	if err := <-ran; err != nil {
 		t.Errorf("runLinked = %v", err)
+	}
+}
+
+// A run waiting with a boot refusal's restart owed, its state unsaved,
+// ends with ErrRestart once a retry saves that state.
+func TestARunTakesTheRestartItsStateOwed(t *testing.T) {
+	s := waitingAs(t, &config.Self{Name: "lan"})
+	refused := &hostapi.SectionRefusal{Hash: "a1", Errors: []hostapi.FieldError{{Path: "hosts.lan.dns", Message: "no answer"}}}
+	s.state, s.unsaved, s.restartOwed = hostState{Refused: refused}, true, true
+	retry := saveRetry
+	saveRetry = 10 * time.Millisecond
+	t.Cleanup(func() { saveRetry = retry })
+	ran := make(chan error, 1)
+	go func() {
+		ran <- s.runLinked(t.Context(), func(context.Context) (net.Conn, error) { return nil, errors.New("no control plane") })
+	}()
+	select {
+	case err := <-ran:
+		if !errors.Is(err, ErrRestart) {
+			t.Errorf("runLinked = %v, want ErrRestart", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the run still waits after its state was saved")
+	}
+	if st, _, err := readState(t.Context(), s.sectionPath); err != nil || st.Refused == nil {
+		t.Errorf("saved %+v, %v; want the refusal", st, err)
 	}
 }
 

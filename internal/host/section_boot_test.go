@@ -3,7 +3,6 @@ package host
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net"
 	"net/netip"
@@ -117,11 +116,11 @@ func bootAsync(t *testing.T, s *supervisor) <-chan booted {
 // the file as it was, until the test ends or it calls the restore answered.
 func failSaves(t *testing.T, phase filesafe.WritePhase) (restore func()) {
 	t.Helper()
-	inner := writeState
-	writeState = func(context.Context, string, *hostState) error {
-		return fmt.Errorf("writing section.json: %w", &filesafe.WriteError{Phase: phase, Err: syscall.ENOSPC})
+	inner := writeFile
+	writeFile = func(context.Context, string, []byte, ...filesafe.WriteOption) (filesafe.Result, error) {
+		return filesafe.Result{}, &filesafe.WriteError{Phase: phase, Err: syscall.ENOSPC}
 	}
-	restore = func() { writeState = inner }
+	restore = func() { writeFile = inner }
 	t.Cleanup(restore)
 	return restore
 }

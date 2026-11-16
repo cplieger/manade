@@ -99,7 +99,7 @@ type supervisor struct {
 	arrived    chan *accepted
 	changed    chan struct{}
 	restarting chan struct{}
-	// cancelRun ends the run with why, set before the host is up.
+	// cancelRun ends the run with why, set before anything reads it.
 	cancelRun context.CancelCauseFunc
 	// ping asks the daemon for the health verdict: dk.Ping.
 	ping        func(ctx context.Context) error
@@ -118,6 +118,9 @@ type supervisor struct {
 	serving    atomic.Bool
 	rebuilding bool
 	unsaved    bool
+	// restartOwed, under sectionMu, is a boot refusal's restart held until
+	// its state is saved.
+	restartOwed bool
 }
 
 // newSupervisor is a run of host self on p, its section saved at path.
@@ -149,6 +152,7 @@ func Run(ctx context.Context, self *config.Self, opts *Options) error {
 func (s *supervisor) runLinked(ctx context.Context, dial func(context.Context) (net.Conn, error)) error {
 	rctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
+	s.cancelRun = cancel
 	s.bootSaved(ctx)
 	up := hostlink.NewUplink(&hostlink.UplinkOptions{
 		Dial: dial, Hello: s.hello, Handler: hostapi.NewServer(&backend{s: s}, s.instance, s.log).Handler(), Log: s.log,
@@ -219,12 +223,11 @@ func ended(ctx, rctx context.Context) error {
 
 // boot brings the host's network and daemon up on the section it boots on,
 // nil when ctx ends first. A section the host's network refuses there, or a
-// section not yet booted on this host that fails a later step of the boot
-// (stepError), is refused as a delivery is: the host boots on the section
-// it ran before or, with none, waits for another. A namespace a failed boot
-// wrote that the next section cannot run in, or that a waiting host would
-// judge deliveries in, ends the run with ErrRestart once the refusal is
-// saved for the next start. Any other failure ends the run with its cause.
+// section not yet booted here that fails a later step (stepError), is
+// refused as a delivery is: the host boots on the section it ran before or
+// waits for another. A refusal whose namespace needs a fresh start ends the
+// run with ErrRestart once its state is saved (bootRefused, keepSaving).
+// Any other failure ends the run with its cause.
 func (s *supervisor) boot(ctx context.Context) (*hostNet, error) {
 	hooks := guardHooks{Restored: s.onRestored, Checked: s.onChecked}
 	off, err := netsetup.IPv6Off(s.seams.Root)
@@ -293,7 +296,7 @@ type booting struct {
 // ErrRestart when the namespace b left cannot boot the fallback, or a
 // waiting host would read it, as a fresh one would; a restart whose state
 // was not saved would boot the refused section again, so the host then
-// waits here with the refusal instead.
+// waits here with the refusal and owes the restart until a save succeeds.
 func (s *supervisor) bootRefused(ctx context.Context, b *booting, next *accepted, errs []hostapi.FieldError) error {
 	ctx = context.WithoutCancel(ctx)
 	s.sectionMu.Lock()
@@ -320,7 +323,8 @@ func (s *supervisor) bootRefused(ctx context.Context, b *booting, next *accepted
 		s.log.Warn("The failed boot left the host's namespace unlike a fresh one, so the host restarts", "hash", next.hash)
 		return ErrRestart
 	case restart:
-		s.log.Error("The failed boot left the host's namespace unlike a fresh one, but the host stays, since a restart would boot the refused section again", "hash", next.hash)
+		s.restartOwed = true
+		s.log.Error("The failed boot left the host's namespace unlike a fresh one, but the host waits to restart until its state is saved, since a restart would boot the refused section again", "hash", next.hash)
 	case fb == nil:
 		s.log.Warn("The host refused the section it was booting on, so it waits for the control plane's", "hash", next.hash)
 	default:
@@ -382,7 +386,7 @@ func (s *supervisor) bootSaved(ctx context.Context) {
 		s.publish()
 	}
 	next := s.savedSection(st.Section)
-	if next == nil || s.phase.Load() != phaseWaiting {
+	if next == nil {
 		return
 	}
 	s.running = next
@@ -532,7 +536,6 @@ func (s *supervisor) hold(rctx context.Context, cancel context.CancelCauseFunc) 
 	wg.Go(func() { s.runners.run(rctx) })
 	wg.Go(func() { s.changes(rctx, cancel) })
 	s.sectionMu.Lock()
-	s.cancelRun = cancel
 	s.phase.Store(phaseUp)
 	s.sectionMu.Unlock()
 	s.serving.Store(true)

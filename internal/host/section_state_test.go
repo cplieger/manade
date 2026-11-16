@@ -3,9 +3,14 @@ package host
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"log/slog"
 	"os"
+	"path/filepath"
 	"slices"
+	"strings"
+	"syscall"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -311,25 +316,27 @@ func TestACarriedRefusalWhoseClearFails(t *testing.T) {
 // one is durable.
 func TestASaveThatIsNotDurableIsTriedAgain(t *testing.T) {
 	s, _, _ := upSupervisor(t, sectionOf(1, lanHost, smallJSON))
-	inner := writeState
-	writeState = func(ctx context.Context, path string, st *hostState) error {
-		if err := inner(ctx, path, st); err != nil {
-			return err
-		}
-		return errNotDurable
+	inner := writeFile
+	writeFile = func(ctx context.Context, path string, b []byte, opts ...filesafe.WriteOption) (filesafe.Result, error) {
+		res, err := inner(ctx, path, b, opts...)
+		res.Durable = false
+		return res, err
 	}
-	t.Cleanup(func() { writeState = inner })
+	t.Cleanup(func() { writeFile = inner })
 	if ans := put(t, s, sectionOf(2, lanHost, smallJSON, largeJSON)); ans.Applies != hostapi.SectionApplied {
 		t.Fatalf("PUT = %+v", ans)
 	}
 	if saved, ok, err := readSection(t.Context(), s.sectionPath); !ok || err != nil || saved.Revision != 2 {
 		t.Errorf("saved %+v, %v, %v; want revision 2", saved, ok, err)
 	}
+	if n := s.sectionStatus().SaveFailures; n != 1 {
+		t.Errorf("%d failed saves, want the delivery's", n)
+	}
 	retried(t, s)
 	if n := s.sectionStatus().SaveFailures; n != 2 {
 		t.Errorf("%d failed saves, want the delivery's and the retry's", n)
 	}
-	writeState = inner
+	writeFile = inner
 	retried(t, s)
 	retried(t, s)
 	if n := s.sectionStatus().SaveFailures; n != 2 {
@@ -337,52 +344,154 @@ func TestASaveThatIsNotDurableIsTriedAgain(t *testing.T) {
 	}
 }
 
-// No state the host fails to save makes it restart in a loop: three
-// starts with every save failing each settle, up or waiting with the
-// refusal, and once saves succeed at most one more restart comes.
-func TestAStateThatIsNotSavedLoopsNoRestart(t *testing.T) {
-	refused := &hostapi.SectionRefusal{Hash: "a1", Errors: []hostapi.FieldError{{Path: "hosts.lan.dns", Message: "no answer"}}}
-	// lookups fail the dns section's boot: 1 the first lookup of a start,
-	// 2 every lookup; the last start's lookups all answer.
+// A restart a boot refusal owes, held while its state failed to save, ends
+// the run once a retry saves that state, and the next start reads the
+// refusal. A corrected section delivered first is booted instead, and a
+// later save of its state ends nothing.
+func TestARestartOwedIsTakenOnceItsStateIsSaved(t *testing.T) {
 	for _, tc := range []struct {
-		name    string
-		state   *hostState
-		lookups int
-		up      uint64
-		ipv6    bool
+		name     string
+		state    *hostState
+		fallback uint64
+		ipv6     bool
 	}{
+		{"a first section", &hostState{Section: sectionOf(1, dnsHost, smallJSON), Unbooted: true}, 0, false},
 		{
-			"a first section whose boot fails a step",
-			&hostState{Section: sectionOf(1, dnsHost, smallJSON), Unbooted: true}, 2, 0, false,
-		},
-		{
-			"a restart that lost IPv6 its fallback needs",
-			&hostState{Section: sectionOf(2, dnsHost, smallJSON), Fallback: sectionOf(1, ipv6Host, smallJSON), Unbooted: true}, 1, 0, true,
-		},
-		{
-			"a restart whose fallback boots",
-			&hostState{Section: sectionOf(2, dnsHost, smallJSON), Fallback: sectionOf(1, lanHost, smallJSON), Unbooted: true}, 1, 1, false,
-		},
-		{
-			"a section that comes up",
-			&hostState{Section: sectionOf(2, dnsHost, smallJSON), Fallback: sectionOf(1, lanHost, smallJSON), Unbooted: true}, 0, 2, false,
-		},
-		{
-			"a carried refusal",
-			&hostState{Section: sectionOf(1, lanHost, smallJSON), Refused: refused}, 0, 1, false,
+			"a boot that lost IPv6 its fallback needs",
+			&hostState{Section: sectionOf(2, dnsHost, smallJSON), Fallback: sectionOf(1, ipv6Host, smallJSON), Unbooted: true}, 1, true,
 		},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			starts := 0
-			start := func(prev *supervisor) *supervisor {
-				starts++
+		for _, then := range []string{"a retry", "a corrected delivery"} {
+			t.Run(tc.name+" then "+then, func(t *testing.T) {
 				f := newUpFixture(t)
 				if tc.ipv6 {
 					withIPv6(t, f)
 				}
 				p := rebootable(f)
-				if tc.lookups > 0 && starts < 5 {
-					failingFirst(p, tc.lookups == 2)
+				failingFirst(p, false)
+				s := waitingOn(t, lanSelf(), p)
+				if err := writeState(t.Context(), s.sectionPath, tc.state); err != nil {
+					t.Fatal(err)
+				}
+				restore := failSaves(t, filesafe.PhaseRename)
+				s.bootSaved(t.Context())
+				ctx, cancel := context.WithCancelCause(t.Context())
+				defer cancel(nil)
+				s.cancelRun = cancel
+				done := make(chan booted, 1)
+				go func() {
+					n, err := s.boot(ctx)
+					done <- booted{n, err}
+				}()
+				waitFor(t, "the boot's refusal", func() bool {
+					st := s.sectionStatus()
+					return st.State == hostapi.SectionWaiting && st.Refused != nil
+				})
+				restore()
+				if then == "a corrected delivery" {
+					restoreBooted := failBootedSaves(t)
+					put(t, s, sectionOf(3, lanHost, smallJSON))
+					b := <-done
+					if b.err != nil || b.n == nil {
+						t.Fatalf("boot = %v, %v; want the corrected section up", b.n, b.err)
+					}
+					t.Cleanup(func() { _ = b.n.stop() })
+					restoreBooted()
+					retried(t, s)
+					if st := stateOf(t, s); st.Section == nil || st.Section.Revision != 3 || st.Unbooted {
+						t.Errorf("saved %+v, want revision 3 booted", st)
+					}
+					if err := context.Cause(ctx); err != nil {
+						t.Errorf("the run ended with %v once the booted section was saved", err)
+					}
+					return
+				}
+				retried(t, s)
+				select {
+				case b := <-done:
+					if b.n != nil || b.err != nil || !errors.Is(context.Cause(ctx), ErrRestart) {
+						t.Fatalf("boot = %v, %v with the run's cause %v; want the run ended by ErrRestart", b.n, b.err, context.Cause(ctx))
+					}
+				case <-time.After(5 * time.Second):
+					t.Fatal("the boot still waits after its state was saved")
+				}
+				st := stateOf(t, s)
+				var boots uint64
+				if st.Section != nil {
+					boots = st.Section.Revision
+				}
+				if st.Refused == nil || st.Refused.Hash != hashOf(t, tc.state.Section) || boots != tc.fallback {
+					t.Errorf("saved %+v, want the refusal booting revision %d", st, tc.fallback)
+				}
+				r := restarted(s, rebootable(newUpFixture(t)))
+				r.bootSaved(t.Context())
+				if st := r.sectionStatus(); st.Refused == nil || st.Refused.Hash != hashOf(t, tc.state.Section) {
+					t.Errorf("next start's section status = %+v, want the refusal", st)
+				}
+			})
+		}
+	}
+}
+
+// failBootedSaves makes each save of a state that marks no section as not
+// booted fail, until the test ends or it calls the restore answered.
+func failBootedSaves(t *testing.T) (restore func()) {
+	t.Helper()
+	inner := writeFile
+	writeFile = func(ctx context.Context, path string, b []byte, opts ...filesafe.WriteOption) (filesafe.Result, error) {
+		if !bytes.Contains(b, []byte(`"unbooted":true`)) {
+			return filesafe.Result{}, &filesafe.WriteError{Phase: filesafe.PhaseRename, Err: syscall.ENOSPC}
+		}
+		return inner(ctx, path, b, opts...)
+	}
+	restore = func() { writeFile = inner }
+	t.Cleanup(restore)
+	return restore
+}
+
+// No state the host fails to save makes it restart in a loop: three
+// starts with every save failing each settle, up or waiting with the
+// refusal, and once saves succeed at most one more restart comes.
+func TestAStateThatIsNotSavedLoopsNoRestart(t *testing.T) {
+	refused := &hostapi.SectionRefusal{Hash: "a1", Errors: []hostapi.FieldError{{Path: "hosts.lan.dns", Message: "no answer"}}}
+	for _, tc := range []struct {
+		name  string
+		state *hostState
+		fault lookupFault
+		up    uint64
+		ipv6  bool
+	}{
+		{
+			"a first section whose boot fails a step",
+			&hostState{Section: sectionOf(1, dnsHost, smallJSON), Unbooted: true}, everyLookup, 0, false,
+		},
+		{
+			"a restart that lost IPv6 its fallback needs",
+			&hostState{Section: sectionOf(2, dnsHost, smallJSON), Fallback: sectionOf(1, ipv6Host, smallJSON), Unbooted: true}, firstLookup, 0, true,
+		},
+		{
+			"a restart whose fallback boots",
+			&hostState{Section: sectionOf(2, dnsHost, smallJSON), Fallback: sectionOf(1, lanHost, smallJSON), Unbooted: true}, firstLookup, 1, false,
+		},
+		{
+			"a section that comes up",
+			&hostState{Section: sectionOf(2, dnsHost, smallJSON), Fallback: sectionOf(1, lanHost, smallJSON), Unbooted: true}, noFault, 2, false,
+		},
+		{
+			"a carried refusal",
+			&hostState{Section: sectionOf(1, lanHost, smallJSON), Refused: refused}, noFault, 1, false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			healed := false
+			start := func(prev *supervisor) *supervisor {
+				f := newUpFixture(t)
+				if tc.ipv6 {
+					withIPv6(t, f)
+				}
+				p := rebootable(f)
+				if tc.fault != noFault && !healed {
+					failingFirst(p, tc.fault == everyLookup)
 				}
 				if prev == nil {
 					return waitingOn(t, lanSelf(), p)
@@ -416,10 +525,82 @@ func TestAStateThatIsNotSavedLoopsNoRestart(t *testing.T) {
 			if _, err := settle(t, s); err != nil && !errors.Is(err, ErrRestart) {
 				t.Fatalf("the first start with saves working: boot = %v", err)
 			}
+			healed = true
 			s = start(s)
 			s.bootSaved(t.Context())
 			if _, err := settle(t, s); err != nil {
 				t.Errorf("the second start with saves working: boot = %v, want it settled", err)
+			}
+		})
+	}
+}
+
+// lookupFault is how a start's lookups through the host's own resolver
+// fail a dns section's boot.
+type lookupFault int
+
+const (
+	noFault lookupFault = iota
+	firstLookup
+	everyLookup
+)
+
+// A section of the largest size a delivery takes, dense in the characters
+// JSON escapes for HTML, is saved and read back whole beside its fallback.
+func TestAStateAtTheDeliveryCapIsReadBack(t *testing.T) {
+	s, _, _ := upSupervisor(t, sectionOf(1, lanHost, smallJSON))
+	next := sectionOf(2, dnsHost, smallJSON, `"amp": {"runner_image": "base", "cpus": 1, "memory": "512MiB", "scopes": ["acme/app"], "command": ["/bin/sh", "-c", ""]}`)
+	body, err := json.Marshal(next)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fill := hostapi.SectionLimit - len(body) - 2
+	next.Settings = bytes.Replace(next.Settings, []byte(`"-c", ""`), []byte(`"-c", "`+strings.Repeat("&", fill)+`"`), 1)
+	if ans := put(t, s, next); ans.Applies != hostapi.SectionPendingRestart {
+		t.Fatalf("PUT = %+v", ans)
+	}
+	st := stateOf(t, s)
+	if st.Section == nil || hashOf(t, st.Section) != hashOf(t, next) || st.Fallback == nil || st.Fallback.Revision != 1 {
+		t.Errorf("read back section %v and fallback %v, want revision 2 over revision 1", st.Section != nil, st.Fallback)
+	}
+}
+
+// A state larger than a start reads is refused before anything is
+// written, so the state saved before stays whole.
+func TestAStateTooLargeToReadIsNotWritten(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "section.json")
+	small := &hostState{Section: sectionOf(1, lanHost, smallJSON)}
+	if err := writeState(t.Context(), path, small); err != nil {
+		t.Fatal(err)
+	}
+	huge := &hostapi.Section{Revision: 2, Settings: []byte(`"` + strings.Repeat("a", stateLimit) + `"`)}
+	if err := writeState(t.Context(), path, &hostState{Section: huge}); !errors.Is(err, filesafe.ErrFileTooLarge) {
+		t.Errorf("writing a state over the bound = %v, want filesafe.ErrFileTooLarge", err)
+	}
+	if st, ok, err := readState(t.Context(), path); !ok || err != nil || st.Section == nil || st.Section.Revision != 1 {
+		t.Errorf("read %+v, %v, %v; want revision 1", st, ok, err)
+	}
+}
+
+// A state file holding anything but one state is an unreadable state,
+// logged as one, and the host waits for the control plane's section.
+func TestAStateFileOfAnotherShapeIsUnreadable(t *testing.T) {
+	for _, tc := range []struct{ name, file string }{
+		{"a section of another shape", `{"settings":{},"revision":1}`},
+		{"two states", `{}{}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var logged bytes.Buffer
+			s := newSupervisor(lanSelf(), &Options{Log: slog.New(slog.NewTextHandler(&logged, nil))}, filepath.Join(t.TempDir(), "section.json"), rebootable(newUpFixture(t)))
+			if err := os.WriteFile(s.sectionPath, []byte(tc.file), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			s.bootSaved(t.Context())
+			if !strings.Contains(logged.String(), `level=ERROR msg="The host's state could not be read`) {
+				t.Errorf("logged %q, want the state reported unreadable", logged.String())
+			}
+			if st := s.sectionStatus(); st.State != hostapi.SectionWaiting {
+				t.Errorf("section status = %+v, want waiting", st)
 			}
 		})
 	}

@@ -193,11 +193,15 @@ func (c *Client) callBytes(ctx context.Context, op string, bound time.Duration, 
 func (c *Client) send(ctx context.Context, hc *http.Client, op, method, path string, in any) (io.ReadCloser, int, error) {
 	var body io.Reader = http.NoBody
 	if in != nil {
-		b, err := json.Marshal(in)
-		if err != nil {
+		var b bytes.Buffer
+		enc := json.NewEncoder(&b)
+		// HTML escaping turns each <, > and & into six bytes, so a section
+		// within SectionLimit could cross the host's body cap.
+		enc.SetEscapeHTML(false)
+		if err := enc.Encode(in); err != nil {
 			return nil, 0, fmt.Errorf("host API %s: %w", op, err)
 		}
-		body = bytes.NewReader(b)
+		body = &b
 	}
 	req, err := http.NewRequestWithContext(ctx, method, c.base+path, body)
 	if err != nil {
