@@ -105,9 +105,11 @@ type Runner struct {
 	runs map[string]time.Time
 	// pausing closes when a pause begins; paused holds until it ends.
 	pausing chan struct{}
-	cur     string
-	mu      sync.Mutex
-	paused  bool
+	// cur and until are the run in flight and its deadline.
+	until  time.Time
+	cur    string
+	mu     sync.Mutex
+	paused bool
 }
 
 // NewRunner answers a Runner for cfg.
@@ -158,6 +160,14 @@ func pausedReport() hostapi.ProbeReport {
 // Deadline bounds a probe request: two runs of the host's current plan.
 func (r *Runner) Deadline() time.Duration {
 	return egress.PlanProbe(placeholder(new(r.cfg.Host().Input))).Deadline(docker.CallTimeout)
+}
+
+// RunningUntil answers the deadline of the run in flight, the zero Time
+// while none runs.
+func (r *Runner) RunningUntil() time.Time {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.until
 }
 
 // placeholder fills in's run addresses so the plan holds every check a run
@@ -217,8 +227,9 @@ func (r *Runner) Run(ctx context.Context) (hostapi.ProbeReport, error) {
 	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), plan.Bound(docker.CallTimeout))
 	defer cancel()
 	run := newRunID()
+	until, _ := rctx.Deadline()
 	r.mu.Lock()
-	r.cur = run
+	r.cur, r.until = run, until
 	r.mu.Unlock()
 	rep := hostapi.ProbeReport{StartedAt: time.Now()}
 	counts := blocks(plan)
@@ -255,7 +266,7 @@ func (r *Runner) ended(run string) {
 	defer r.mu.Unlock()
 	now := time.Now()
 	maps.DeleteFunc(r.runs, func(_ string, at time.Time) bool { return now.Sub(at) >= callTimeout })
-	r.cur, r.runs[run] = "", now
+	r.cur, r.until, r.runs[run] = "", time.Time{}, now
 }
 
 // blocks answers whether p reads the probe counters: only a block check

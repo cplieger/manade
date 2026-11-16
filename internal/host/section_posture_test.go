@@ -377,6 +377,47 @@ func TestADeliveryDuringARebuild(t *testing.T) {
 	}
 }
 
+// A section the ceiling refuses, delivered during a rebuild, is answered
+// ErrApplying like any other: nothing is judged or recorded, and the
+// section the rebuild applies is then the one the host runs.
+func TestARefusedDeliveryDuringARebuild(t *testing.T) {
+	s, _, run := upSupervisor(t, sectionOf(1, lanHost, smallJSON))
+	changing(t, s, run)
+	reading, release := make(chan struct{}), make(chan struct{})
+	var reads atomic.Int32
+	s.net.seams.FetchDomains = func(context.Context) ([]byte, error) {
+		if reads.Add(1) == 1 {
+			close(reading)
+		}
+		<-release
+		return []byte(metaBody), nil
+	}
+	defer func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	}()
+	put(t, s, sectionOf(2, closedHost, smallJSON))
+	<-reading
+	beyond := sectionOf(3, `{"egress": {"allow": [{"to": "192.168.1.5", "ports": [5432]}]}}`, smallJSON)
+	if _, err := apiOf(s).PutSection(t.Context(), beyond); !errors.Is(err, hostapi.ErrApplying) {
+		t.Errorf("PUT during the rebuild = %v, want ErrApplying", err)
+	}
+	if saved, _, _ := readSection(t.Context(), s.sectionPath); saved == nil || saved.Revision != 2 {
+		t.Errorf("saved %+v, want the section being applied", saved)
+	}
+	if st := s.sectionStatus(); st.State != hostapi.SectionEgressPending || st.Refused != nil {
+		t.Errorf("section status during the rebuild = %+v, want egress_pending with no refusal", st)
+	}
+	close(release)
+	appliedRevision(t, s, 2)
+	if st := s.sectionStatus(); st.Hash != hashOf(t, sectionOf(2, closedHost, smallJSON)) || st.Refused != nil {
+		t.Errorf("section status after the rebuild = %+v, want the rebuilt section running", st)
+	}
+}
+
 // A job started before a change of egress.internet keeps the resolver
 // resolv.conf named at its start: it resolves after each change, and its
 // GitHub lookup is learned once internet is off.

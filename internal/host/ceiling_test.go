@@ -24,10 +24,16 @@ func prefixes(ss ...string) []netip.Prefix {
 }
 
 // waitingAs is host lan with environment self, waiting for its first
-// section.
+// section on the fake kernel.
 func waitingAs(t *testing.T, self *config.Self) *supervisor {
 	t.Helper()
-	return newSupervisor(self, &Options{Log: slog.New(slog.DiscardHandler)}, filepath.Join(t.TempDir(), "section.json"))
+	return waitingOn(t, self, newUpFixture(t).platform())
+}
+
+// waitingOn is waitingAs on platform p.
+func waitingOn(t *testing.T, self *config.Self, p *seams) *supervisor {
+	t.Helper()
+	return newSupervisor(self, &Options{Log: slog.New(slog.DiscardHandler)}, filepath.Join(t.TempDir(), "section.json"), p)
 }
 
 // refusedAt answers the field paths of err, a 422 from PUT /v1/section.

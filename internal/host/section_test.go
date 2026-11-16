@@ -70,7 +70,7 @@ func upAs(t *testing.T, self *config.Self, sec *hostapi.Section, p *seams) (s *s
 	t.Helper()
 	log := slog.New(slog.DiscardHandler)
 	dir := t.TempDir()
-	s = newSupervisor(self, &Options{Log: log}, filepath.Join(dir, "section.json"))
+	s = newSupervisor(self, &Options{Log: log}, filepath.Join(dir, "section.json"), p)
 	first, err := check(s.self, sec)
 	if err != nil {
 		t.Fatal(err)
@@ -86,15 +86,24 @@ func upAs(t *testing.T, self *config.Self, sec *hostapi.Section, p *seams) (s *s
 	}
 	t.Cleanup(func() { _ = s.net.stop() })
 	s.running = first
-	s.prober = probe.NewRunner(&probe.Config{Log: log, Host: s.probeHost})
-	sv := s.newServed(first.cfg, first.host)
+	return s, finishUp(t, s)
+}
+
+// finishUp makes s, whose network is up on the section it runs, a host
+// that is up; its run's cause reads why the run was cancelled.
+func finishUp(t *testing.T, s *supervisor) (run context.Context) {
+	t.Helper()
+	sv := s.newServed(s.running.cfg, s.running.host)
 	s.served.Store(sv)
-	s.images = images.New(&images.Config{Host: first.host, Log: log, Profiles: sv.Profiles})
-	s.runners = newRunners(t.Context(), &runnersConfig{Served: sv, Images: s.images, Log: log})
+	s.prober = probe.NewRunner(&probe.Config{Log: s.log, Host: s.probeHost})
+	s.images = images.New(&images.Config{Host: s.running.host, Log: s.log, Profiles: sv.Profiles})
+	s.runners = newRunners(t.Context(), &runnersConfig{Served: sv, Images: s.images, Log: s.log})
 	run, s.cancelRun = context.WithCancelCause(t.Context())
+	s.sectionMu.Lock()
 	s.phase.Store(phaseUp)
 	s.publish()
-	return s, run
+	s.sectionMu.Unlock()
+	return run
 }
 
 // changing runs s's posture hold and its change loop under run until the
@@ -195,7 +204,7 @@ func TestASectionIsSavedBeforeItsAnswer(t *testing.T) {
 
 func TestABootWithNoControlPlaneRunsTheSavedSection(t *testing.T) {
 	sec := sectionOf(7, allowHost, smallJSON)
-	s := newSupervisor(lanSelf(), &Options{Log: slog.New(slog.DiscardHandler)}, filepath.Join(t.TempDir(), "section.json"))
+	s := waitingAs(t, lanSelf())
 	if err := writeSection(t.Context(), s.sectionPath, sec); err != nil {
 		t.Fatal(err)
 	}
@@ -210,7 +219,8 @@ func TestABootWithNoControlPlaneRunsTheSavedSection(t *testing.T) {
 }
 
 func TestAFirstBootWaitsForItsSection(t *testing.T) {
-	s := newSupervisor(lanSelf(), &Options{Log: slog.New(slog.DiscardHandler), Version: "v1.0.0-dev.21"}, filepath.Join(t.TempDir(), "section.json"))
+	s := waitingAs(t, lanSelf())
+	s.opts.Version = "v1.0.0-dev.21"
 	b := &backend{s: s}
 	booted := make(chan *accepted, 1)
 	go func() { booted <- s.awaitSection(t.Context()) }()
@@ -262,6 +272,9 @@ func TestAFirstBootWaitsForItsSection(t *testing.T) {
 		if _, err := b.PutSection(t.Context(), sectionOf(2, lanHost)); !errors.Is(err, hostapi.ErrStarting) {
 			t.Errorf("PutSection = %v", err)
 		}
+		if _, err := b.PutSection(t.Context(), sectionOf(3, `{"bogus": 1}`)); !errors.Is(err, hostapi.ErrStarting) {
+			t.Errorf("PutSection of a section the parser refuses = %v, want ErrStarting and nothing judged", err)
+		}
 		if _, err := b.Runners(t.Context()); !errors.Is(err, hostapi.ErrStarting) {
 			t.Errorf("Runners = %v", err)
 		}
@@ -274,7 +287,7 @@ func TestAFirstBootWaitsForItsSection(t *testing.T) {
 // A saved section the build no longer accepts is reported, and the host
 // waits for the control plane's.
 func TestASavedSectionThatNoLongerValidates(t *testing.T) {
-	s := newSupervisor(lanSelf(), &Options{Log: slog.New(slog.DiscardHandler)}, filepath.Join(t.TempDir(), "section.json"))
+	s := waitingAs(t, lanSelf())
 	if err := writeSection(t.Context(), s.sectionPath, sectionOf(3, `{"address": "10.0.0.1:7464"}`)); err != nil {
 		t.Fatal(err)
 	}
@@ -289,7 +302,7 @@ func TestASavedSectionThatNoLongerValidates(t *testing.T) {
 	}
 }
 
-// Each row of §7.2's table, delivered to a host with no runner.
+// Each row, delivered to a host with no runner.
 func TestEachRowApplies(t *testing.T) {
 	t.Run("profiles at once, the rules kept", func(t *testing.T) {
 		s, f, _ := upSupervisor(t, sectionOf(1, lanHost, smallJSON))
@@ -573,7 +586,7 @@ func TestAFailedRebuildIsRetried(t *testing.T) {
 	})
 }
 
-// §7.2's rows, the strictest a change touches winning.
+// The rows, the strictest a change touches winning.
 func TestRowOf(t *testing.T) {
 	v6 := func(block6 ...string) *config.Host {
 		h := v6Section()

@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -84,7 +85,13 @@ type supervisor struct {
 	running *accepted
 	pending *pendingSection
 	refused *hostapi.SectionRefusal
-	view    atomic.Pointer[hostapi.SectionStatus]
+	// unbootable is the section a boot of this run refused, under
+	// sectionMu: its settings delivered again would restart the host into
+	// the same refusal.
+	unbootable *hostapi.SectionRefusal
+	view       atomic.Pointer[hostapi.SectionStatus]
+	// seams are the kernel and daemon the host boots on.
+	seams *seams
 	// arrived hands the first section delivered to a waiting boot; changed
 	// wakes changes; restarting closes once the host announces its restart.
 	arrived    chan *accepted
@@ -93,13 +100,14 @@ type supervisor struct {
 	// cancelRun ends the run with why, set before the host is up.
 	cancelRun context.CancelCauseFunc
 	// ping asks the daemon for the health verdict: dk.Ping.
-	ping        func(ctx context.Context) error
-	opts        *Options
-	info        docker.Info
-	instance    string
-	sectionPath string
-	plat        jobspec.Platform
-	restored    atomic.Uint64
+	ping         func(ctx context.Context) error
+	opts         *Options
+	info         docker.Info
+	instance     string
+	sectionPath  string
+	fallbackPath string
+	plat         jobspec.Platform
+	restored     atomic.Uint64
 	// sectionMu serialises deliveries and the applies they leave pending;
 	// rebuilding, under it, marks a rebuild running without it.
 	sectionMu  sync.Mutex
@@ -108,9 +116,11 @@ type supervisor struct {
 	rebuilding bool
 }
 
-func newSupervisor(self *config.Self, opts *Options, path string) *supervisor {
+// newSupervisor is a run of host self on p, its section saved at path.
+func newSupervisor(self *config.Self, opts *Options, path string, p *seams) *supervisor {
 	s := &supervisor{
-		self: self, log: opts.Log, opts: opts, lat: newLatencies(), instance: newInstanceID(), sectionPath: path,
+		self: self, log: opts.Log, opts: opts, lat: newLatencies(), instance: newInstanceID(), seams: p,
+		sectionPath: path, fallbackPath: filepath.Join(filepath.Dir(path), fallbackName),
 		arrived: make(chan *accepted, 1), changed: make(chan struct{}, 1), restarting: make(chan struct{}),
 	}
 	s.publish()
@@ -125,7 +135,7 @@ func newSupervisor(self *config.Self, opts *Options, path string) *supervisor {
 // failure later stops the daemon and answers why, and a restart to apply a
 // section answers ErrRestart.
 func Run(ctx context.Context, self *config.Self, opts *Options) error {
-	return newSupervisor(self, opts, sectionPath).runLinked(ctx, dialSocket(hostlink.SocketPath))
+	return newSupervisor(self, opts, sectionPath, systemSeams(self, opts.Log)).runLinked(ctx, dialSocket(hostlink.SocketPath))
 }
 
 // runLinked is Run with the channel dialed by dial. The saved section is
@@ -184,9 +194,11 @@ func (s *supervisor) run(ctx, rctx context.Context, cancel context.CancelCauseFu
 	if s.oom, err = platform.LoadOOMTotal(rctx, oomFile); err != nil {
 		s.log.Warn("The saved OOM kill total was not read, so the total counts from this start", "error", err)
 	}
-	h := s.running.host
-	if s.net, err = bringUp(rctx, h, s.platform(s.self), guardHooks{Restored: s.onRestored, Checked: s.onChecked}); err != nil {
+	if s.net, err = s.boot(rctx); err != nil {
 		return err
+	}
+	if s.net == nil {
+		return ended(ctx, rctx)
 	}
 	err = s.serve(rctx, cancel, cg, ms)
 	if err == nil {
@@ -201,6 +213,79 @@ func ended(ctx, rctx context.Context) error {
 		return nil
 	}
 	return context.Cause(rctx)
+}
+
+// boot brings the host's network and daemon up on the section it boots on,
+// nil when ctx ends first. A section the host's network refuses there is
+// refused as a delivery is, and the host boots on its fallback or, with
+// none, waits for another section.
+func (s *supervisor) boot(ctx context.Context) (*hostNet, error) {
+	hooks := guardHooks{Restored: s.onRestored, Checked: s.onChecked}
+	for {
+		next := s.awaitSection(ctx)
+		if next == nil {
+			return nil, nil
+		}
+		n, err := bringUp(ctx, next.host, s.seams, hooks)
+		sr, refused := errors.AsType[*hostapi.SectionRefusedError](err)
+		if refused {
+			s.bootRefused(ctx, next, sr)
+			continue
+		}
+		if err == nil {
+			if rerr := removeSection(s.fallbackPath); rerr != nil {
+				s.log.Error("The fallback section was not removed after the boot", "error", rerr)
+			}
+		}
+		return n, err
+	}
+}
+
+// bootRefused records next, the section a boot refused with sr, and makes
+// the fallback the section the host boots on, saved in next's place, or
+// with no fallback leaves the host waiting with no section saved.
+func (s *supervisor) bootRefused(ctx context.Context, next *accepted, sr *hostapi.SectionRefusedError) {
+	fb := s.fallback(ctx)
+	s.sectionMu.Lock()
+	defer s.sectionMu.Unlock()
+	s.running = fb
+	if fb == nil {
+		s.phase.Store(phaseWaiting)
+	}
+	s.refuse(&next.raw, sr)
+	s.unbootable = s.refused
+	if fb == nil {
+		s.log.Warn("The host's network refused the section it was booting on, so it waits for the control plane's", "hash", next.hash)
+		if err := removeSection(s.sectionPath); err != nil {
+			s.log.Error("The refused section was not removed, so the host's next start reads it again", "error", err)
+		}
+		return
+	}
+	s.log.Warn("The host's network refused the section it was booting on, so it boots on the section it ran before", "hash", next.hash, "fallback", fb.hash)
+	if err := writeSection(ctx, s.sectionPath, &fb.raw); err != nil {
+		s.log.Error("The section the host boots on was not saved, so its next start reads the refused one", "error", err)
+	}
+}
+
+// fallback takes the fallback saved beside the section, once: nil when
+// there is none or it no longer validates.
+func (s *supervisor) fallback(ctx context.Context) *accepted {
+	sec, ok, err := readSection(ctx, s.fallbackPath)
+	if err == nil {
+		err = removeSection(s.fallbackPath)
+	}
+	if err != nil {
+		s.log.Error("The fallback section could not be read or removed", "error", err)
+	}
+	if !ok {
+		return nil
+	}
+	fb, err := check(s.self, sec)
+	if err != nil {
+		s.log.Warn("The fallback section no longer validates", "error", err)
+		return nil
+	}
+	return fb
 }
 
 // bootSaved makes the section saved at the last accept the one the host
@@ -473,9 +558,9 @@ func (s *supervisor) outwardAddrs() hostapi.Outward {
 	return out
 }
 
-// platform is the real kernel and daemon, with host self's echo endpoint
-// and MANADE_BLOCK6.
-func (s *supervisor) platform(self *config.Self) *seams {
+// systemSeams is the real kernel and daemon, with host self's echo
+// endpoint and MANADE_BLOCK6.
+func systemSeams(self *config.Self, log *slog.Logger) *seams {
 	return &seams{
 		Run: platform.Exec, Lookup: netsetup.LookupVia, Random: rand.Reader,
 		PickStorage: func(dir string) (platform.StoragePick, error) {
@@ -492,7 +577,7 @@ func (s *supervisor) platform(self *config.Self) *seams {
 			return c, nil
 		},
 		ListenDNS: listenDNS, FetchDomains: resolver.FetchMeta(httpclient.New(metaTimeout)), Upstreams: resolver.Upstreams, Echo: echoOverIPv6(), EchoURL: self.IPv6Echo, Block6: self.Ceiling.Block6,
-		Log: s.log, Root: platform.System,
+		Log: log, Root: platform.System,
 	}
 }
 

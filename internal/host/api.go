@@ -155,15 +155,16 @@ func (s *supervisor) status(ctx context.Context) hostapi.Status {
 	n := s.net
 	st := hostapi.Status{
 		Version: s.opts.Version, PolicyHash: egress.PolicyHash(h), Section: s.sectionStatus(), Ceiling: ceilingStatus(&s.self.Ceiling),
-		Daemon:        hostapi.DaemonStatus{Version: s.info.ServerVersion, StorageDriver: s.info.Driver},
-		Rules:         hostapi.RulesStatus{Backend: backendName(n.Kernel.Backend), Restored: s.restored.Load(), RawOff: n.Kernel.RawOff},
-		DNS:           hostapi.DNSStatus{Configured: h.DNS, Original: n.Original.Addrs, OriginalUnknown: n.Original.Unknown},
-		Profiles:      s.runners.profileStatus(),
-		StartLatency:  s.lat.snapshot(),
-		Outward:       s.outward,
-		IPv6:          n.iPv6Status(),
-		GitHub:        n.gitHubStatus(),
-		ProbeDeadline: s.prober.Deadline(),
+		Daemon:            hostapi.DaemonStatus{Version: s.info.ServerVersion, StorageDriver: s.info.Driver},
+		Rules:             hostapi.RulesStatus{Backend: backendName(n.Kernel.Backend), Restored: s.restored.Load(), RawOff: n.Kernel.RawOff},
+		DNS:               hostapi.DNSStatus{Configured: h.DNS, Original: n.Original.Addrs, OriginalUnknown: n.Original.Unknown},
+		Profiles:          s.runners.profileStatus(),
+		StartLatency:      s.lat.snapshot(),
+		Outward:           s.outward,
+		IPv6:              n.iPv6Status(),
+		GitHub:            n.gitHubStatus(),
+		ProbeDeadline:     s.prober.Deadline(),
+		ProbeRunningUntil: s.prober.RunningUntil(),
 	}
 	if u, err := platform.DataUsage(dataRoot); err == nil {
 		st.Data = hostapi.DataStatus{Size: u.Size, Free: u.Free}

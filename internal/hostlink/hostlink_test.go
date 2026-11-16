@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"maps"
 	"net"
 	"net/http"
@@ -288,6 +289,39 @@ func TestADroppedLinkLeavesTheRegistry(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatal("a closed link stayed registered")
+}
+
+// An upgrade that registers its link after Serve has closed every link
+// is closed at once, so no connection outlives Serve.
+func TestALinkRegisteredAfterCloseIsClosed(t *testing.T) {
+	s := NewServer(slog.New(slog.DiscardHandler))
+	conn, peer := net.Pipe()
+	t.Cleanup(func() { _ = peer.Close() })
+	go func() { _, _ = io.Copy(io.Discard, peer) }()
+	l, err := s.open(t.Context(), conn, 0, &Hello{Name: "nas", Instance: "i1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.closeAll()
+	s.register(l)
+	select {
+	case <-l.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("the late link stayed open")
+	}
+	if _, ok := s.Link("nas"); ok {
+		t.Error("the late link was registered")
+	}
+	waited := make(chan struct{})
+	go func() {
+		s.wg.Wait()
+		close(waited)
+	}()
+	select {
+	case <-waited:
+	case <-time.After(5 * time.Second):
+		t.Error("Serve's wait would hold for the late link")
+	}
 }
 
 func TestTheHostRedialsAfterConnectionRefused(t *testing.T) {

@@ -85,7 +85,7 @@ const subscriberBuffer = 64
 
 // The removed_by values the host writes.
 const (
-	removedByDelete = "host: the orchestrator's DELETE"
+	removedByDelete = "host: the control plane's DELETE"
 	removedByFailed = "host: cleanup after a failed start"
 )
 

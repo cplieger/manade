@@ -86,7 +86,7 @@ func (s *Section) Hash() (string, error) {
 	return hex.EncodeToString(sum[:]), nil
 }
 
-// SectionApplies is how an accepted section applies (§7.2's table).
+// SectionApplies is how an accepted section applies.
 type SectionApplies string
 
 // The ways a section applies.
@@ -196,16 +196,19 @@ type Status struct {
 	// IPv6 is set only on a host with ipv6 and internet both true.
 	IPv6 *IPv6Status `json:"ipv6,omitempty"`
 	// GitHub is set only on an internet: false host.
-	GitHub     *GitHubStatus   `json:"github,omitempty"`
-	InstanceID string          `json:"instance_id"`
-	Version    string          `json:"version"`
-	PolicyHash string          `json:"policy_hash,omitempty"`
-	Section    SectionStatus   `json:"section"`
-	Ceiling    Ceiling         `json:"ceiling"`
-	Daemon     DaemonStatus    `json:"daemon"`
-	Rules      RulesStatus     `json:"rules"`
-	DNS        DNSStatus       `json:"dns"`
-	Profiles   []ProfileStatus `json:"profiles"`
+	GitHub *GitHubStatus `json:"github,omitempty"`
+	// ProbeRunningUntil is the deadline of a probe run in flight, zero while
+	// none runs.
+	ProbeRunningUntil time.Time       `json:"probe_running_until,omitzero"`
+	InstanceID        string          `json:"instance_id"`
+	Version           string          `json:"version"`
+	PolicyHash        string          `json:"policy_hash,omitempty"`
+	Section           SectionStatus   `json:"section"`
+	Ceiling           Ceiling         `json:"ceiling"`
+	Daemon            DaemonStatus    `json:"daemon"`
+	Rules             RulesStatus     `json:"rules"`
+	DNS               DNSStatus       `json:"dns"`
+	Profiles          []ProfileStatus `json:"profiles"`
 	// StartLatency holds one histogram per daemon call a runner start
 	// makes (create, start), over LatencyBuckets.
 	StartLatency []CallLatency `json:"start_latency"`

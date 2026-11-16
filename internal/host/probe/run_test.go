@@ -436,6 +436,32 @@ func TestOneRunAtATime(t *testing.T) {
 	})
 }
 
+// A run in flight reports its deadline, one run of the plan after its
+// start: Deadline bounds a request by two.
+func TestARunningProbeReportsItsDeadline(t *testing.T) {
+	pt := newProbeTest(t)
+	if got := pt.r.RunningUntil(); !got.IsZero() {
+		t.Errorf("before a run, RunningUntil = %v, want zero", got)
+	}
+	pt.hold = make(chan struct{})
+	run := pt.r.Deadline() / 2
+	before := time.Now()
+	done := make(chan error, 1)
+	go func() { _, err := pt.r.Run(t.Context()); done <- err }()
+	waitFor(t, "the run's probe", func() bool { return len(pt.d.callList()) >= 4 })
+	after := time.Now()
+	if got := pt.r.RunningUntil(); got.Before(before.Add(run)) || got.After(after.Add(run)) {
+		t.Errorf("during the run, RunningUntil = %v, want between %v and %v", got, before.Add(run), after.Add(run))
+	}
+	close(pt.hold)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if got := pt.r.RunningUntil(); !got.IsZero() {
+		t.Errorf("after the run, RunningUntil = %v, want zero", got)
+	}
+}
+
 func TestARunOutlivesItsClient(t *testing.T) {
 	pt := newProbeTest(t)
 	pt.hold = make(chan struct{})

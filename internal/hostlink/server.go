@@ -50,6 +50,10 @@ type Server struct {
 	ping      time.Duration
 	handshake time.Duration
 	mu        sync.Mutex
+	// closed, under mu, is set once Serve closes every link: an upgrade
+	// hijacked before then and registered after is closed at once, since
+	// Serve no longer waits for it.
+	closed bool
 }
 
 // NewServer answers hosts' upgrades. log may be nil for slog.Default.
@@ -106,6 +110,7 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 
 func (s *Server) closeAll() {
 	s.mu.Lock()
+	s.closed = true
 	links := make([]*Link, 0, len(s.links))
 	for _, l := range s.links {
 		links = append(links, l)
@@ -189,6 +194,11 @@ func (s *Server) open(ctx context.Context, conn net.Conn, buffered int, hello *H
 // register makes l its host's Link, closing the one it replaces.
 func (s *Server) register(l *Link) {
 	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		_ = l.Close()
+		return
+	}
 	old := s.links[l.Name]
 	s.links[l.Name] = l
 	warn := old != nil && time.Since(s.warned[l.Name]) >= replaceWarnEvery

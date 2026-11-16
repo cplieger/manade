@@ -203,6 +203,13 @@ func TestUp(t *testing.T) {
 			t.Errorf("Up = %v, events %q", err, f.events)
 		}
 	})
+	t.Run("the subnet picked skips an on-link route", func(t *testing.T) {
+		f := newUpFixture(t)
+		writeAt(t, f.root, "/proc/net/route", route4+"eth1\t000012AC\t00000000\t0001\t0\t0\t0\t0000FFFF\t0\t0\t0\n")
+		if n := upNet(t, f, section()); n.Subnet != pfx("172.19.0.0/16") {
+			t.Errorf("subnet = %v, want the first pool clear of 172.17.0.0/16 and 172.18.0.0/16", n.Subnet)
+		}
+	})
 	t.Run("an internet: false host resolves through its own forwarder", func(t *testing.T) {
 		f := newUpFixture(t)
 		upNet(t, f, closedSection())

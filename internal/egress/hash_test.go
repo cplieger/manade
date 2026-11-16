@@ -48,7 +48,7 @@ func TestPolicyHash(t *testing.T) {
 			}
 		})
 	}
-	// A proof stands across a change outside the rules (§6.4).
+	// A proof stands across a change outside the rules.
 	for _, tc := range []struct {
 		change func(*config.Host)
 		name   string

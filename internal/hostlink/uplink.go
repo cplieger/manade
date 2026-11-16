@@ -181,7 +181,9 @@ func (u *Uplink) serve(ctx context.Context, conn *bufferedConn) {
 	h2c.SetUnencryptedHTTP2(true)
 	// No ReadTimeout or IdleTimeout: an HTTP/2 server's idle timeout falls
 	// back to ReadTimeout and would close the channel between calls. The
-	// host API bounds each request itself; HTTP/2 ignores ReadHeaderTimeout.
+	// host API bounds each request itself. ReadHeaderTimeout bounds the wait
+	// for the control plane's preface, the one read net/http times before
+	// HTTP/2 takes the connection.
 	srv := &http.Server{
 		Handler:           u.opts.Handler,
 		Protocols:         &h2c,

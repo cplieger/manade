@@ -170,8 +170,8 @@ func (s *Server) Handler() http.Handler {
 	return mux
 }
 
-// bounded cuts h's context and its answer's write at bound, and the
-// request's read at quickTimeout.
+// bounded cuts h's context at bound, its answer's write quickTimeout later,
+// and the request's read at quickTimeout.
 func (s *Server) bounded(bound time.Duration, h http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), bound)
@@ -489,5 +489,5 @@ func (s *Server) writeBytes(w http.ResponseWriter, contentType string, b []byte,
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Content-Length", strconv.Itoa(len(b)))
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(b) //nolint:gosec // G705: a log tail or tar, served as text/plain or a tar with nosniff to the orchestrator, never a browser
+	_, _ = w.Write(b) //nolint:gosec // G705: a log tail or tar, served as text/plain or a tar with nosniff to the control plane, never a browser
 }

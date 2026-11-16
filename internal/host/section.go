@@ -6,9 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/netip"
+	"os"
 	"reflect"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/cplieger/go/filesafe"
@@ -21,6 +22,11 @@ import (
 // runs.
 const sectionPath = stateDir + "/section.json"
 
+// fallbackName, beside the saved section, is the section the host ran when
+// it accepted one that restarts it: a boot that refuses the saved section
+// runs the fallback instead.
+const fallbackName = "section-fallback.json"
+
 // accepted is a section that passed the host's checks.
 type accepted struct {
 	cfg  *config.Config
@@ -29,8 +35,8 @@ type accepted struct {
 	raw  hostapi.Section
 }
 
-// row is how a section applies over the one the host runs: the rows of
-// §7.2's table, mildest first.
+// row is how a section applies over the one the host runs: the ways a
+// delivered section applies, mildest first.
 type row int
 
 const (
@@ -103,6 +109,14 @@ func readSection(ctx context.Context, path string) (*hostapi.Section, bool, erro
 	return &sec, true, nil
 }
 
+// removeSection removes the section at path, if there is one.
+func removeSection(path string) error {
+	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("removing a saved section: %w", err)
+	}
+	return nil
+}
+
 // writeSection replaces the section at path whole: a temporary file, fsync
 // and rename, so a crash leaves the old section or the new one.
 func writeSection(ctx context.Context, path string, sec *hostapi.Section) error {
@@ -148,40 +162,43 @@ type pendingSection struct {
 
 // hostRefusals answers what of section h the host's own facts refuse: on a
 // host that applies it without a restart, a resolver or allow entry the job
-// subnet in use takes; on one that restarts, a job subnet its routes would
-// shadow, and egress.ipv6 on a kernel with no IPv6 nat table.
+// subnet in use takes; on one that restarts, what its boot would refuse,
+// read in the namespace as it is. The job bridge's own route goes with the
+// restart, and a namespace whose IPv6 the host turned off has no IPv6
+// address to read until it boots.
 func (n *hostNet) hostRefusals(h *config.Host, r row) ([]config.FieldError, error) {
 	if r != rowRestart {
 		return netsetup.Conflicts(n.Subnet, h), nil
 	}
-	routes, err := netsetup.ReadRoutes(n.seams.Root)
+	off, err := netsetup.IPv6Off(n.seams.Root)
 	if err != nil {
 		return nil, err
 	}
-	at := "hosts." + h.Name + "."
-	var out []config.FieldError
-	if h.Subnet.IsValid() {
-		err = netsetup.CheckSubnet(h, routes.OnLink)
-	} else {
-		_, err = netsetup.PickSubnet(h, routes.OnLink)
-	}
+	f, err := readNetFacts(n.seams.Root, n.Kernel, h, !off)
 	if err != nil {
-		out = append(out, config.FieldError{Path: at + "network.subnet", Message: strings.TrimPrefix(err.Error(), "netsetup: job subnet: ")})
+		return nil, err
 	}
-	if h.Egress.IPv6 && !n.Kernel.IPv6NAT {
-		out = append(out, config.FieldError{Path: at + "egress.ipv6", Message: "the host's kernel has no IPv6 nat table, which egress.ipv6 needs"})
-	}
+	f.routes.OnLink = slices.DeleteFunc(f.routes.OnLink, func(p netip.Prefix) bool { return p.Masked() == n.Subnet })
+	_, out := f.plan(h)
 	return out, nil
 }
 
 // deliver checks a section the control plane delivered and, once the host
-// accepts it, saves it before it answers how it applies. Before the host's
-// first section it hands the section to the waiting boot; during that boot
-// it answers hostapi.ErrStarting, and during a rebuild hostapi.ErrApplying.
+// accepts it, saves it before it answers how it applies. While the host
+// boots it answers hostapi.ErrStarting, and during a rebuild
+// hostapi.ErrApplying, and judges nothing. Before the host's first section
+// it hands the section to the waiting boot. The settings of a section a
+// boot of this run refused are refused with that boot's errors.
 func (s *supervisor) deliver(ctx context.Context, sec *hostapi.Section) (hostapi.SectionAnswer, error) {
-	next, err := check(s.self, sec)
 	s.sectionMu.Lock()
 	defer s.sectionMu.Unlock()
+	switch {
+	case s.phase.Load() == phaseBooting:
+		return hostapi.SectionAnswer{}, hostapi.ErrStarting
+	case s.rebuilding:
+		return hostapi.SectionAnswer{}, hostapi.ErrApplying
+	}
+	next, err := check(s.self, sec)
 	if sr, ok := errors.AsType[*hostapi.SectionRefusedError](err); ok {
 		s.refuse(sec, sr)
 		return hostapi.SectionAnswer{}, sr
@@ -189,31 +206,50 @@ func (s *supervisor) deliver(ctx context.Context, sec *hostapi.Section) (hostapi
 	if err != nil {
 		return hostapi.SectionAnswer{}, err
 	}
-	switch s.phase.Load() {
-	case phaseWaiting:
-		if err := writeSection(ctx, s.sectionPath, &next.raw); err != nil {
-			return hostapi.SectionAnswer{}, err
-		}
-		s.running, s.refused = next, nil
-		s.phase.Store(phaseBooting)
-		s.publish()
-		s.arrived <- next
-		s.log.Info("The host received its first section and boots on it", "hash", next.hash, "revision", next.raw.Revision)
-		return s.answer(), nil
-	case phaseBooting:
-		return hostapi.SectionAnswer{}, hostapi.ErrStarting
+	if u := s.unbootable; u != nil && u.Hash == next.hash {
+		sr := &hostapi.SectionRefusedError{Errors: u.Errors}
+		s.refuse(sec, sr)
+		return hostapi.SectionAnswer{}, sr
 	}
-	if s.rebuilding {
-		return hostapi.SectionAnswer{}, hostapi.ErrApplying
+	if s.phase.Load() == phaseWaiting {
+		return s.deliverFirst(ctx, next)
 	}
 	return s.deliverUp(ctx, next)
 }
 
-// deliverUp applies next on a host that is up, by the strictest row of
-// §7.2's table its change from the running section touches; sectionMu is
-// held.
+// deliverFirst saves next, the host's first section, and hands it to the
+// waiting boot once the host's network accepts it as that boot will;
+// sectionMu is held.
+func (s *supervisor) deliverFirst(ctx context.Context, next *accepted) (hostapi.SectionAnswer, error) {
+	refusals, err := bootRefusals(ctx, s.seams, next.host)
+	if err != nil {
+		return hostapi.SectionAnswer{}, err
+	}
+	if len(refusals) > 0 {
+		sr := refusedError(refusals)
+		s.refuse(&next.raw, sr)
+		return hostapi.SectionAnswer{}, sr
+	}
+	if err := writeSection(ctx, s.sectionPath, &next.raw); err != nil {
+		return hostapi.SectionAnswer{}, err
+	}
+	s.running, s.refused = next, nil
+	s.phase.Store(phaseBooting)
+	s.publish()
+	s.arrived <- next
+	s.log.Info("The host received its first section and boots on it", "hash", next.hash, "revision", next.raw.Revision)
+	return s.answer(), nil
+}
+
+// deliverUp applies next on a host that is up, by the strictest row its
+// change from the running section touches; sectionMu is held.
 func (s *supervisor) deliverUp(ctx context.Context, next *accepted) (hostapi.SectionAnswer, error) {
 	if s.holds(next) {
+		if next.hash == s.running.hash {
+			if err := removeSection(s.fallbackPath); err != nil {
+				return hostapi.SectionAnswer{}, err
+			}
+		}
 		if err := writeSection(ctx, s.sectionPath, &next.raw); err != nil {
 			return hostapi.SectionAnswer{}, err
 		}
@@ -231,6 +267,9 @@ func (s *supervisor) deliverUp(ctx context.Context, next *accepted) (hostapi.Sec
 		s.refuse(&next.raw, sr)
 		return hostapi.SectionAnswer{}, sr
 	}
+	if err := s.keepFallback(ctx, r); err != nil {
+		return hostapi.SectionAnswer{}, err
+	}
 	if err := writeSection(ctx, s.sectionPath, &next.raw); err != nil {
 		return hostapi.SectionAnswer{}, err
 	}
@@ -240,6 +279,16 @@ func (s *supervisor) deliverUp(ctx context.Context, next *accepted) (hostapi.Sec
 	}
 	s.publish()
 	return s.answer(), nil
+}
+
+// keepFallback saves the running section as the fallback when the section
+// accepted by row r restarts the host, and drops any fallback otherwise;
+// sectionMu is held.
+func (s *supervisor) keepFallback(ctx context.Context, r row) error {
+	if r == rowRestart {
+		return writeSection(ctx, s.fallbackPath, &s.running.raw)
+	}
+	return removeSection(s.fallbackPath)
 }
 
 // holds reports whether next has the settings of the section the host runs

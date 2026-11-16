@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -107,13 +108,14 @@ type hostNet struct {
 	NoBridgeNF bool
 }
 
-// bringUp brings host h up: it checks the cgroup namespace and picks the storage
-// driver and the rule backend, writes resolv.conf, reads the routes, picks
-// the job subnets, brings h's posture up (its rules loaded and compared),
-// starts the host's resolver, reads an internet: false host's domain list,
-// resolves GitHub's API name, and only then starts the daemon and creates
-// the job network. Any failure before the daemon starts leaves no daemon
-// and no resolver; one after stops both.
+// bringUp brings host h up: the cgroup namespace checked, the storage driver,
+// rule backend and job subnets picked, resolv.conf written, h's posture up
+// (its rules loaded and compared), the host's resolver started, an internet:
+// false host's domain list read and GitHub's API name resolved, and only then
+// the daemon started and the job network created. A section h the host's
+// network refuses answers a *hostapi.SectionRefusedError before anything is
+// written. A failure before the daemon starts leaves no daemon and no
+// resolver; one after stops both.
 func bringUp(ctx context.Context, h *config.Host, p *seams, hooks guardHooks) (*hostNet, error) {
 	if err := platform.CheckPrivateNamespace(p.Root); err != nil {
 		return nil, err
@@ -127,8 +129,16 @@ func bringUp(ctx context.Context, h *config.Host, p *seams, hooks guardHooks) (*
 	if n.Kernel, err = platform.ProbeKernel(ctx, run); err != nil {
 		return nil, err
 	}
+	facts, err := readNetFacts(p.Root, n.Kernel, h, true)
+	if err != nil {
+		return nil, err
+	}
+	plan, refusals := facts.plan(h)
+	if len(refusals) > 0 {
+		return nil, refusedError(refusals)
+	}
 	n.rules = &ruleLoader{Run: run, Kernel: n.Kernel, Root: p.Root}
-	if err := n.namespace(ctx, h); err != nil {
+	if err := n.namespace(ctx, h, facts, plan); err != nil {
 		return nil, err
 	}
 	pst := n.newPosture(h)
@@ -158,7 +168,88 @@ func (n *hostNet) checkAndStart(ctx context.Context, p *posture) error {
 	return n.startDaemon(ctx, n.seams)
 }
 
-func (n *hostNet) namespace(ctx context.Context, h *config.Host) error {
+// netFacts is what a boot reads of the host's network before it writes
+// anything there.
+type netFacts struct {
+	kernel *platform.Kernel
+	routes netsetup.Routes
+	// addrs6 are the namespace's global IPv6 addresses, read only for an
+	// egress.ipv6 section when read6 is set.
+	addrs6 []netip.Addr
+	read6  bool
+}
+
+// readNetFacts reads the routes of the namespace at root and, when read6
+// and section h has egress.ipv6, its global IPv6 addresses. It writes
+// nothing.
+func readNetFacts(root platform.Root, k *platform.Kernel, h *config.Host, read6 bool) (*netFacts, error) {
+	routes, err := netsetup.ReadRoutes(root)
+	if err != nil {
+		return nil, err
+	}
+	f := &netFacts{kernel: k, routes: routes, read6: read6 && h.Egress.IPv6}
+	if f.read6 {
+		if f.addrs6, err = netsetup.GlobalAddrs6(root); err != nil {
+			return nil, err
+		}
+	}
+	return f, nil
+}
+
+// netPlan is the job subnet a section boots with and, for egress.ipv6, the
+// /64 of the host's own address.
+type netPlan struct {
+	subnet netip.Prefix
+	own64  netip.Prefix
+}
+
+// plan answers the job network section h boots with, or what of h the
+// facts refuse: a network.subnet an on-link route shadows, no free pool for
+// an unset one, and egress.ipv6 with no IPv6 address, default route or nat
+// table; with the addresses unread, the nat table alone.
+func (f *netFacts) plan(h *config.Host) (netPlan, []config.FieldError) {
+	at := "hosts." + h.Name + "."
+	var p netPlan
+	var out []config.FieldError
+	var err error
+	if h.Subnet.IsValid() {
+		p.subnet, err = h.Subnet, netsetup.CheckSubnet(h, f.routes.OnLink)
+	} else {
+		p.subnet, err = netsetup.PickSubnet(h, f.routes.OnLink)
+	}
+	if err != nil {
+		out = append(out, config.FieldError{Path: at + "network.subnet", Message: strings.TrimPrefix(err.Error(), "netsetup: job subnet: ")})
+	}
+	switch {
+	case !h.Egress.IPv6:
+	case f.read6:
+		if p.own64, err = netsetup.CheckIPv6(f.addrs6, f.routes, f.kernel.IPv6NAT); err != nil {
+			out = append(out, config.FieldError{Path: at + "egress.ipv6", Message: strings.TrimPrefix(err.Error(), "netsetup: egress.ipv6 is true, but ")})
+		}
+	case !f.kernel.IPv6NAT:
+		out = append(out, config.FieldError{Path: at + "egress.ipv6", Message: "the host's kernel has no IPv6 nat table, which egress.ipv6 needs"})
+	}
+	return p, out
+}
+
+// bootRefusals answers what of section h the host's network refuses, read
+// as a boot on p reads it.
+func bootRefusals(ctx context.Context, p *seams, h *config.Host) ([]config.FieldError, error) {
+	k, err := platform.ProbeKernel(ctx, platform.Bounded(p.Run))
+	if err != nil {
+		return nil, err
+	}
+	f, err := readNetFacts(p.Root, k, h, true)
+	if err != nil {
+		return nil, err
+	}
+	_, out := f.plan(h)
+	return out, nil
+}
+
+// namespace writes resolv.conf and, for egress.ipv6, the namespace's IPv6
+// forwarding and the job /64, over the facts and plan a boot checked.
+func (n *hostNet) namespace(ctx context.Context, h *config.Host, f *netFacts, plan netPlan) error {
 	p := n.seams
 	var err error
 	if n.Original, err = netsetup.ReadOriginal(p.Root); err != nil {
@@ -168,39 +259,16 @@ func (n *hostNet) namespace(ctx context.Context, h *config.Host) error {
 	if err != nil {
 		return err
 	}
-	routes, err := netsetup.ReadRoutes(p.Root)
-	if err != nil {
-		return err
+	n.Gateway4, n.Gateway6, n.Subnet = f.routes.Gateway4, f.routes.Gateway6, plan.subnet
+	if !h.Egress.IPv6 {
+		return nil
 	}
-	n.Gateway4, n.Gateway6 = routes.Gateway4, routes.Gateway6
-	if h.Egress.IPv6 {
-		err = n.ipv6(ctx, p, routes)
-		if err != nil {
-			return err
-		}
-	}
-	if h.Subnet.IsValid() {
-		n.Subnet = h.Subnet
-		return netsetup.CheckSubnet(h, routes.OnLink)
-	}
-	n.Subnet, err = netsetup.PickSubnet(h, routes.OnLink)
-	return err
-}
-
-func (n *hostNet) ipv6(ctx context.Context, p *seams, routes netsetup.Routes) error {
-	addrs, err := netsetup.GlobalAddrs6(p.Root)
-	if err != nil {
-		return err
-	}
-	if n.Own64, err = netsetup.CheckIPv6(addrs, routes, n.Kernel.IPv6NAT); err != nil {
-		return err
-	}
-	n.Addr6 = addrs[0]
+	n.Own64, n.Addr6 = plan.own64, f.addrs6[0]
 	err = netsetup.EnableIPv6Forwarding(p.Root)
 	if err != nil {
 		return err
 	}
-	n.Job6, err = netsetup.JobPrefix6(ctx, p.Root.Path(stateDir+"/job-ipv6"), routes.OnLink, p.Random)
+	n.Job6, err = netsetup.JobPrefix6(ctx, p.Root.Path(stateDir+"/job-ipv6"), f.routes.OnLink, p.Random)
 	return err
 }
 
