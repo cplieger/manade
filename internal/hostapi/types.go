@@ -162,6 +162,9 @@ type SectionStatus struct {
 	Waiting         []string `json:"waiting,omitempty"`
 	Revision        uint64   `json:"revision,omitempty"`
 	PendingRevision uint64   `json:"pending_revision,omitempty"`
+	// SaveFailures counts this run's failed saves of the host's state file,
+	// whose next start boots the last state saved whole.
+	SaveFailures uint64 `json:"save_failures,omitempty"`
 }
 
 // SectionRefusal is a section the host refused.

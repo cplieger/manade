@@ -4,11 +4,15 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net"
 	"os"
 	"path/filepath"
+	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
+	"github.com/cplieger/go/filesafe"
 	"github.com/cplieger/go/health/v2"
 	"github.com/cplieger/manade/internal/config"
 	"github.com/cplieger/manade/internal/hostapi"
@@ -139,6 +143,42 @@ func TestRunServesItsAPIOverTheChannel(t *testing.T) {
 	case <-l.Done():
 	case <-time.After(10 * time.Second):
 		t.Error("the host's connection stayed open after its run ended")
+	}
+}
+
+// A run saves its state again while the last save failed: a refusal
+// carried from the last start leaves the file once saves succeed.
+func TestARunSavesItsStateAgain(t *testing.T) {
+	s := waitingAs(t, &config.Self{Name: "lan"})
+	refused := &hostapi.SectionRefusal{Hash: "a1", Errors: []hostapi.FieldError{{Path: "hosts.lan.dns", Message: "no answer"}}}
+	if err := writeState(t.Context(), s.sectionPath, &hostState{Refused: refused}); err != nil {
+		t.Fatal(err)
+	}
+	var failing atomic.Bool
+	failing.Store(true)
+	inner, retry := writeState, saveRetry
+	writeState = func(ctx context.Context, path string, st *hostState) error {
+		if failing.Load() {
+			return &filesafe.WriteError{Phase: filesafe.PhaseRename, Err: syscall.EROFS}
+		}
+		return inner(ctx, path, st)
+	}
+	saveRetry = 10 * time.Millisecond
+	t.Cleanup(func() { writeState, saveRetry = inner, retry })
+	ctx, cancel := context.WithCancel(t.Context())
+	ran := make(chan error, 1)
+	go func() {
+		ran <- s.runLinked(ctx, func(context.Context) (net.Conn, error) { return nil, errors.New("no control plane") })
+	}()
+	waitFor(t, "a failed save", func() bool { return s.sectionStatus().SaveFailures > 0 })
+	failing.Store(false)
+	waitFor(t, "the refusal out of the file", func() bool {
+		st, _, err := readState(t.Context(), s.sectionPath)
+		return err == nil && st.Refused == nil
+	})
+	cancel()
+	if err := <-ran; err != nil {
+		t.Errorf("runLinked = %v", err)
 	}
 }
 

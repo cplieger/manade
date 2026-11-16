@@ -3,6 +3,7 @@ package host
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/netip"
@@ -10,10 +11,12 @@ import (
 	"slices"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"testing/iotest"
 	"time"
 
+	"github.com/cplieger/go/filesafe"
 	"github.com/cplieger/manade/internal/host/netsetup"
 	"github.com/cplieger/manade/internal/host/platform"
 	"github.com/cplieger/manade/internal/hostapi"
@@ -70,10 +73,7 @@ func failingFirst(p *seams, always bool) {
 // booted on the host, with before as the section it ran before, if any.
 func saveUnbooted(t *testing.T, s *supervisor, sec, before *hostapi.Section) {
 	t.Helper()
-	if err := writeSection(t.Context(), s.sectionPath, sec); err != nil {
-		t.Fatal(err)
-	}
-	if err := writeState(t.Context(), s.fallbackPath, &fallbackFile{For: hashOf(t, sec), Section: before}); err != nil {
+	if err := writeState(t.Context(), s.sectionPath, &hostState{Section: sec, Fallback: before, Unbooted: true}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -113,21 +113,13 @@ func bootAsync(t *testing.T, s *supervisor) <-chan booted {
 	return done
 }
 
-func gone(path string) bool {
-	_, err := os.Stat(path)
-	return errors.Is(err, os.ErrNotExist)
-}
-
-// failWrites makes writeState fail at path until the test ends or it
-// calls the restore answered.
-func failWrites(t *testing.T, path string) (restore func()) {
+// failSaves makes every save of the host's state fail at phase, leaving
+// the file as it was, until the test ends or it calls the restore answered.
+func failSaves(t *testing.T, phase filesafe.WritePhase) (restore func()) {
 	t.Helper()
 	inner := writeState
-	writeState = func(ctx context.Context, p string, v any) error {
-		if p == path {
-			return errors.New("no space left on device")
-		}
-		return inner(ctx, p, v)
+	writeState = func(context.Context, string, *hostState) error {
+		return fmt.Errorf("writing section.json: %w", &filesafe.WriteError{Phase: phase, Err: syscall.ENOSPC})
 	}
 	restore = func() { writeState = inner }
 	t.Cleanup(restore)
@@ -226,7 +218,7 @@ func TestABootRefusalRunsTheSectionBefore(t *testing.T) {
 		if saved, ok, err := readSection(t.Context(), r.sectionPath); !ok || err != nil || saved.Revision != 1 {
 			t.Errorf("saved %+v, %v, %v; want revision 1", saved, ok, err)
 		}
-		if !gone(r.fallbackPath) {
+		if !noFallback(stateOf(t, r)) {
 			t.Error("the fallback is still saved")
 		}
 	})
@@ -248,7 +240,7 @@ func TestABootRefusalRunsTheSectionBefore(t *testing.T) {
 		if st := r.sectionStatus(); st.PendingHash != "" || st.Hash != hashOf(t, before) {
 			t.Errorf("section status = %+v, want nothing pending", st)
 		}
-		if !gone(r.fallbackPath) {
+		if !noFallback(stateOf(t, r)) {
 			t.Error("a refused section saved a fallback")
 		}
 	})
@@ -321,8 +313,8 @@ func TestABootStepFailureRunsTheSectionBefore(t *testing.T) {
 			if saved, ok, err := readSection(t.Context(), s.sectionPath); !ok || err != nil || saved.Revision != 1 {
 				t.Errorf("saved %+v, %v, %v; want revision 1", saved, ok, err)
 			}
-			if !gone(s.fallbackPath) || !gone(s.unbootablePath()) {
-				t.Error("the fallback or a restart's record is still saved")
+			if st := stateOf(t, s); !noFallback(st) || st.Refused != nil {
+				t.Errorf("state %+v, want no fallback and no refusal kept for a restart", st)
 			}
 			if !slices.Equal(s.net.Original.Addrs, []netip.Addr{netip.MustParseAddr("192.168.1.1")}) {
 				t.Errorf("the second boot read the machine's resolvers as %v", s.net.Original.Addrs)
@@ -388,8 +380,8 @@ func TestABootThatLostIPv6Restarts(t *testing.T) {
 		if saved, ok, err := readSection(t.Context(), s.sectionPath); !ok || err != nil || saved.Revision != 1 {
 			t.Errorf("saved %+v, %v, %v; want revision 1", saved, ok, err)
 		}
-		if !gone(s.fallbackPath) || gone(s.unbootablePath()) {
-			t.Error("want the fallback record dropped and the refusal saved")
+		if st := stateOf(t, s); !noFallback(st) || st.Refused == nil || st.Refused.Hash != hashOf(t, failing) {
+			t.Errorf("state %+v, want the fallback dropped and the refusal saved", st)
 		}
 	})
 	g := newUpFixture(t)
@@ -406,7 +398,7 @@ func TestABootThatLostIPv6Restarts(t *testing.T) {
 		if got := refusedAt(t, err); !slices.Equal(got, []string{"hosts.lan.dns"}) {
 			t.Errorf("refused at %q", got)
 		}
-		if !gone(r.unbootablePath()) {
+		if stateOf(t, r).Refused != nil {
 			t.Error("the saved refusal outlived the restart it was saved for")
 		}
 	})
@@ -424,7 +416,7 @@ func TestABootThatLostIPv6Restarts(t *testing.T) {
 }
 
 // A stop during the boot of a section not yet booted is no refusal: the
-// section and its fallback record stay for the next start.
+// section and its fallback stay for the next start.
 func TestAStopDuringABootStepIsNoRefusal(t *testing.T) {
 	f := newUpFixture(t)
 	p := rebootable(f)
@@ -443,8 +435,8 @@ func TestAStopDuringABootStepIsNoRefusal(t *testing.T) {
 	if st := s.sectionStatus(); st.Refused != nil {
 		t.Errorf("refused %+v", st.Refused)
 	}
-	if saved, ok, err := readSection(t.Context(), s.sectionPath); !ok || err != nil || saved.Revision != 2 || gone(s.fallbackPath) {
-		t.Errorf("saved %+v, %v, %v, record kept %v; want revision 2 with its record", saved, ok, err, !gone(s.fallbackPath))
+	if st := stateOf(t, s); st.Section == nil || st.Section.Revision != 2 || !st.Unbooted || st.Fallback == nil || st.Fallback.Revision != 1 {
+		t.Errorf("state %+v; want revision 2 not booted, with revision 1 to fall back to", st)
 	}
 }
 
@@ -512,8 +504,8 @@ func TestAFirstSectionsBootStepFailureWaits(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("the boot did not end")
 	}
-	if !gone(s.sectionPath) || !gone(s.fallbackPath) {
-		t.Error("the refused first section or its record is still saved")
+	if st := stateOf(t, s); st.Section != nil || st.Fallback != nil || st.Refused == nil {
+		t.Errorf("state %+v, want no section and the refusal saved", st)
 	}
 	r := restarted(s, rebootable(newUpFixture(t)))
 	r.bootSaved(t.Context())
@@ -549,15 +541,28 @@ func TestARestartKeepsTheRunningSectionAsFallback(t *testing.T) {
 			s, _ := upOn(t, before, f.platform())
 			restart := sectionOf(2, ipv6Host, smallJSON)
 			put(t, s, restart)
-			var rec fallbackFile
-			if ok, err := readState(t.Context(), s.fallbackPath, &rec); !ok || err != nil || rec.For != hashOf(t, restart) || rec.Section == nil || hashOf(t, rec.Section) != hashOf(t, before) || rec.Section.Revision != 1 {
-				t.Fatalf("fallback %+v, %v, %v; want revision 1 of the running section for the restart's", rec, ok, err)
+			st := stateOf(t, s)
+			if st.Section == nil || hashOf(t, st.Section) != hashOf(t, restart) || !st.Unbooted || st.Fallback == nil || hashOf(t, st.Fallback) != hashOf(t, before) || st.Fallback.Revision != 1 {
+				t.Fatalf("state %+v; want the restart's section not booted, with revision 1 of the running section to fall back to", st)
 			}
 			put(t, s, tc.then)
-			if !gone(s.fallbackPath) {
+			if !noFallback(stateOf(t, s)) {
 				t.Error("the fallback outlived the restart it was kept for")
 			}
 		})
+	}
+}
+
+// A new revision of the section a restart waits for keeps the restart's
+// fallback.
+func TestARestartDeliveredAgainKeepsItsFallback(t *testing.T) {
+	s, _, _ := upSupervisor(t, sectionOf(1, lanHost, smallJSON))
+	put(t, s, sectionOf(2, dnsHost, smallJSON))
+	if ans := put(t, s, sectionOf(3, dnsHost, smallJSON)); ans.Applies != hostapi.SectionPendingRestart {
+		t.Fatalf("PUT = %+v, want the restart still pending", ans)
+	}
+	if st := stateOf(t, s); st.Section == nil || st.Section.Revision != 3 || !st.Unbooted || st.Fallback == nil || st.Fallback.Revision != 1 {
+		t.Errorf("state %+v; want revision 3 not booted, with revision 1 to fall back to", st)
 	}
 }
 
@@ -574,20 +579,19 @@ func TestAFailedSaveKeepsTheFallback(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			s, _, _ := upSupervisor(t, sectionOf(1, lanHost, smallJSON))
 			put(t, s, sectionOf(2, dnsHost, smallJSON))
-			failWrites(t, s.sectionPath)
+			failSaves(t, filesafe.PhaseRename)
 			if _, err := apiOf(s).PutSection(t.Context(), tc.then); err == nil {
 				t.Fatal("PUT succeeded with its save failing")
 			}
-			var rec fallbackFile
-			if ok, err := readState(t.Context(), s.fallbackPath, &rec); !ok || err != nil || rec.Section == nil || rec.Section.Revision != 1 {
-				t.Errorf("fallback %+v, %v, %v; want it kept", rec, ok, err)
+			if st := stateOf(t, s); !st.Unbooted || st.Fallback == nil || st.Fallback.Revision != 1 || st.Section.Revision != 2 {
+				t.Errorf("state %+v; want revision 2's restart with its fallback kept", st)
 			}
 		})
 	}
 }
 
 // A boot refusal whose fallback is not saved in the refused section's place
-// keeps the fallback record and boots the fallback now; the next start is
+// keeps the saved state and boots the fallback now; the next start is
 // refused the same way and boots it again.
 func TestABootRefusalThatFailsToSaveKeepsTheFallback(t *testing.T) {
 	f := newUpFixture(t)
@@ -596,11 +600,11 @@ func TestABootRefusalThatFailsToSaveKeepsTheFallback(t *testing.T) {
 	before, failing := sectionOf(1, lanHost, smallJSON), sectionOf(2, dnsHost, smallJSON)
 	s := waitingOn(t, lanSelf(), p)
 	saveUnbooted(t, s, failing, before)
-	restore := failWrites(t, s.sectionPath)
+	restore := failSaves(t, filesafe.PhaseTempSync)
 	s.bootSaved(t.Context())
 	bootUp(t, s)
-	if s.running.hash != hashOf(t, before) || gone(s.fallbackPath) {
-		t.Fatalf("booted revision %d, fallback kept %v; want revision 1 with the record kept", s.running.raw.Revision, !gone(s.fallbackPath))
+	if s.running.hash != hashOf(t, before) || noFallback(stateOf(t, s)) {
+		t.Fatalf("booted revision %d, state %+v; want revision 1 with the saved state kept", s.running.raw.Revision, stateOf(t, s))
 	}
 	restore()
 	g := newUpFixture(t)
@@ -629,7 +633,7 @@ func TestABootThatComesUpDropsTheFallback(t *testing.T) {
 	if r.running.raw.Revision != 2 {
 		t.Errorf("booted revision %d, want 2", r.running.raw.Revision)
 	}
-	if !gone(r.fallbackPath) {
+	if !noFallback(stateOf(t, r)) {
 		t.Error("the fallback outlived the boot")
 	}
 }
@@ -645,43 +649,8 @@ func TestABootRefusingItsFallbackToo(t *testing.T) {
 	waitFor(t, "both refusals with neither section saved", func() bool {
 		st := s.sectionStatus()
 		return st.State == hostapi.SectionWaiting && st.Refused != nil && st.Refused.Errors[0].Path == "hosts.lan.network.subnet" &&
-			gone(s.sectionPath) && gone(s.fallbackPath)
+			stateOf(t, s).Section == nil && stateOf(t, s).Fallback == nil
 	})
-}
-
-// A fallback record the host fails to remove names a section that is no
-// longer saved: a boot that refuses the fallback too waits and boots the
-// next delivery.
-func TestAFallbackThatIsNotRemovedIsTakenOnce(t *testing.T) {
-	f := newUpFixture(t)
-	s := waitingOn(t, lanSelf(), f.platform())
-	saveUnbooted(t, s, sectionOf(2, ipv6Host, smallJSON), sectionOf(1, shadowedHost, smallJSON))
-	inner := removeState
-	removeState = func(p string) error {
-		if p == s.fallbackPath {
-			return errors.New("read-only file system")
-		}
-		return inner(p)
-	}
-	t.Cleanup(func() { removeState = inner })
-	s.bootSaved(t.Context())
-	done := bootAsync(t, s)
-	waitFor(t, "the host waiting with the fallback's refusal", func() bool {
-		st := s.sectionStatus()
-		return st.State == hostapi.SectionWaiting && st.Refused != nil && st.Refused.Errors[0].Path == "hosts.lan.network.subnet"
-	})
-	if ans := put(t, s, sectionOf(3, lanHost, smallJSON)); ans.Applies != hostapi.SectionApplied {
-		t.Fatalf("PUT = %+v", ans)
-	}
-	select {
-	case b := <-done:
-		if b.n == nil {
-			t.Fatalf("boot = %v, want the host up", b.err)
-		}
-		t.Cleanup(func() { _ = b.n.stop() })
-	case <-time.After(10 * time.Second):
-		t.Fatal("the boot did not go on with the delivered section")
-	}
 }
 
 // A saved section with no fallback that the boot refuses leaves the host
@@ -697,7 +666,7 @@ func TestABootRefusalWithNoFallbackWaits(t *testing.T) {
 	done := bootAsync(t, s)
 	waitFor(t, "the boot's refusal with nothing saved", func() bool {
 		st := s.sectionStatus()
-		return st.State == hostapi.SectionWaiting && st.Refused != nil && gone(s.sectionPath)
+		return st.State == hostapi.SectionWaiting && st.Refused != nil && stateOf(t, s).Section == nil
 	})
 	t.Run("waiting, with the refusal", func(t *testing.T) {
 		if st := s.sectionStatus(); st.Refused.Errors[0].Path != "hosts.lan.network.subnet" || st.Hash != "" {

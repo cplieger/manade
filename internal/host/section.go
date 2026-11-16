@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io/fs"
 	"net/netip"
-	"os"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -19,30 +18,24 @@ import (
 	"github.com/cplieger/manade/internal/hostapi"
 )
 
-// sectionPath is the section the host last accepted, which its next boot
-// runs.
+// sectionPath is the host's state file, hostState.
 const sectionPath = stateDir + "/section.json"
 
-// The files beside the saved section: fallbackName records that a saved
-// section has not booted on this host yet, with the section to boot
-// instead; unbootableName is a boot's refusal, saved for the next start
-// when the host restarts into a fresh namespace to take it.
-const (
-	fallbackName   = "section-fallback.json"
-	unbootableName = "section-unbootable.json"
-)
-
-// fallbackFile is fallbackName's record: the section whose hash is For has
-// not booted on this host, and Section, if any, is the one the host ran
-// before it.
-type fallbackFile struct {
+// hostState is what a start boots and what this host's boots made of it,
+// in one file written whole, so each change of it is one rename and a start
+// decides from the file alone.
+type hostState struct {
+	// Section is the section the next start boots; nil waits for one.
 	Section *hostapi.Section `json:"section,omitempty"`
-	For     string           `json:"for"`
-}
-
-// isFor reports whether rec, which may be nil, is for section next.
-func (rec *fallbackFile) isFor(next *accepted) bool {
-	return rec != nil && rec.For == next.hash
+	// Fallback is the section the host ran before an Unbooted Section, if
+	// any.
+	Fallback *hostapi.Section `json:"fallback,omitempty"`
+	// Refused is a boot's refusal, kept for the next start only.
+	Refused *hostapi.SectionRefusal `json:"refused,omitempty"`
+	// Unbooted marks a Section that has not booted on this host, so a boot
+	// step's failure is its refusal rather than the host's. Section is the
+	// section each boot of a run runs, so the mark is that section's.
+	Unbooted bool `json:"unbooted,omitempty"`
 }
 
 // accepted is a section that passed the host's checks.
@@ -111,59 +104,105 @@ func refusedError(fe []config.FieldError) *hostapi.SectionRefusedError {
 	return &hostapi.SectionRefusedError{Errors: out}
 }
 
-// readSection answers the section at path, false when there is none.
-func readSection(ctx context.Context, path string) (*hostapi.Section, bool, error) {
-	var sec hostapi.Section
-	ok, err := readState(ctx, path, &sec)
-	if !ok {
-		return nil, false, err
-	}
-	return &sec, true, nil
-}
+// stateLimit bounds the state file: two sections and a refusal's errors,
+// which name fields of a section.
+const stateLimit = 3 * hostapi.SectionLimit
 
-// readState decodes the JSON file at path, at most a section and its
-// record's size, into v; false when there is none.
-func readState(ctx context.Context, path string, v any) (bool, error) {
-	b, err := filesafe.ReadBounded(ctx, path, hostapi.SectionLimit+4096)
+// readState answers the host's state at path, false when there is none.
+func readState(ctx context.Context, path string) (hostState, bool, error) {
+	var st hostState
+	b, err := filesafe.ReadBounded(ctx, path, stateLimit)
 	if errors.Is(err, fs.ErrNotExist) {
-		return false, nil
+		return st, false, nil
 	}
 	if err != nil {
-		return false, err
+		return st, false, err
 	}
-	if err := json.Unmarshal(b, v); err != nil {
-		return false, fmt.Errorf("%s: %w", path, err)
+	if err := json.Unmarshal(b, &st); err != nil {
+		return hostState{}, false, fmt.Errorf("%s: %w", path, err)
 	}
-	return true, nil
+	return st, true, nil
 }
 
-// writeSection replaces the section at path whole.
-func writeSection(ctx context.Context, path string, sec *hostapi.Section) error {
-	return writeState(ctx, path, sec)
+// errNotDurable is a state written to its path whose directory's fsync
+// failed, so a crash may lose it.
+var errNotDurable = errors.New("the state's directory was not synced")
+
+// writeState replaces the state at path whole: a temporary file, fsync,
+// rename and the directory's fsync, so a crash leaves the old state or the
+// new one; errNotDurable when only the last step failed. A var so a test
+// can fail it.
+var writeState = func(ctx context.Context, path string, st *hostState) error {
+	b, err := json.Marshal(st)
+	if err != nil {
+		return err
+	}
+	res, err := filesafe.WriteFile(ctx, path, b, filesafe.WithMode(0o600), filesafe.WithMkdirAll(true))
+	if err != nil {
+		return fmt.Errorf("writing %s: %w", filepath.Base(path), err)
+	}
+	if !res.Durable {
+		return errNotDurable
+	}
+	return nil
 }
 
-// writeState replaces the file at path with v as JSON, whole: a temporary
-// file, fsync and rename, so a crash leaves the old file or the new one.
-// removeState removes the file at path, if there is one. Both are vars so a
-// test can fail one path.
-var (
-	writeState = func(ctx context.Context, path string, v any) error {
-		b, err := json.Marshal(v)
-		if err != nil {
-			return err
-		}
-		if _, err := filesafe.WriteFile(ctx, path, b, filesafe.WithMode(0o600), filesafe.WithMkdirAll(true)); err != nil {
-			return fmt.Errorf("writing %s: %w", filepath.Base(path), err)
-		}
+// save writes the state the host holds. A failure is counted and logged,
+// and keepSaving tries again, so the host runs on what it holds and its
+// next start finds the last state saved whole; the error is nil once the
+// state is at its path. sectionMu is held.
+func (s *supervisor) save(ctx context.Context) error {
+	err := writeState(ctx, s.sectionPath, &s.state)
+	s.unsaved = err != nil
+	if err == nil {
 		return nil
 	}
-	removeState = func(path string) error {
-		if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			return fmt.Errorf("removing %s: %w", filepath.Base(path), err)
-		}
+	s.saveFailures.Add(1)
+	s.log.Error("The host's state was not saved", "error", err)
+	if errors.Is(err, errNotDurable) {
 		return nil
 	}
-)
+	return err
+}
+
+// commit makes st the host's state once it is saved, as a delivery is
+// accepted only then; a failed save leaves the state the host held.
+// sectionMu is held.
+func (s *supervisor) commit(ctx context.Context, st hostState) error {
+	before, unsaved := s.state, s.unsaved
+	s.state = st
+	if err := s.save(ctx); err != nil {
+		s.state, s.unsaved = before, unsaved
+		return err
+	}
+	return nil
+}
+
+// saveRetry is how often a state the host failed to save is tried again,
+// a var so a test can shorten it.
+var saveRetry = time.Minute
+
+// keepSaving saves the host's state again while its last save failed,
+// until ctx ends.
+func (s *supervisor) keepSaving(ctx context.Context) {
+	t := time.NewTicker(saveRetry)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		s.sectionMu.Lock()
+		if s.unsaved {
+			_ = s.save(ctx)
+			if !s.unsaved {
+				s.log.Info("The host's state was saved")
+			}
+		}
+		s.sectionMu.Unlock()
+	}
+}
 
 // The retry of a section whose apply failed: retryBase doubling to
 // retryCap.
@@ -252,8 +291,8 @@ func (s *supervisor) deliver(ctx context.Context, sec *hostapi.Section) (hostapi
 	return s.deliverUp(ctx, next)
 }
 
-// deliverFirst saves next, the host's first section, recorded as not yet
-// booted, and hands it to the waiting boot once the host accepts it as
+// deliverFirst saves next, the host's first section, marked not booted,
+// and hands it to the waiting boot once the host accepts it as
 // firstRefusals judges it; sectionMu is held.
 func (s *supervisor) deliverFirst(ctx context.Context, next *accepted) (hostapi.SectionAnswer, error) {
 	refusals, err := s.firstRefusals(ctx, next.host)
@@ -265,10 +304,7 @@ func (s *supervisor) deliverFirst(ctx context.Context, next *accepted) (hostapi.
 		s.refuse(&next.raw, sr)
 		return hostapi.SectionAnswer{}, sr
 	}
-	if err := writeState(ctx, s.fallbackPath, &fallbackFile{For: next.hash}); err != nil {
-		return hostapi.SectionAnswer{}, err
-	}
-	if err := writeSection(ctx, s.sectionPath, &next.raw); err != nil {
+	if err := s.commit(ctx, hostState{Section: &next.raw, Unbooted: true}); err != nil {
 		return hostapi.SectionAnswer{}, err
 	}
 	s.running, s.refused = next, nil
@@ -306,11 +342,13 @@ func (s *supervisor) firstRefusals(ctx context.Context, h *config.Host) ([]confi
 // change from the running section touches; sectionMu is held.
 func (s *supervisor) deliverUp(ctx context.Context, next *accepted) (hostapi.SectionAnswer, error) {
 	if s.holds(next) {
-		if err := writeSection(ctx, s.sectionPath, &next.raw); err != nil {
-			return hostapi.SectionAnswer{}, err
-		}
+		st := s.state
+		st.Section = &next.raw
 		if next.hash == s.running.hash {
-			s.dropFallback()
+			st.Fallback, st.Unbooted = nil, false
+		}
+		if err := s.commit(ctx, st); err != nil {
+			return hostapi.SectionAnswer{}, err
 		}
 		s.keepHeld(next)
 		s.publish()
@@ -326,16 +364,12 @@ func (s *supervisor) deliverUp(ctx context.Context, next *accepted) (hostapi.Sec
 		s.refuse(&next.raw, sr)
 		return hostapi.SectionAnswer{}, sr
 	}
+	st := hostState{Section: &next.raw}
 	if r == rowRestart {
-		if err := writeState(ctx, s.fallbackPath, &fallbackFile{For: next.hash, Section: &s.running.raw}); err != nil {
-			return hostapi.SectionAnswer{}, err
-		}
+		st.Fallback, st.Unbooted = &s.running.raw, true
 	}
-	if err := writeSection(ctx, s.sectionPath, &next.raw); err != nil {
+	if err := s.commit(ctx, st); err != nil {
 		return hostapi.SectionAnswer{}, err
-	}
-	if r != rowRestart {
-		s.dropFallback()
 	}
 	s.refused = nil
 	if err := s.applyRow(ctx, next, r); err != nil {
@@ -343,15 +377,6 @@ func (s *supervisor) deliverUp(ctx context.Context, next *accepted) (hostapi.Sec
 	}
 	s.publish()
 	return s.answer(), nil
-}
-
-// dropFallback removes the fallback record once the section saved is not
-// the one it is for. A record left behind names a section no start boots,
-// so its failure is only logged.
-func (s *supervisor) dropFallback() {
-	if err := removeState(s.fallbackPath); err != nil {
-		s.log.Error("The fallback record was not removed", "error", err)
-	}
 }
 
 // holds reports whether next has the settings of the section the host runs
@@ -590,6 +615,7 @@ func (s *supervisor) publish() {
 // section waits for.
 func (s *supervisor) sectionStatus() hostapi.SectionStatus {
 	st := *s.view.Load()
+	st.SaveFailures = s.saveFailures.Load()
 	if st.PendingHash != "" && st.Failure == "" && s.phase.Load() == phaseUp {
 		st.Waiting = s.runners.holdWaiting()
 	}

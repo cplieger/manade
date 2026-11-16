@@ -10,7 +10,6 @@ import (
 	"net"
 	"net/netip"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -85,6 +84,9 @@ type supervisor struct {
 	running *accepted
 	pending *pendingSection
 	refused *hostapi.SectionRefusal
+	// state is the host's state, saved unless unsaved, both under
+	// sectionMu.
+	state hostState
 	// unbootable is the section a boot of this run refused, under
 	// sectionMu: its settings delivered again would restart the host into
 	// the same refusal.
@@ -100,28 +102,30 @@ type supervisor struct {
 	// cancelRun ends the run with why, set before the host is up.
 	cancelRun context.CancelCauseFunc
 	// ping asks the daemon for the health verdict: dk.Ping.
-	ping         func(ctx context.Context) error
-	opts         *Options
-	info         docker.Info
-	instance     string
-	sectionPath  string
-	fallbackPath string
-	plat         jobspec.Platform
-	restored     atomic.Uint64
+	ping        func(ctx context.Context) error
+	opts        *Options
+	info        docker.Info
+	instance    string
+	sectionPath string
+	plat        jobspec.Platform
+	restored    atomic.Uint64
+	// saveFailures counts the failed saves of state.
+	saveFailures atomic.Uint64
 	// sectionMu serialises deliveries and the applies they leave pending;
 	// rebuilding, under it, marks a rebuild running without it.
 	sectionMu  sync.Mutex
 	phase      atomic.Int32
 	serving    atomic.Bool
 	rebuilding bool
+	unsaved    bool
 }
 
 // newSupervisor is a run of host self on p, its section saved at path.
 func newSupervisor(self *config.Self, opts *Options, path string, p *seams) *supervisor {
 	s := &supervisor{
 		self: self, log: opts.Log, opts: opts, lat: newLatencies(), instance: newInstanceID(), seams: p,
-		sectionPath: path, fallbackPath: filepath.Join(filepath.Dir(path), fallbackName),
-		arrived: make(chan *accepted, 1), changed: make(chan struct{}, 1), restarting: make(chan struct{}),
+		sectionPath: path,
+		arrived:     make(chan *accepted, 1), changed: make(chan struct{}, 1), restarting: make(chan struct{}),
 	}
 	s.publish()
 	return s
@@ -140,8 +144,8 @@ func Run(ctx context.Context, self *config.Self, opts *Options) error {
 
 // runLinked is Run with the channel dialed by dial. The saved section is
 // read before the first dial, so every upgrade names its revision; the
-// channel outlives ctx until the run has stopped, so the control plane
-// reads the host through its shutdown.
+// channel and keepSaving outlive ctx until the run has stopped, so the
+// control plane reads the host through its shutdown.
 func (s *supervisor) runLinked(ctx context.Context, dial func(context.Context) (net.Conn, error)) error {
 	rctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
@@ -150,15 +154,13 @@ func (s *supervisor) runLinked(ctx context.Context, dial func(context.Context) (
 		Dial: dial, Hello: s.hello, Handler: hostapi.NewServer(&backend{s: s}, s.instance, s.log).Handler(), Log: s.log,
 	})
 	uctx, stopUplink := context.WithCancel(context.WithoutCancel(ctx))
-	uplinkDone := make(chan struct{})
-	go func() {
-		up.Run(uctx)
-		close(uplinkDone)
-	}()
+	var wg sync.WaitGroup
+	wg.Go(func() { up.Run(uctx) })
+	wg.Go(func() { s.keepSaving(uctx) })
 	s.log.Info("The runner host dials the control plane", "host", s.self.Name, "instance", s.instance, "version", s.opts.Version)
 	err := s.run(ctx, rctx, cancel)
 	stopUplink()
-	<-uplinkDone
+	wg.Wait()
 	return err
 }
 
@@ -221,8 +223,8 @@ func ended(ctx, rctx context.Context) error {
 // (stepError), is refused as a delivery is: the host boots on the section
 // it ran before or, with none, waits for another. A namespace a failed boot
 // wrote that the next section cannot run in, or that a waiting host would
-// judge deliveries in, ends the run with ErrRestart, the refusal saved for
-// the next start. Any other failure ends the run with its cause.
+// judge deliveries in, ends the run with ErrRestart once the refusal is
+// saved for the next start. Any other failure ends the run with its cause.
 func (s *supervisor) boot(ctx context.Context) (*hostNet, error) {
 	hooks := guardHooks{Restored: s.onRestored, Checked: s.onChecked}
 	off, err := netsetup.IPv6Off(s.seams.Root)
@@ -235,21 +237,30 @@ func (s *supervisor) boot(ctx context.Context) (*hostNet, error) {
 		if next == nil {
 			return nil, nil
 		}
-		rec := s.readFallback(context.WithoutCancel(ctx))
+		s.sectionMu.Lock()
+		unbooted := s.state.Unbooted
+		s.sectionMu.Unlock()
 		n, err := bringUp(ctx, next.host, s.seams, hooks)
-		errs := s.refusalOf(ctx, err, b, rec.isFor(next))
+		errs := s.refusalOf(ctx, err, b, unbooted)
 		if errs == nil {
-			// A fallback that came up while the refused section is still
-			// saved keeps the record, so the next start falls back again.
-			if err == nil && rec.isFor(next) {
-				s.dropFallback()
+			if err == nil && unbooted {
+				s.cameUp(ctx)
 			}
 			return n, err
 		}
-		if err := s.bootRefused(ctx, b, next, rec, errs); err != nil {
+		if err := s.bootRefused(ctx, b, next, errs); err != nil {
 			return nil, err
 		}
 	}
+}
+
+// cameUp marks the section the host booted on, which was not booted here
+// before, as booted.
+func (s *supervisor) cameUp(ctx context.Context) {
+	s.sectionMu.Lock()
+	defer s.sectionMu.Unlock()
+	s.state = hostState{Section: s.state.Section}
+	_ = s.save(context.WithoutCancel(ctx))
 }
 
 // refusalOf answers the field errors of a boot's failure err that refuse
@@ -276,46 +287,50 @@ type booting struct {
 	written bool
 }
 
-// bootRefused records next, the section a boot refused with errs, and makes
-// rec's fallback the section the host boots on, saved in next's place, or
-// with none leaves the host waiting with no section saved. The fallback
-// record goes only once its replacement is saved. It answers ErrRestart
-// when the namespace b left cannot boot the fallback, or a waiting host
-// would read it, as a fresh one would.
-func (s *supervisor) bootRefused(ctx context.Context, b *booting, next *accepted, rec *fallbackFile, errs []hostapi.FieldError) error {
+// bootRefused records next, the section a boot refused with errs, and
+// makes its fallback the section the host boots on, or with none leaves the
+// host waiting with no section, both saved in one state. It answers
+// ErrRestart when the namespace b left cannot boot the fallback, or a
+// waiting host would read it, as a fresh one would; a restart whose state
+// was not saved would boot the refused section again, so the host then
+// waits here with the refusal instead.
+func (s *supervisor) bootRefused(ctx context.Context, b *booting, next *accepted, errs []hostapi.FieldError) error {
 	ctx = context.WithoutCancel(ctx)
-	fb := s.fallback(rec, next)
-	restart := b.written && (fb == nil || s.ipv6Lost(b, fb.host))
 	s.sectionMu.Lock()
 	defer s.sectionMu.Unlock()
-	if restart {
-		s.running = nil
-	} else if s.running = fb; fb == nil {
-		s.phase.Store(phaseWaiting)
-	}
+	fb := s.fallback()
+	restart := b.written && (fb == nil || s.ipv6Lost(b, fb.host))
 	s.refuse(&next.raw, &hostapi.SectionRefusedError{Errors: errs})
 	s.unbootable = s.refused
-	var saved error
-	if fb == nil {
+	st := hostState{}
+	if fb != nil {
+		st.Section = &fb.raw
+	}
+	if restart {
+		st.Refused = s.refused
+	}
+	s.state = st
+	saved := s.save(ctx) == nil
+	s.running = fb
+	if restart {
+		s.running = nil
+	}
+	switch {
+	case restart && saved:
+		s.log.Warn("The failed boot left the host's namespace unlike a fresh one, so the host restarts", "hash", next.hash)
+		return ErrRestart
+	case restart:
+		s.log.Error("The failed boot left the host's namespace unlike a fresh one, but the host stays, since a restart would boot the refused section again", "hash", next.hash)
+	case fb == nil:
 		s.log.Warn("The host refused the section it was booting on, so it waits for the control plane's", "hash", next.hash)
-		saved = removeState(s.sectionPath)
-	} else {
+	default:
 		s.log.Warn("The host refused the section it was booting on, so it boots on the section it ran before", "hash", next.hash, "fallback", fb.hash)
-		saved = writeSection(ctx, s.sectionPath, &fb.raw)
 	}
-	if saved != nil {
-		s.log.Error("The section the host boots on was not saved, so its next start reads the refused one", "error", saved)
-	} else if rec != nil {
-		s.dropFallback()
+	if s.running == nil {
+		s.phase.Store(phaseWaiting)
 	}
-	if !restart {
-		return nil
-	}
-	if err := writeState(ctx, s.unbootablePath(), s.refused); err != nil {
-		s.log.Error("The boot's refusal was not saved, so the host's next start judges the refused section afresh", "error", err)
-	}
-	s.log.Warn("The failed boot left the host's namespace unlike a fresh one, so the host restarts", "hash", next.hash)
-	return ErrRestart
+	s.publish()
+	return nil
 }
 
 // ipv6Lost reports whether a failed boot turned off IPv6, which section h
@@ -328,29 +343,15 @@ func (s *supervisor) ipv6Lost(b *booting, h *config.Host) bool {
 	return err != nil || off
 }
 
-// readFallback answers the fallback record, nil when there is none or it
-// does not read. It is read on a context a stop does not cancel, since a
-// refusal during a stop still saves the fallback.
-func (s *supervisor) readFallback(ctx context.Context) *fallbackFile {
-	var rec fallbackFile
-	ok, err := readState(ctx, s.fallbackPath, &rec)
-	if err != nil {
-		s.log.Error("The fallback record could not be read", "error", err)
-	}
-	if !ok {
+// fallback answers the section the host ran before the one it boots, which
+// the state holds only while that one has not booted here, when it still
+// validates. A fallback refused in turn is booted, so it has none.
+// sectionMu is held.
+func (s *supervisor) fallback() *accepted {
+	if s.state.Fallback == nil {
 		return nil
 	}
-	return &rec
-}
-
-// fallback answers rec's section when rec is next's and it still
-// validates. A fallback refused in turn is not the section rec is for, so
-// it has none.
-func (s *supervisor) fallback(rec *fallbackFile, next *accepted) *accepted {
-	if !rec.isFor(next) || rec.Section == nil {
-		return nil
-	}
-	fb, err := check(s.self, rec.Section)
+	fb, err := check(s.self, s.state.Fallback)
 	if err != nil {
 		s.log.Warn("The fallback section no longer validates", "error", err)
 		return nil
@@ -358,46 +359,36 @@ func (s *supervisor) fallback(rec *fallbackFile, next *accepted) *accepted {
 	return fb
 }
 
-func (s *supervisor) unbootablePath() string {
-	return filepath.Join(filepath.Dir(s.sectionPath), unbootableName)
-}
-
-// bootSaved makes the section saved at the last accept the one the host
-// boots on, when it still validates, and takes the refusal a boot saved
-// before restarting: its settings are refused for this run, and the next
-// start judges them afresh.
+// bootSaved loads the host's state: the section it boots on, when it
+// still validates, and the refusal a boot saved before restarting, whose
+// settings are refused for this run only, so it leaves the state at once.
+// A refusal stays in the file while the state cannot be saved; saving any
+// change to the host's settings, or keepSaving, takes it out.
 func (s *supervisor) bootSaved(ctx context.Context) {
-	s.loadUnbootable(ctx)
-	next := s.savedSection(ctx)
-	if next == nil {
-		return
-	}
-	s.sectionMu.Lock()
-	defer s.sectionMu.Unlock()
-	if s.phase.Load() == phaseWaiting {
-		s.running = next
-		s.phase.Store(phaseBooting)
-		s.publish()
-		s.log.Info("The host boots on the section it saved", "hash", next.hash, "revision", next.raw.Revision)
-	}
-}
-
-func (s *supervisor) loadUnbootable(ctx context.Context) {
-	var u hostapi.SectionRefusal
-	ok, err := readState(ctx, s.unbootablePath(), &u)
-	if err == nil {
-		err = removeState(s.unbootablePath())
-	}
+	st, ok, err := readState(ctx, s.sectionPath)
 	if err != nil {
-		s.log.Error("The refusal a boot saved could not be read or removed", "error", err)
+		s.log.Error("The host's state could not be read, so it waits for the control plane's section", "error", err)
 	}
 	if !ok {
 		return
 	}
 	s.sectionMu.Lock()
 	defer s.sectionMu.Unlock()
-	s.refused, s.unbootable = &u, &u
+	s.state = st
+	if r := st.Refused; r != nil {
+		s.refused, s.unbootable = r, r
+		s.state.Refused = nil
+		_ = s.save(context.WithoutCancel(ctx))
+		s.publish()
+	}
+	next := s.savedSection(st.Section)
+	if next == nil || s.phase.Load() != phaseWaiting {
+		return
+	}
+	s.running = next
+	s.phase.Store(phaseBooting)
 	s.publish()
+	s.log.Info("The host boots on the section it saved", "hash", next.hash, "revision", next.raw.Revision)
 }
 
 // awaitSection answers the section the host boots on: bootSaved's, or else
@@ -427,14 +418,11 @@ func (s *supervisor) awaitSection(ctx context.Context) *accepted {
 	}
 }
 
-// savedSection answers the section saved at the last accept, nil when there
-// is none or it no longer validates, which the host reports.
-func (s *supervisor) savedSection(ctx context.Context) *accepted {
-	sec, ok, err := readSection(ctx, s.sectionPath)
-	if err != nil {
-		s.log.Error("The saved section could not be read, so the host waits for the control plane's", "error", err)
-	}
-	if !ok {
+// savedSection answers sec, the section the state boots, nil when there is
+// none or it no longer validates, which the host reports; sectionMu is
+// held.
+func (s *supervisor) savedSection(sec *hostapi.Section) *accepted {
+	if sec == nil {
 		return nil
 	}
 	next, err := check(s.self, sec)
@@ -443,9 +431,7 @@ func (s *supervisor) savedSection(ctx context.Context) *accepted {
 	}
 	s.log.Error("The saved section does not validate, so the host waits for the control plane's", "error", err)
 	if sr, ok := errors.AsType[*hostapi.SectionRefusedError](err); ok {
-		s.sectionMu.Lock()
 		s.refuse(sec, sr)
-		s.sectionMu.Unlock()
 	}
 	return nil
 }

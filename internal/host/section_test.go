@@ -78,6 +78,7 @@ func upAs(t *testing.T, self *config.Self, sec *hostapi.Section, p *seams) (s *s
 	if err := writeSection(t.Context(), s.sectionPath, sec); err != nil {
 		t.Fatal(err)
 	}
+	s.state = hostState{Section: sec}
 	if s.oom, err = platform.LoadOOMTotal(t.Context(), filepath.Join(dir, "oom-kills.json")); err != nil {
 		t.Fatal(err)
 	}
@@ -172,6 +173,31 @@ func hashOf(t *testing.T, sec *hostapi.Section) string {
 	}
 	return h
 }
+
+// readSection answers the section the state at path boots, false when it
+// boots none.
+func readSection(ctx context.Context, path string) (*hostapi.Section, bool, error) {
+	st, _, err := readState(ctx, path)
+	return st.Section, st.Section != nil, err
+}
+
+// writeSection saves sec at path as a section that booted on the host.
+func writeSection(ctx context.Context, path string, sec *hostapi.Section) error {
+	return writeState(ctx, path, &hostState{Section: sec})
+}
+
+// stateOf is the state s saved.
+func stateOf(t *testing.T, s *supervisor) hostState {
+	t.Helper()
+	st, _, err := readState(t.Context(), s.sectionPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return st
+}
+
+// noFallback reports whether st boots its section as booted.
+func noFallback(st hostState) bool { return st.Fallback == nil && !st.Unbooted }
 
 func TestASectionIsSavedBeforeItsAnswer(t *testing.T) {
 	s, _, _ := upSupervisor(t, sectionOf(1, lanHost, smallJSON))
