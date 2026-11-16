@@ -9,7 +9,6 @@
 package config
 
 import (
-	"context"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
@@ -19,28 +18,20 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/cplieger/go/filesafe"
 )
-
-const maxDocumentBytes = 1 << 20
 
 // Config is the validated configuration. Hosts and Profiles are sorted by
 // name.
 type Config struct {
 	// Self is set on a runner host only.
 	Self *Self
-	// File is the host's settings document's absolute path: CONFIG_FILE,
-	// resolved against the working directory.
-	File             string
+	// HostAddress is pool.host_address, where hosts on other machines dial
+	// the control plane: host:port, or empty when unset.
+	HostAddress      string
 	Scopes           []Scope
 	Hosts            []Host
 	Profiles         []Profile
 	HeadReserveAfter time.Duration
-	LogLevel         slog.Level
-	// LogLevelInvalid reports a LOG_LEVEL that did not parse, so LogLevel is
-	// the default; the caller warns once its handler is installed.
-	LogLevelInvalid bool
 }
 
 // Host answers the host named name.
@@ -63,17 +54,17 @@ func (c *Config) Profile(name string) (*Profile, bool) {
 	return nil, false
 }
 
-// fieldError is one refusal at a field path such as
+// FieldError is one refusal at a field path such as
 // "hosts.nas.egress.allow[0].to"; the empty path is the document itself.
-type fieldError struct {
+type FieldError struct {
 	Path    string
 	Message string
 }
 
-// fieldErrors is every refusal of one document, in the order found.
-type fieldErrors []fieldError
+// FieldErrors is every refusal of one document, in the order found.
+type FieldErrors []FieldError
 
-func (fe fieldErrors) Error() string {
+func (fe FieldErrors) Error() string {
 	lines := make([]string, len(fe))
 	for i, e := range fe {
 		lines[i] = e.Path + ": " + e.Message
@@ -124,30 +115,13 @@ func (s Secret) Format(f fmt.State, _ rune) { _, _ = f.Write([]byte(s.String()))
 //deadset:ignore DS1101 -- slog.LogValuer, reached by any slog attribute holding a Secret
 func (s Secret) LogValue() slog.Value { return slog.StringValue(s.String()) }
 
-// LoadHost reads a runner host's environment and its settings document and
-// validates both, joining every failure of the two into one error.
-func LoadHost(ctx context.Context) (*Config, error) {
-	cfg, envErr := readHostEnv()
-	if envErr != nil {
-		envErr = fmt.Errorf("config: %w", envErr)
-	}
-	data, err := filesafe.ReadBounded(ctx, cfg.File, maxDocumentBytes)
-	if err != nil {
-		return nil, errors.Join(envErr, fmt.Errorf("config: CONFIG_FILE: %w", err))
-	}
-	if err := errors.Join(envErr, build(cfg, data, nil)); err != nil {
-		return nil, err
-	}
-	return cfg, nil
-}
-
 // build validates settings document data into cfg, which holds the
 // environment's settings. prev is the model data replaces, or nil for a
 // first document; the rule on a profile being deleted reads it.
 func build(cfg *Config, data []byte, prev *Config) error {
 	var d document
 	if err := json.Unmarshal(data, &d, json.RejectUnknownMembers(true)); err != nil {
-		return fieldErrors{decodeError(err)}
+		return FieldErrors{decodeError(err)}
 	}
 	var p problems
 	d.apply(cfg, &p)
@@ -159,23 +133,23 @@ func build(cfg *Config, data []byte, prev *Config) error {
 
 // decodeError answers a document that did not decode as its one refusal: a
 // decode stops at the first value it cannot read.
-func decodeError(err error) fieldError {
+func decodeError(err error) FieldError {
 	var se *json.SemanticError
 	var sy *jsontext.SyntacticError
 	switch {
 	case errors.As(err, &sy):
-		return fieldError{Path: pointerPath(sy.JSONPointer), Message: "want one JSON object: " + sy.Err.Error()}
+		return FieldError{Path: pointerPath(sy.JSONPointer), Message: "want one JSON object: " + sy.Err.Error()}
 	case !errors.As(err, &se):
-		return fieldError{Message: "want one JSON object: " + err.Error()}
+		return FieldError{Message: "want one JSON object: " + err.Error()}
 	}
 	path := pointerPath(se.JSONPointer)
 	switch {
 	case errors.Is(se.Err, json.ErrUnknownName):
-		return fieldError{Path: path, Message: "unknown key"}
+		return FieldError{Path: path, Message: "unknown key"}
 	case se.Err != nil:
-		return fieldError{Path: path, Message: se.Err.Error()}
+		return FieldError{Path: path, Message: se.Err.Error()}
 	case se.GoType == nil:
-		return fieldError{Path: path, Message: "want another kind of value"}
+		return FieldError{Path: path, Message: "want another kind of value"}
 	}
 	t := se.GoType
 	if t.Kind() == reflect.Pointer {
@@ -183,11 +157,11 @@ func decodeError(err error) fieldError {
 	}
 	switch t.Kind() {
 	case reflect.Struct, reflect.Map:
-		return fieldError{Path: path, Message: "want an object"}
+		return FieldError{Path: path, Message: "want an object"}
 	case reflect.Slice:
-		return fieldError{Path: path, Message: "want a list"}
+		return FieldError{Path: path, Message: "want a list"}
 	}
-	return fieldError{Path: path, Message: "want a string"}
+	return FieldError{Path: path, Message: "want a string"}
 }
 
 // pointerPath answers a JSON pointer as a field path. A number is a list

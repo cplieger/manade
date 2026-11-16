@@ -186,7 +186,7 @@ func sameCheck(a, b *config.Profile) bool {
 	return a.RunnerImage == b.RunnerImage && jobspec.NeedsUserCheck(a) == jobspec.NeedsUserCheck(b)
 }
 
-// Reload takes the host section and profiles a SIGHUP read. A profile whose
+// Reload takes the host section and profiles of a section the host applied. A profile whose
 // image and check are unchanged keeps its image in service; every image is
 // checked again at once, and a refused registry resolved again.
 func (m *Manager) Reload(h *config.Host, profiles []*config.Profile) {

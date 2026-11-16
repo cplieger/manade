@@ -18,18 +18,22 @@ import (
 
 // fakeBackend is a Backend whose answers each test sets.
 type fakeBackend struct {
-	err      error
-	changes  chan Runner
-	probe    func(ctx context.Context) (ProbeReport, error)
-	created  []RunnerRequest
-	deleted  []string
-	runners  []Runner
-	logs     []byte
-	diag     []byte
-	status   Status
-	deadline time.Duration
-	mu       sync.Mutex
-	diagAsk  bool
+	err     error
+	changes chan Runner
+	probe   func(ctx context.Context) (ProbeReport, error)
+	// section answers each PUT /v1/section; sections records each one.
+	section    func(*Section) (SectionAnswer, error)
+	sections   []Section
+	restarting chan struct{}
+	created    []RunnerRequest
+	deleted    []string
+	runners    []Runner
+	logs       []byte
+	diag       []byte
+	status     Status
+	deadline   time.Duration
+	mu         sync.Mutex
+	diagAsk    bool
 }
 
 var _ Backend = (*fakeBackend)(nil)
@@ -97,7 +101,7 @@ func (f *fakeBackend) Probe(ctx context.Context) (ProbeReport, error) {
 	if f.probe != nil {
 		return f.probe(ctx)
 	}
-	return ProbeReport{Proven: true}, nil
+	return ProbeReport{Proven: true}, f.err
 }
 
 func (f *fakeBackend) ProbeDeadline() time.Duration {
@@ -106,6 +110,18 @@ func (f *fakeBackend) ProbeDeadline() time.Duration {
 	}
 	return f.deadline
 }
+
+func (f *fakeBackend) PutSection(_ context.Context, s *Section) (SectionAnswer, error) {
+	f.mu.Lock()
+	f.sections = append(f.sections, *s)
+	f.mu.Unlock()
+	if f.section != nil {
+		return f.section(s)
+	}
+	return SectionAnswer{Applies: SectionApplied}, f.err
+}
+
+func (f *fakeBackend) Restarting() <-chan struct{} { return f.restarting }
 
 func validRequest() RunnerRequest {
 	return RunnerRequest{Profile: "small", RunnerName: "manade-small-0123456789ab", Scope: "acme/app", RunnerID: 42, JITConfig: "eyJqaXQiOiJ0ZXN0In0="}

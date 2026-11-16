@@ -290,7 +290,7 @@ func offlineHost() *config.Host {
 }
 
 // A registry that resolved outside allow is served again at the next
-// images.refresh once its answer falls inside, with no SIGHUP.
+// images.refresh once its answer falls inside, with no new section.
 func TestRefusedRegistryServedAgainAtRefresh(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		const ref = "registry.lan:5000/ci/runner:1"

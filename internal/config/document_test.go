@@ -289,7 +289,7 @@ func TestDecodeRefusals(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := build(&Config{}, []byte(tc.doc), nil)
-			var fe fieldErrors
+			var fe FieldErrors
 			if !errors.As(err, &fe) || len(fe) != 1 || fe[0].Path != tc.path || !strings.Contains(fe[0].Message, tc.want) {
 				t.Errorf("err = %#v, want one refusal at %q holding %q", err, tc.path, tc.want)
 			}

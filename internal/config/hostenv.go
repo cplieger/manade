@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
-	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -32,7 +31,11 @@ type Self struct {
 	// Listen is where the host API is served.
 	Listen Address
 	// APIUID owns the API socket.
-	APIUID int
+	APIUID   int
+	LogLevel slog.Level
+	// LogLevelInvalid reports a LOG_LEVEL that did not parse, so LogLevel is
+	// the default; the caller warns once its handler is installed.
+	LogLevelInvalid bool
 }
 
 // RegistryAuth is a Docker client config: File, read again at each pull so
@@ -48,25 +51,22 @@ var hostCredentials = []envx.Key{
 	"GITHUB_APP_PRIVATE_KEY", "GITHUB_APP_PRIVATE_KEY_FILE", "GITHUB_TOKEN", "GITHUB_TOKEN_FILE",
 }
 
-// readHostEnv answers a host's environment.
-func readHostEnv() (*Config, error) {
-	var errs []error
-	file, err := filepath.Abs(cmp.Or(envx.String("CONFIG_FILE"), "/config/config.json"))
-	if err != nil {
-		errs = append(errs, fmt.Errorf("CONFIG_FILE: %w", err))
+// LoadSelf reads a runner host's environment, joining every failure into
+// one error.
+func LoadSelf() (*Self, error) {
+	s, errs := readSelf()
+	if err := errors.Join(errs...); err != nil {
+		return nil, fmt.Errorf("config: %w", err)
 	}
-	cfg := &Config{File: file}
-	var ok bool
-	cfg.LogLevel, ok = slogx.ParseLevel(envx.String("LOG_LEVEL"), slog.LevelInfo)
-	cfg.LogLevelInvalid = !ok
-	var selfErrs []error
-	cfg.Self, selfErrs = readSelf()
-	return cfg, errors.Join(append(errs, selfErrs...)...)
+	return s, nil
 }
 
 func readSelf() (*Self, []error) {
 	var errs []error
 	s := &Self{Name: envx.String("MANADE_HOST"), TLSDir: cmp.Or(envx.String("TLS_DIR"), hostTLSDir), APIUID: 65532}
+	var ok bool
+	s.LogLevel, ok = slogx.ParseLevel(envx.String("LOG_LEVEL"), slog.LevelInfo)
+	s.LogLevelInvalid = !ok
 	switch {
 	case s.Name == "":
 		errs = append(errs, errors.New("MANADE_HOST: required, the hosts key this host serves"))

@@ -2,13 +2,9 @@ package config
 
 import (
 	"net/netip"
-	"path"
-	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
-
-	"github.com/cplieger/go/pathinside"
 )
 
 // ipv6AllowRanges are the IPv6 destinations an allow entry may name: unique
@@ -21,15 +17,9 @@ var dockerHubNames = []string{"docker.io", "index.docker.io", "registry-1.docker
 // registryPort is a registry's port when an image reference names none.
 const registryPort = 443
 
-// check runs the rules that join a host's section to the profiles it serves
-// and to the environment. Every field is parsed by then.
+// check runs the rules that join a host's section to the profiles it
+// serves. Every field is parsed by then.
 func (c *Config) check(p *problems) {
-	for _, s := range c.secretPaths() {
-		if c.underConfig(s.path) {
-			p.addf(s.key, "%s lies at or under the config file's directory %s, which every host on this machine mounts; give %s",
-				quote(s.path), quote(c.configDir()), s.remedy)
-		}
-	}
 	for i := range c.Hosts {
 		checkHost(&c.Hosts[i], p)
 	}
@@ -77,49 +67,6 @@ func (c *Config) checkDeleting(prev *Config, p *problems) {
 			p.addf(profilePath(old.Name), "%s is still being deleted; choose another name, or wait until it is gone", quote(old.Name))
 		}
 	}
-}
-
-func (c *Config) configDir() string { return path.Dir(c.File) }
-
-// secretPath is a path of this role's own that holds a secret, and what its
-// refusal asks the operator to give.
-type secretPath struct{ key, path, remedy string }
-
-// secretPaths answers a host's own secret paths from its environment.
-func (c *Config) secretPaths() []secretPath {
-	if c.Self == nil {
-		return nil
-	}
-	out := []secretPath{{"TLS_DIR", c.Self.TLSDir, "the TLS files a mount of their own"}}
-	if f := c.Self.RegistryAuth.File; f != "" {
-		out = append(out, secretPath{"MANADE_REGISTRY_AUTH_FILE", f, "the file a mount of its own"})
-	}
-	return out
-}
-
-// underConfig reports whether p, a path of this host's own container unless
-// empty, lies at or under the settings document's directory, compared as
-// written and with its and the directory's symlinks resolved; a path that
-// does not exist yet is compared as written.
-func (c *Config) underConfig(p string) bool {
-	if p == "" {
-		return false
-	}
-	dirs, paths := withResolved(c.configDir()), withResolved(p)
-	for _, d := range dirs {
-		if slices.ContainsFunc(paths, pathinside.Root(d).Contains) {
-			return true
-		}
-	}
-	return false
-}
-
-// withResolved answers p and, when it exists, p with its symlinks resolved.
-func withResolved(p string) []string {
-	if r, err := filepath.EvalSymlinks(p); err == nil && r != p {
-		return []string{p, r}
-	}
-	return []string{p}
 }
 
 func checkHost(h *Host, p *problems) {

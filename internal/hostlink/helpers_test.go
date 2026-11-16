@@ -42,6 +42,12 @@ func (b *backend) Logs(context.Context, string, int) ([]byte, error) { return ni
 
 func (b *backend) Diag(context.Context, string) ([]byte, error) { return nil, nil }
 
+func (b *backend) PutSection(context.Context, *hostapi.Section) (hostapi.SectionAnswer, error) {
+	return hostapi.SectionAnswer{Applies: hostapi.SectionApplied}, nil
+}
+
+func (b *backend) Restarting() <-chan struct{} { return nil }
+
 func (b *backend) Subscribe(ctx context.Context) <-chan hostapi.Runner {
 	out := make(chan hostapi.Runner)
 	go func() {

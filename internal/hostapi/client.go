@@ -120,6 +120,14 @@ func (c *Client) Probe(ctx context.Context, deadline time.Duration) (ProbeReport
 	return rep, err
 }
 
+// PutSection delivers section to the host. A section the host refuses fails
+// with a *SectionRefusedError naming each field it refused.
+func (c *Client) PutSection(ctx context.Context, section *Section) (SectionAnswer, error) {
+	var ans SectionAnswer
+	err := c.callJSON(ctx, "section", callBound, http.MethodPut, "/v1/section", section, &ans)
+	return ans, err
+}
+
 // Events calls fn with each line of the host's events stream until ctx
 // ends, the host ends the stream (nil) or the link fails. A stream that
 // stays silent past three heartbeats is a failed link.
@@ -247,6 +255,17 @@ func answerError(op string, resp *http.Response) error {
 		return fmt.Errorf("%w: %s", ErrUnknownRunner, msg)
 	case codeProbeTimeout:
 		return fmt.Errorf("%w: %s", ErrProbeTimeout, msg)
+	case codeWaiting:
+		return fmt.Errorf("%w: %s", ErrWaitingForSection, msg)
+	case codeStarting:
+		return fmt.Errorf("%w: %s", ErrStarting, msg)
+	case codeSectionRefused:
+		out := &SectionRefusedError{Errors: make([]FieldError, len(body.Errors))}
+		for i, fe := range body.Errors {
+			out.Errors[i].Path, _ = textsafe.SanitizeSingleLineCapped(fe.Path, errorTextLimit, "…")
+			out.Errors[i].Message, _ = textsafe.SanitizeSingleLineCapped(fe.Message, errorTextLimit, "…")
+		}
+		return out
 	}
 	return &APIError{Op: op, Status: resp.StatusCode, Code: body.Code, Message: msg}
 }

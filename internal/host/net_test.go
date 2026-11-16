@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -280,53 +281,81 @@ func TestUp(t *testing.T) {
 	})
 }
 
+// A dead daemon's pid file, socket and socket directory, left in the
+// container's writable layer, are gone before the daemon starts.
+func TestUpRemovesADeadDaemonsFiles(t *testing.T) {
+	f := newUpFixture(t)
+	writeAt(t, f.root, "/run/docker.pid", "1\n")
+	writeAt(t, f.root, "/run/docker.sock", "")
+	writeAt(t, f.root, "/run/docker/containerd/containerd.sock", "")
+	p := f.platform()
+	start := p.StartDaemon
+	var left []string
+	p.StartDaemon = func(spec *daemonSpec) (process, error) {
+		for _, name := range []string{"/run/docker.pid", "/run/docker.sock", "/run/docker"} {
+			if _, err := os.Lstat(f.root.Path(name)); err == nil {
+				left = append(left, name)
+			}
+		}
+		return start(spec)
+	}
+	n, err := bringUp(t.Context(), section(), p, guardHooks{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = n.stop() })
+	if len(left) != 0 || f.spec == nil {
+		t.Errorf("left %q at the daemon's start, started %v", left, f.spec != nil)
+	}
+}
+
+func TestHostRefusals(t *testing.T) {
+	up := func(t *testing.T) *hostNet {
+		t.Helper()
+		return upNet(t, newUpFixture(t), section())
+	}
+	for name, tc := range map[string]struct {
+		edit func(h *config.Host)
+		row  row
+		path string
+	}{
+		"an allow entry inside the subnet in use": {func(h *config.Host) { *h = *section("172.18.3.4/32") }, rowSwap, "hosts.lan.egress.allow[0].to"},
+		"an allow entry containing it":            {func(h *config.Host) { *h = *section("172.16.0.0/12") }, rowSwap, "hosts.lan.egress.allow[0].to"},
+		"a subnet an on-link route shadows":       {func(h *config.Host) { h.Subnet = pfx("172.17.5.0/24") }, rowRestart, "hosts.lan.network.subnet"},
+		"ipv6 on a kernel with no IPv6 nat":       {func(h *config.Host) { h.Egress.IPv6 = true }, rowRestart, "hosts.lan.egress.ipv6"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			n := up(t)
+			h := section()
+			tc.edit(h)
+			got, err := n.hostRefusals(h, tc.row)
+			if err != nil || len(got) != 1 || got[0].Path != tc.path {
+				t.Errorf("refusals = %+v, %v, want one at %s", got, err, tc.path)
+			}
+		})
+	}
+	// A restart builds the job network again, so the subnet in use binds
+	// nothing: a resolver inside it is answered by the next pick.
+	t.Run("a restart leaves the subnet in use behind", func(t *testing.T) {
+		h := section()
+		h.DNS = []netip.Addr{netip.MustParseAddr("172.18.0.53")}
+		if got, err := up(t).hostRefusals(h, rowRestart); err != nil || len(got) != 0 {
+			t.Errorf("refusals = %+v, %v, want none", got, err)
+		}
+	})
+}
+
 func TestReload(t *testing.T) {
 	up := func(t *testing.T) (*upFixture, *hostNet) {
 		t.Helper()
 		f := newUpFixture(t)
 		return f, upNet(t, f, section())
 	}
-	kept := map[string]struct {
-		edit func(h *config.Host)
-		want []string
-	}{
-		"an allow entry inside the subnet in use": {
-			edit: func(h *config.Host) { *h = *section("172.18.3.4/32") }, want: []string{"172.18.0.0/16", "egress.allow[0]"},
-		},
-		"an allow entry containing it": {
-			edit: func(h *config.Host) { *h = *section("172.16.0.0/12") }, want: []string{"172.18.0.0/16", "172.16.0.0/12"},
-		},
-		"a resolver inside it": {
-			edit: func(h *config.Host) { h.DNS = []netip.Addr{netip.MustParseAddr("172.18.0.53")} }, want: []string{"dns[0]"},
-		},
-		"egress.ipv6 turned on": {
-			edit: func(h *config.Host) { h.Egress.IPv6 = true }, want: []string{"hosts.lan.egress.ipv6", "restart"},
-		},
-		"the resolvers changed": {
-			edit: func(h *config.Host) { h.DNS = []netip.Addr{netip.MustParseAddr("9.9.9.9")} }, want: []string{"hosts.lan.dns", "restart"},
-		},
-	}
-	for name, tc := range kept {
-		t.Run(name, func(t *testing.T) {
-			_, n := up(t)
-			h := section()
-			tc.edit(h)
-			err := n.applicable(h)
-			if err == nil {
-				t.Fatal("Applicable = nil, want the section refused")
-			}
-			for _, w := range tc.want {
-				if !strings.Contains(err.Error(), w) {
-					t.Errorf("Applicable = %v, want it to name %q", err, w)
-				}
-			}
-		})
-	}
 	t.Run("new allow entries swap the rules and keep resolv.conf", func(t *testing.T) {
 		f, n := up(t)
 		h := section("10.0.0.50/32")
-		if n.applicable(h) != nil || n.postureChanged(h) {
-			t.Fatal("setup: an allow entry is a posture change or refused")
+		if r := rowOf(n.section(), h); r != rowSwap {
+			t.Fatalf("setup: an allow entry is row %d", r)
 		}
 		if k, fatal := n.swap(t.Context(), h); k != nil || fatal != nil {
 			t.Fatalf("Swap = %v, %v", k, fatal)

@@ -104,7 +104,7 @@ func paths(t *testing.T, err error) []string {
 	if err == nil {
 		return nil
 	}
-	var fe fieldErrors
+	var fe FieldErrors
 	if !errors.As(err, &fe) {
 		t.Fatalf("err = %v, want field errors", err)
 	}

@@ -11,8 +11,7 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
-	"slices"
-	"strings"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -203,9 +202,22 @@ func (n *hostNet) ipv6(ctx context.Context, p *seams, routes netsetup.Routes) er
 	return err
 }
 
+// staleDaemonFiles are what a daemon that did not stop cleanly leaves in
+// the container's writable layer for its next run: Docker's restart
+// policy restarts the same container, and the daemon refuses to start while
+// its pid file names a live process, which a restarted container's PIDs,
+// counted from 1 again, often do (moby pkg/pidfile). /run/docker holds
+// every other socket the daemon makes.
+var staleDaemonFiles = []string{"/run/docker.pid", daemonSocket, "/run/docker"}
+
 func (n *hostNet) startDaemon(ctx context.Context, p *seams) error {
 	v4, _ := platform.BridgeNF(p.Root)
 	n.NoBridgeNF = !v4
+	for _, f := range staleDaemonFiles {
+		if err := os.RemoveAll(p.Root.Path(f)); err != nil {
+			return fmt.Errorf("removing %s, left by an earlier daemon: %w", f, err)
+		}
+	}
 	d, err := p.StartDaemon(&daemonSpec{Kernel: n.Kernel, Storage: n.Storage.Driver, NoBridgeNF: n.NoBridgeNF})
 	if err != nil {
 		return err
@@ -279,25 +291,4 @@ func (n *hostNet) hold(ctx context.Context) error {
 // and waits for both.
 func (n *hostNet) stop() error {
 	return errors.Join(n.Daemon.Stop(), n.resolver.shutdown())
-}
-
-// restartOnly names the keys whose change the running host cannot apply:
-// the job network's shape, which runners are attached to, and the
-// resolvers every running job's lookups go to.
-func restartOnly(old, h *config.Host) error {
-	var keys []string
-	at := "hosts." + h.Name + "."
-	if !slices.Equal(old.DNS, h.DNS) {
-		keys = append(keys, at+"dns")
-	}
-	if old.Egress.IPv6 != h.Egress.IPv6 {
-		keys = append(keys, at+"egress.ipv6")
-	}
-	if old.Subnet != h.Subnet {
-		keys = append(keys, at+"network.subnet")
-	}
-	if len(keys) == 0 {
-		return nil
-	}
-	return fmt.Errorf("%s changed, which takes a restart of the host; restart it to apply the new section", strings.Join(keys, ", "))
 }

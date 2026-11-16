@@ -54,11 +54,12 @@ func TestConflicts(t *testing.T) {
 	h := section("10.0.0.0/8", "172.18.5.0/24")
 	h.DNS = []netip.Addr{addr("172.18.0.53"), addr("1.1.1.1")}
 	got := Conflicts(pfx("172.18.0.0/16"), h)
-	if len(got) != 2 || !strings.Contains(got[0], "hosts.lan.dns[0]") || !strings.Contains(got[1], "hosts.lan.egress.allow[1]") {
-		t.Errorf("Conflicts = %q, want the resolver dns[0] and allow[1]", got)
+	if len(got) != 2 || got[0].Path != "hosts.lan.dns[0]" || got[1].Path != "hosts.lan.egress.allow[1].to" ||
+		!strings.Contains(got[0].Message, "172.18.0.0/16") || !strings.Contains(got[1].Message, "172.18.5.0/24") {
+		t.Errorf("Conflicts = %+v, want the resolver dns[0] and allow[1]", got)
 	}
 	t.Run("an allow entry containing the subnet", func(t *testing.T) {
-		if got := Conflicts(pfx("172.18.0.0/16"), section("172.16.0.0/12")); len(got) != 1 || !strings.Contains(got[0], "172.16.0.0/12") {
+		if got := Conflicts(pfx("172.18.0.0/16"), section("172.16.0.0/12")); len(got) != 1 || !strings.Contains(got[0].Message, "172.16.0.0/12") {
 			t.Errorf("Conflicts = %q, want the containing entry", got)
 		}
 	})

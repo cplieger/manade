@@ -7,11 +7,10 @@ import (
 )
 
 // The protected paths of a host that is not open, checked on the host itself
-// with CONFIG_FILE /config/config.json, the default TLS_DIR and
-// MANADE_REGISTRY_AUTH_FILE /registry/auth.json.
+// with the default TLS_DIR and MANADE_REGISTRY_AUTH_FILE /registry/auth.json.
 var protectedPaths = []string{
 	"/run/docker.sock", "/var/run/docker.sock", "/run/docker", "/var/lib/docker",
-	"/run/manade", "/tls", "/config", "/registry/auth.json", "/tmp", "/proc", "/sys", "/dev",
+	"/run/manade", "/tls", "/registry/auth.json", "/tmp", "/proc", "/sys", "/dev",
 }
 
 func mountDoc(lines, mounts string) string {
@@ -20,7 +19,7 @@ func mountDoc(lines, mounts string) string {
 
 // onHost is host h's own environment.
 func onHost() *Config {
-	return &Config{File: "/config/config.json", Self: &Self{Name: "h", TLSDir: "/tls", RegistryAuth: RegistryAuth{File: "/registry/auth.json"}}}
+	return &Config{Self: &Self{Name: "h", TLSDir: "/tls", RegistryAuth: RegistryAuth{File: "/registry/auth.json"}}}
 }
 
 func TestProtectedPaths(t *testing.T) {
@@ -67,7 +66,7 @@ func TestProtectedPathsAccepted(t *testing.T) {
 // which cannot see them, checks the default TLS_DIR alone.
 func TestProtectedTLSDir(t *testing.T) {
 	t.Parallel()
-	self := func() *Config { return &Config{File: "/config/config.json", Self: &Self{Name: "h", TLSDir: "/certs"}} }
+	self := func() *Config { return &Config{Self: &Self{Name: "h", TLSDir: "/certs"}} }
 	t.Run("hostsOwn", func(t *testing.T) {
 		t.Parallel()
 		err := buildDoc(self(), mountDoc("", "{bind: /certs, target: /c}"))

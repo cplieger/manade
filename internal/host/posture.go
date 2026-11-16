@@ -2,9 +2,7 @@ package host
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -24,7 +22,7 @@ type posture struct {
 	// gh is what the host's resolver learns into, nil unless internet is
 	// false.
 	gh *gitHub
-	// host is the section applied, which a reload of allow entries alone
+	// host is the section applied, which a swap of allow or block6 alone
 	// replaces.
 	host     atomic.Pointer[config.Host]
 	self64   atomic.Pointer[learned64]
@@ -87,24 +85,6 @@ func (n *hostNet) section() *config.Host { return n.posture.Load().host.Load() }
 
 // rulesGuard answers the running posture's guard.
 func (n *hostNet) rulesGuard() *guard { return n.posture.Load().guard }
-
-// postureChanged reports whether section h's open or internet key differs
-// from the running posture's: a change that only change applies.
-func (n *hostNet) postureChanged(h *config.Host) bool {
-	e := n.section().Egress
-	return e.Open != h.Egress.Open || e.Internet != h.Egress.Internet
-}
-
-// applicable answers why the running host cannot take section h: a key
-// only a restart applies changed, or a resolver or allow entry overlaps
-// the job subnet in use.
-func (n *hostNet) applicable(h *config.Host) error {
-	err := restartOnly(n.section(), h)
-	if c := netsetup.Conflicts(n.Subnet, h); len(c) > 0 {
-		err = errors.Join(err, fmt.Errorf("the job subnet in use %s", strings.Join(c, "; ")))
-	}
-	return err
-}
 
 // swap loads section h's rules into the running posture, whose open and
 // internet keys h shares, keeping its learned state. A failed swap keeps

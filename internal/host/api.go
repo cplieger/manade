@@ -17,37 +17,83 @@ type backend struct {
 
 var _ hostapi.Backend = (*backend)(nil)
 
+// up answers why the host cannot serve a request yet, nil once it is up.
+func (b *backend) up() error {
+	switch b.s.phase.Load() {
+	case phaseWaiting:
+		return hostapi.ErrWaitingForSection
+	case phaseBooting:
+		return hostapi.ErrStarting
+	}
+	return nil
+}
+
 func (b *backend) Status(ctx context.Context) hostapi.Status { return b.s.status(ctx) }
 
 func (b *backend) CreateRunner(ctx context.Context, req *hostapi.RunnerRequest) (hostapi.Runner, error) {
+	if err := b.up(); err != nil {
+		return hostapi.Runner{}, err
+	}
 	return b.s.runners.accept(ctx, req)
 }
 
 func (b *backend) Runners(ctx context.Context) ([]hostapi.Runner, error) {
+	if err := b.up(); err != nil {
+		return nil, err
+	}
 	return b.s.runners.list(ctx)
 }
 
 func (b *backend) DeleteRunner(ctx context.Context, name string, diag bool) ([]byte, error) {
+	if err := b.up(); err != nil {
+		return nil, err
+	}
 	return b.s.runners.remove(ctx, name, diag)
 }
 
 func (b *backend) Logs(ctx context.Context, name string, tail int) ([]byte, error) {
+	if err := b.up(); err != nil {
+		return nil, err
+	}
 	return b.s.runners.logs(ctx, name, tail)
 }
 
 func (b *backend) Diag(ctx context.Context, name string) ([]byte, error) {
+	if err := b.up(); err != nil {
+		return nil, err
+	}
 	return b.s.runners.diag(ctx, name)
 }
 
+// Subscribe ends at once on a host that is not up yet, which has no runner.
 func (b *backend) Subscribe(ctx context.Context) <-chan hostapi.Runner {
+	if b.up() != nil {
+		ch := make(chan hostapi.Runner)
+		close(ch)
+		return ch
+	}
 	return b.s.runners.subscribe(ctx)
 }
 
 func (b *backend) Probe(ctx context.Context) (hostapi.ProbeReport, error) {
+	if err := b.up(); err != nil {
+		return hostapi.ProbeReport{}, err
+	}
 	return b.s.prober.Run(ctx)
 }
 
-func (b *backend) ProbeDeadline() time.Duration { return b.s.prober.Deadline() }
+func (b *backend) ProbeDeadline() time.Duration {
+	if b.up() != nil {
+		return 0
+	}
+	return b.s.prober.Deadline()
+}
+
+func (b *backend) PutSection(ctx context.Context, sec *hostapi.Section) (hostapi.SectionAnswer, error) {
+	return b.s.deliver(ctx, sec)
+}
+
+func (b *backend) Restarting() <-chan struct{} { return b.s.restarting }
 
 // The daemon calls whose latency a runner start reports.
 var latencyCalls = []string{"create", "start"}
@@ -98,15 +144,18 @@ func (l *latencies) snapshot() []hostapi.CallLatency {
 }
 
 // status is the host's account of itself, its cgroup and data volume read
-// afresh.
+// afresh; a host not up yet answers its version and section alone.
 func (s *supervisor) status(ctx context.Context) hostapi.Status {
+	if s.phase.Load() != phaseUp {
+		return hostapi.Status{Version: s.opts.Version, Section: s.sectionStatus()}
+	}
 	sv := s.served.Load()
 	h := s.host()
 	n := s.net
 	st := hostapi.Status{
-		Version: s.opts.Version, PolicyHash: egress.PolicyHash(h), ProfileHash: egress.ProfileHash(sv.Config.Profiles, h.Name),
+		Version: s.opts.Version, PolicyHash: egress.PolicyHash(n.section()), Section: s.sectionStatus(),
 		Daemon:        hostapi.DaemonStatus{Version: s.info.ServerVersion, StorageDriver: s.info.Driver},
-		Rules:         hostapi.RulesStatus{State: hostapi.RulesLoaded, Backend: backendName(n.Kernel.Backend), Restored: s.restored.Load(), RawOff: n.Kernel.RawOff},
+		Rules:         hostapi.RulesStatus{Backend: backendName(n.Kernel.Backend), Restored: s.restored.Load(), RawOff: n.Kernel.RawOff},
 		DNS:           hostapi.DNSStatus{Configured: h.DNS, Original: n.Original.Addrs, OriginalUnknown: n.Original.Unknown},
 		Profiles:      s.runners.profileStatus(),
 		StartLatency:  s.lat.snapshot(),
@@ -114,9 +163,6 @@ func (s *supervisor) status(ctx context.Context) hostapi.Status {
 		IPv6:          n.iPv6Status(),
 		GitHub:        n.gitHubStatus(),
 		ProbeDeadline: s.prober.Deadline(),
-	}
-	if msg := s.configErr.Load(); msg != nil {
-		st.Rules.State, st.Rules.ConfigError = hostapi.RulesKept, *msg
 	}
 	if u, err := platform.DataUsage(dataRoot); err == nil {
 		st.Data = hostapi.DataStatus{Size: u.Size, Free: u.Free}
@@ -134,7 +180,7 @@ func (s *supervisor) status(ctx context.Context) hostapi.Status {
 	if !cg.Quota {
 		st.Limits.CPUMode = hostapi.CPUPinning
 	}
-	st.Memory = memoryStatus(h, sv.Profiles, cg.Memory, cg.OwnMemory)
+	st.Memory = memoryStatus(cg, sv.Profiles)
 	st.OOM = s.oomStatus(ctx, cg)
 	return st
 }

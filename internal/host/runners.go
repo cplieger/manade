@@ -47,7 +47,8 @@ type runnerImages interface {
 	Status() []hostapi.ProfileStatus
 }
 
-// served is what the host's config lets it run. A SIGHUP swaps it whole.
+// served is what the host's section lets it run. An applied section swaps
+// it whole.
 type served struct {
 	Spec   *jobspec.Host
 	Config *config.Config
@@ -148,13 +149,14 @@ const (
 	baselineUnread
 )
 
-// egressHold is starts held for a change of egress posture: first until
-// each runner busy when it began has ended, then while the change is
-// applied, and on after a failed one.
+// egressHold is starts held for a section that applies once the host's
+// runners have ended: first until each runner busy when it began has ended,
+// then while the section is applied, and on after a failed apply.
 type egressHold struct {
 	waiting map[string]struct{}
 	// idle closes once waiting is empty, or the hold ends.
 	idle   chan struct{}
+	reason hostapi.Reason
 	detail string
 	failed bool
 }
@@ -209,18 +211,19 @@ func (r *runnerSet) setServed(s *served) {
 	r.served = s
 }
 
-// holdEgress takes no start, every profile not ready with detail, until
-// releaseEgress, and answers a channel closed once every runner busy at the
-// call has exited or been removed. A hold still pending keeps its runners
-// and takes the new detail; a failed one is held again from the start.
-func (r *runnerSet) holdEgress(detail string) <-chan struct{} {
+// holdEgress takes no start, every profile not ready for reason with
+// detail, until releaseEgress, and answers a channel closed once every
+// runner busy at the call has exited or been removed. A hold still pending
+// keeps its runners and takes the new reason and detail; a failed one is
+// held again from the start.
+func (r *runnerSet) holdEgress(reason hostapi.Reason, detail string) <-chan struct{} {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if h := r.egress; h != nil && !h.failed {
-		h.detail = detail
+		h.reason, h.detail = reason, detail
 		return h.idle
 	}
-	h := &egressHold{waiting: map[string]struct{}{}, idle: make(chan struct{}), detail: detail}
+	h := &egressHold{waiting: map[string]struct{}{}, idle: make(chan struct{}), reason: reason, detail: detail}
 	for _, name := range r.names() {
 		if r.busy(name) {
 			h.waiting[name] = struct{}{}
@@ -252,13 +255,28 @@ func (r *runnerSet) egressDrained() bool {
 	return h != nil && !h.failed && len(h.waiting) == 0
 }
 
-// failEgress keeps the hold, with detail, once its change failed.
+// failEgress holds starts, with detail, once a section failed to apply,
+// the hold its drain began kept or a new one made.
 func (r *runnerSet) failEgress(detail string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if h := r.egress; h != nil {
-		h.failed, h.detail = true, detail
+	h := r.egress
+	if h == nil {
+		h = &egressHold{waiting: map[string]struct{}{}, idle: make(chan struct{})}
+		close(h.idle)
+		r.egress = h
 	}
+	h.failed, h.detail = true, detail
+}
+
+// holdWaiting names the runners the egress hold still waits for.
+func (r *runnerSet) holdWaiting() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if h := r.egress; h != nil && !h.failed {
+		return slices.Sorted(maps.Keys(h.waiting))
+	}
+	return nil
 }
 
 // releaseEgress ends the hold, if any, and takes starts again.
@@ -709,7 +727,7 @@ func (r *runnerSet) anyRunning() bool {
 func (r *runnerSet) held() (reason hostapi.Reason, detail string) {
 	var why []string
 	if h := r.egress; h != nil {
-		reason = hostapi.ReasonEgressChangePending
+		reason = h.reason
 		if h.failed {
 			reason = hostapi.ReasonEgressChangeFailed
 		}

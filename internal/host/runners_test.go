@@ -363,7 +363,7 @@ func testServed(pinning bool) *served {
 	dind := testProfile("dind", 1)
 	dind.RunnerImage, dind.Command = config.ShippedDocker, []string{config.DockerWrapper}
 	cfg := &config.Config{
-		File: "/config/config.json", Self: &config.Self{Name: "nas", TLSDir: "/tls"},
+		Self:     &config.Self{Name: "nas", TLSDir: "/tls"},
 		Profiles: []config.Profile{testProfile("small", 1), testProfile("large", 2), dind, other},
 	}
 	h := &config.Host{Name: "nas", Egress: config.Egress{Internet: true}}
@@ -1601,7 +1601,7 @@ func TestAnEgressHoldWaitsForTheRunnersThenHolds(t *testing.T) {
 		}
 		rt.d.exit("done", 0, false)
 		rt.waitState(t, "done", hostapi.StateExited)
-		return rt, rt.r.holdEgress("open false, internet true")
+		return rt, rt.r.holdEgress(hostapi.ReasonEgressChangePending, "open false, internet true")
 	}
 	t.Run("holds starts until the runners busy at its start have ended, and on after", func(t *testing.T) {
 		rt, idle := setup(t)
@@ -1632,7 +1632,7 @@ func TestAnEgressHoldWaitsForTheRunnersThenHolds(t *testing.T) {
 	})
 	t.Run("a second hold while one is pending keeps its runners", func(t *testing.T) {
 		rt, idle := setup(t)
-		if again := rt.r.holdEgress("open true"); again != idle {
+		if again := rt.r.holdEgress(hostapi.ReasonEgressChangePending, "open true"); again != idle {
 			t.Error("a second hold made a new wait")
 		}
 		egressHeld(t, rt, hostapi.ReasonEgressChangePending, "open true", "r1")
@@ -1644,14 +1644,14 @@ func TestAnEgressHoldWaitsForTheRunnersThenHolds(t *testing.T) {
 		if rt.r.egressIdle() != nil || rt.r.egressDrained() {
 			t.Error("a failed hold waits for something")
 		}
-		if idle := rt.r.holdEgress("retry"); closed(idle) {
+		if idle := rt.r.holdEgress(hostapi.ReasonEgressChangePending, "retry"); closed(idle) {
 			t.Error("a new hold after a failure did not wait for r1")
 		}
 		egressHeld(t, rt, hostapi.ReasonEgressChangePending, "retry", "r1")
 	})
 	t.Run("a hold with no runner busy is idle at once", func(t *testing.T) {
 		rt := newRunnersTest(t, nil, nil)
-		if !closed(rt.r.holdEgress("x")) {
+		if !closed(rt.r.holdEgress(hostapi.ReasonEgressChangePending, "x")) {
 			t.Error("an idle host's hold waits")
 		}
 		rt.r.releaseEgress()

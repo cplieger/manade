@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/cplieger/go/textsafe"
@@ -46,6 +47,14 @@ type Backend interface {
 	Probe(ctx context.Context) (ProbeReport, error)
 	// ProbeDeadline bounds a probe request: two runs of the current plan.
 	ProbeDeadline() time.Duration
+	// PutSection checks section with the one parser, the host's ceiling and
+	// its own facts, then writes it and applies it by how it changes the
+	// section the host runs, answering how. A section it refuses fails with
+	// a *SectionRefusedError and changes nothing.
+	PutSection(ctx context.Context, section *Section) (SectionAnswer, error)
+	// Restarting is closed once the host announces a restart to apply its
+	// section.
+	Restarting() <-chan struct{}
 }
 
 // The errors a Backend fails with, each with its own answer.
@@ -55,7 +64,27 @@ var (
 	ErrUnknownRunner  = errors.New("the host holds no such runner")
 	// ErrProbeTimeout is a probe request that passed its deadline.
 	ErrProbeTimeout = errors.New("the probe request passed its deadline")
+	// ErrWaitingForSection is a request the host cannot serve before its
+	// first section: no daemon runs yet.
+	ErrWaitingForSection = errors.New("the host is waiting for its first settings")
+	// ErrStarting is a request the host cannot serve while it brings its
+	// first section up.
+	ErrStarting = errors.New("the host is starting on its section")
 )
+
+// SectionRefusedError is a section the host refused, each refusal at its
+// settings field path.
+type SectionRefusedError struct {
+	Errors []FieldError
+}
+
+func (e *SectionRefusedError) Error() string {
+	lines := make([]string, len(e.Errors))
+	for i, fe := range e.Errors {
+		lines[i] = fe.Path + ": " + fe.Message
+	}
+	return "the host refused the section: " + strings.Join(lines, "; ")
+}
 
 // NotReadyError is a runner refused because its profile is not ready.
 type NotReadyError struct {
@@ -80,6 +109,9 @@ const (
 	codeNotReady       = "not_ready"
 	codeUnknownRunner  = "unknown_runner"
 	codeProbeTimeout   = "probe_timeout"
+	codeSectionRefused = "section_refused"
+	codeWaiting        = "waiting_for_section"
+	codeStarting       = "starting"
 	codeInternal       = "internal"
 )
 
@@ -90,6 +122,8 @@ type errorBody struct {
 	Profile string `json:"profile,omitempty"`
 	Reason  Reason `json:"reason,omitempty"`
 	Detail  string `json:"detail,omitempty"`
+	// Errors are a refused section's field errors.
+	Errors []FieldError `json:"errors,omitempty"`
 }
 
 // errorTextLimit caps an error answer's message.
@@ -159,6 +193,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /v1/runners/{name}/diag", s.bounded(callBound, s.diag))
 	mux.HandleFunc("GET /v1/events", s.events)
 	mux.HandleFunc("POST /v1/probe", s.probe)
+	mux.Handle("PUT /v1/section", s.bounded(callBound, s.putSection))
 	return mux
 }
 
@@ -194,7 +229,7 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) createRunner(w http.ResponseWriter, r *http.Request) {
 	var req RunnerRequest
-	if err := decodeBody(w, r, &req); err != nil {
+	if err := decodeBody(w, r, requestLimit, &req); err != nil {
 		s.writeJSON(w, http.StatusBadRequest, &errorBody{Code: codeBadRequest, Message: err.Error()})
 		return
 	}
@@ -208,6 +243,24 @@ func (s *Server) createRunner(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.writeJSON(w, http.StatusOK, &RunnerAnswer{InstanceID: s.instanceID, Runner: run})
+}
+
+func (s *Server) putSection(w http.ResponseWriter, r *http.Request) {
+	var sec Section
+	if err := decodeBody(w, r, SectionLimit, &sec); err != nil {
+		s.writeJSON(w, http.StatusBadRequest, &errorBody{Code: codeBadRequest, Message: err.Error()})
+		return
+	}
+	if sec.Settings.Kind() != '{' {
+		s.writeJSON(w, http.StatusBadRequest, &errorBody{Code: codeBadRequest, Message: "settings is not an object"})
+		return
+	}
+	ans, err := s.backend.PutSection(r.Context(), &sec)
+	if err != nil {
+		s.writeBackendError(w, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, &ans)
 }
 
 // checkRequest refuses a request no profile could serve.
@@ -327,6 +380,7 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	enc := json.NewEncoder(w)
 	tick := time.NewTicker(s.heartbeat)
 	defer tick.Stop()
+	restarting := s.backend.Restarting()
 	write := func(ev *Event) bool {
 		s.writeDeadline(w, quickTimeout)
 		return enc.Encode(ev) == nil && rc.Flush() == nil
@@ -338,6 +392,11 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 		var ev Event
 		select {
 		case <-ctx.Done():
+			select {
+			case <-restarting:
+				write(&Event{Type: EventRestarting, Time: time.Now(), InstanceID: s.instanceID})
+			default:
+			}
 			return
 		case run, open := <-changes:
 			if !open {
@@ -346,6 +405,9 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 			ev = Event{Type: EventRunner, Runner: &run}
 		case <-tick.C:
 			ev = Event{Type: EventHeartbeat}
+		case <-restarting:
+			write(&Event{Type: EventRestarting, Time: time.Now(), InstanceID: s.instanceID})
+			return
 		}
 		ev.Time, ev.InstanceID = time.Now(), s.instanceID
 		if !write(&ev) {
@@ -365,16 +427,16 @@ func (s *Server) probe(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, http.StatusOK, &rep)
 		return
 	}
-	if ctx.Err() != nil && r.Context().Err() == nil {
+	if ctx.Err() != nil && r.Context().Err() == nil && !errors.Is(err, ErrWaitingForSection) && !errors.Is(err, ErrStarting) {
 		err = fmt.Errorf("%w of %s", ErrProbeTimeout, bound)
 	}
 	s.writeBackendError(w, err)
 }
 
-// decodeBody reads one JSON object of at most requestLimit bytes, refusing
-// unknown fields and trailing data.
-func decodeBody(w http.ResponseWriter, r *http.Request, v any) error {
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, requestLimit))
+// decodeBody reads one JSON object of at most limit bytes, refusing unknown
+// fields and trailing data.
+func decodeBody(w http.ResponseWriter, r *http.Request, limit int64, v any) error {
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, limit))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(v); err != nil {
 		return fmt.Errorf("the body is not a request: %w", err)
@@ -390,7 +452,15 @@ func (s *Server) writeBackendError(w http.ResponseWriter, err error) {
 	body := errorBody{Message: msg}
 	var status int
 	nr, isNotReady := errors.AsType[*NotReadyError](err)
+	sr, isRefused := errors.AsType[*SectionRefusedError](err)
 	switch {
+	case isRefused:
+		status, body.Code, body.Errors = http.StatusUnprocessableEntity, codeSectionRefused, sr.Errors
+		body.Message = "the host refused the section"
+	case errors.Is(err, ErrWaitingForSection):
+		status, body.Code = http.StatusServiceUnavailable, codeWaiting
+	case errors.Is(err, ErrStarting):
+		status, body.Code = http.StatusServiceUnavailable, codeStarting
 	case isNotReady:
 		status, body.Code, body.Profile, body.Reason = http.StatusConflict, codeNotReady, nr.Profile, nr.Reason
 		body.Detail, _ = textsafe.SanitizeSingleLineCapped(nr.Detail, errorTextLimit, "…")

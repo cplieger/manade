@@ -31,7 +31,7 @@ func testHost(t *testing.T, open bool, plat Platform) (h *Host, root string) {
 // hostAt is testHost's host in root, serving profiles.
 func hostAt(root string, open bool, plat Platform, profiles ...config.Profile) *Host {
 	cfg := &config.Config{
-		File: filepath.Join(root, "config", "config.json"), Self: &config.Self{Name: "nas", TLSDir: filepath.Join(root, "tls")},
+		Self:     &config.Self{Name: "nas", TLSDir: filepath.Join(root, "tls")},
 		Profiles: profiles,
 	}
 	hc := &config.Host{Name: "nas", Egress: config.Egress{Internet: true, Open: open}}
@@ -251,7 +251,7 @@ func TestRunnerMounts(t *testing.T) {
 		})
 	}
 	t.Run("/tmp is refused on every host", func(t *testing.T) {
-		cfg := &config.Config{File: "/config/config.json"}
+		cfg := &config.Config{}
 		h := NewHost(cfg, &config.Host{Name: "nas"}, &Platform{Mounts: []string{"/"}})
 		if _, err := h.Runner(bind("/tmp"), runner()); !errors.Is(err, errMountRefused) || !strings.Contains(err.Error(), "/tmp") {
 			t.Errorf("Runner = %v", err)
@@ -554,9 +554,9 @@ func TestNewHostProtects(t *testing.T) {
 	if err := os.Symlink(real, link); err != nil {
 		t.Fatal(err)
 	}
-	cfg := &config.Config{File: "/config/config.json", Self: &config.Self{Name: "nas", TLSDir: link, RegistryAuth: config.RegistryAuth{File: "/auth/config.json"}}}
+	cfg := &config.Config{Self: &config.Self{Name: "nas", TLSDir: link, RegistryAuth: config.RegistryAuth{File: "/auth/config.json"}}}
 	h := NewHost(cfg, &config.Host{Name: "nas"}, &Platform{})
-	for _, want := range []string{link, real, "/config", "/auth/config.json", "/run/docker.sock", "/var/lib/docker", "/run/manade", "/tmp", "/proc", "/sys", "/dev"} {
+	for _, want := range []string{link, real, "/auth/config.json", "/run/docker.sock", "/var/lib/docker", "/run/manade", "/tmp", "/proc", "/sys", "/dev"} {
 		if !slices.Contains(h.protected, want) {
 			t.Errorf("protected %v lacks %s", h.protected, want)
 		}

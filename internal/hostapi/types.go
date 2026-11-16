@@ -1,11 +1,14 @@
-// Package hostapi is the runner host's API: the only way the orchestrator
-// reaches a host. The host serves it on a Unix socket or on TCP with mutual
-// TLS; the orchestrator's Client calls it. Requests name a profile and a
+// Package hostapi is the runner host's API: the only way the control plane
+// reaches a host. The host serves it on the connection it opened to the
+// control plane, whose Client calls it. Requests name a profile and a
 // runner, never a container spec, a mount, a capability or an image: the host
-// builds every container from its own copy of the config.
+// builds every container from the section it accepted.
 package hostapi
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json/jsontext"
 	"net/netip"
 	"time"
 
@@ -44,6 +47,9 @@ var clientSlack = 15 * time.Second
 const (
 	// requestLimit caps a request body.
 	requestLimit = 64 << 10
+	// SectionLimit caps a section, which holds every profile the host
+	// serves.
+	SectionLimit = 1 << 20
 	// jitLimit caps a JIT config; GitHub's are a few KiB of base64.
 	jitLimit = 48 << 10
 	// LogTailDefault and LogTailMax bound a log tail's lines.
@@ -63,22 +69,129 @@ const (
 // carries and the host requires.
 const OrchestratorName = "manade-orchestrator"
 
-// Status is the host's account of itself (GET /v1/status). The orchestrator
-// gives a host work only while its hashes match its own copy and its proof
-// holds, and exports each figure.
+// Section is a PUT /v1/section body and the host's persisted section: the
+// settings revision the control plane built it from, and the section in the
+// settings document's vocabulary, which the host parses with the one parser.
+type Section struct {
+	Settings jsontext.Value `json:"settings"`
+	Revision uint64         `json:"revision"`
+}
+
+// Hash answers the SHA-256 of the section's settings in their RFC 8785
+// canonical form, so key order and spacing never change it, and neither
+// does the revision: a new revision of the same settings is the section a
+// host already holds.
+func (s *Section) Hash() (string, error) {
+	v := s.Settings.Clone()
+	if err := v.Canonicalize(); err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(v)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+// SectionApplies is how an accepted section applies (§7.2's table).
+type SectionApplies string
+
+// The ways a section applies.
+const (
+	// SectionApplied is applied: the host runs it.
+	SectionApplied SectionApplies = "applied"
+	// SectionPendingDrain changes the host's open or internet key, which
+	// applies once every runner on it has ended.
+	SectionPendingDrain SectionApplies = "pending_drain"
+	// SectionPendingRestart changes a key only a restart applies; the host
+	// restarts once every runner on it has ended.
+	SectionPendingRestart SectionApplies = "pending_restart"
+	// SectionFailed failed to apply: the host runs its old section and
+	// retries the new one on its own schedule.
+	SectionFailed SectionApplies = "failed"
+)
+
+// SectionAnswer is a PUT /v1/section answer.
+type SectionAnswer struct {
+	Hash    string         `json:"hash"`
+	Applies SectionApplies `json:"applies"`
+	// Detail is why a failed section failed.
+	Detail string `json:"detail,omitempty"`
+	// Waiting names the runners a pending section waits for.
+	Waiting []string `json:"waiting,omitempty"`
+}
+
+// FieldError is one refusal of a section at its settings field path.
+type FieldError struct {
+	Path    string `json:"path"`
+	Message string `json:"message"`
+}
+
+// SectionState is where the host's section stands.
+type SectionState string
+
+// The section states. Every state but SectionRunning leaves the host
+// running a section other than the one last delivered, or none.
+const (
+	// SectionWaiting is a first boot: no section yet, so no daemon and no
+	// job.
+	SectionWaiting SectionState = "waiting_for_section"
+	// SectionRunning runs the section last accepted.
+	SectionRunning SectionState = "applied"
+	// SectionRefused is a last delivered section the host refused.
+	SectionRefused SectionState = "section_refused"
+	// SectionEgressPending waits for the runners to end before a change of
+	// open or internet.
+	SectionEgressPending SectionState = "egress_change_pending"
+	// SectionRestartPending waits for the runners to end before a restart.
+	SectionRestartPending SectionState = "restart_pending"
+	// SectionEgressFailed is an accepted section whose rules failed to
+	// apply; the old ones stay and the host retries.
+	SectionEgressFailed SectionState = "egress_change_failed"
+)
+
+// SectionStatus is the host's section in its status.
+type SectionStatus struct {
+	// FailedAt and RetryAt are when the pending section last failed to
+	// apply and when the host tries it again.
+	FailedAt time.Time `json:"failed_at,omitzero"`
+	RetryAt  time.Time `json:"retry_at,omitzero"`
+	// Refused is the last section delivered, while the host refuses it.
+	Refused *SectionRefusal `json:"refused,omitempty"`
+	State   SectionState    `json:"state"`
+	// Hash is the section the host runs, empty while it waits for its
+	// first; PendingHash an accepted one it holds pending.
+	Hash        string `json:"hash,omitempty"`
+	PendingHash string `json:"pending_hash,omitempty"`
+	// Failure is why the pending section failed to apply.
+	Failure string `json:"failure,omitempty"`
+	// Waiting names the runners the pending section waits for.
+	Waiting         []string `json:"waiting,omitempty"`
+	Revision        uint64   `json:"revision,omitempty"`
+	PendingRevision uint64   `json:"pending_revision,omitempty"`
+}
+
+// SectionRefusal is a section the host refused.
+type SectionRefusal struct {
+	At     time.Time    `json:"at"`
+	Hash   string       `json:"hash"`
+	Errors []FieldError `json:"errors"`
+}
+
+// Status is the host's account of itself (GET /v1/status). The control
+// plane gives a host work only while it runs the section last delivered
+// and its proof holds, and exports each figure. A host waiting for its
+// first section answers its version and Section alone.
 type Status struct {
 	// IPv6 is set only on a host with ipv6 and internet both true.
 	IPv6 *IPv6Status `json:"ipv6,omitempty"`
 	// GitHub is set only on an internet: false host.
-	GitHub      *GitHubStatus   `json:"github,omitempty"`
-	InstanceID  string          `json:"instance_id"`
-	Version     string          `json:"version"`
-	PolicyHash  string          `json:"policy_hash"`
-	ProfileHash string          `json:"profile_hash"`
-	Daemon      DaemonStatus    `json:"daemon"`
-	Rules       RulesStatus     `json:"rules"`
-	DNS         DNSStatus       `json:"dns"`
-	Profiles    []ProfileStatus `json:"profiles"`
+	GitHub     *GitHubStatus   `json:"github,omitempty"`
+	InstanceID string          `json:"instance_id"`
+	Version    string          `json:"version"`
+	PolicyHash string          `json:"policy_hash,omitempty"`
+	Section    SectionStatus   `json:"section"`
+	Daemon     DaemonStatus    `json:"daemon"`
+	Rules      RulesStatus     `json:"rules"`
+	DNS        DNSStatus       `json:"dns"`
+	Profiles   []ProfileStatus `json:"profiles"`
 	// StartLatency holds one histogram per daemon call a runner start
 	// makes (create, start), over LatencyBuckets.
 	StartLatency []CallLatency `json:"start_latency"`
@@ -167,23 +280,10 @@ type DataStatus struct {
 	Free uint64 `json:"free"`
 }
 
-// RulesState is whether the loaded rules are the config's.
-type RulesState string
-
-// The rules states.
-const (
-	RulesLoaded RulesState = "loaded"
-	// RulesKept is a SIGHUP whose section did not validate: the old rules
-	// stay loaded and ConfigError says why.
-	RulesKept RulesState = "kept"
-)
-
 // RulesStatus is the host's egress rules.
 type RulesStatus struct {
-	State RulesState `json:"state"`
 	// Backend is "nftables" or "iptables".
-	Backend     string `json:"backend"`
-	ConfigError string `json:"config_error,omitempty"`
+	Backend string `json:"backend"`
 	// Restored counts the rule sets loaded again after the 5-second check
 	// found them changed.
 	Restored uint64 `json:"restored"`
@@ -223,10 +323,14 @@ const (
 	// exited or been removed, then while it rebuilds its egress; Detail
 	// names the runners.
 	ReasonEgressChangePending Reason = "egress_change_pending"
-	// ReasonEgressChangeFailed is every profile once such a rebuild failed
-	// and the host went back to its old egress; Detail is the failure, which
-	// a later SIGHUP or a restart retries.
+	// ReasonEgressChangeFailed is every profile once a section's rules
+	// failed to apply and the host kept its old egress; Detail is the
+	// failure, which the host retries.
 	ReasonEgressChangeFailed Reason = "egress_change_failed"
+	// ReasonRestartPending is every profile while the host waits for its
+	// runners to end before it restarts to apply a section; Detail names
+	// the runners.
+	ReasonRestartPending Reason = "restart_pending"
 )
 
 // ProfileStatus is one profile's readiness and image on a host.
@@ -362,10 +466,13 @@ type EventType string
 const (
 	EventRunner    EventType = "runner"
 	EventHeartbeat EventType = "heartbeat"
+	// EventRestarting is the stream's last line: the host restarts to apply
+	// its section, and its connection ends.
+	EventRestarting EventType = "restarting"
 )
 
-// Event is one line of GET /v1/events: a runner's new state, or a
-// heartbeat with no runner.
+// Event is one line of GET /v1/events: a runner's new state, a heartbeat or
+// the restart announcement, the last two with no runner.
 type Event struct {
 	Time       time.Time `json:"time"`
 	Runner     *Runner   `json:"runner,omitempty"`

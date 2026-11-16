@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -31,30 +32,39 @@ func runHost(args []string, stderr io.Writer) int {
 	return 2
 }
 
+// restartCode is the exit of a host that restarts to apply its section:
+// non-zero, so on-failure restarts it too (EX_TEMPFAIL, sysexits.h).
+const restartCode = 75
+
 func serveHost(stderr io.Writer) int {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
 	defer stop()
-	hup := make(chan os.Signal, 1)
-	signal.Notify(hup, syscall.SIGHUP)
-	defer signal.Stop(hup)
 	level := slogx.Setup(slogx.Options{Output: stderr})
 	log := slog.Default()
-	cfg, err := config.LoadHost(ctx)
+	self, err := config.LoadSelf()
 	if err != nil {
-		log.Error("The runner host's config does not validate", "error", err)
+		log.Error("The runner host's environment does not validate", "error", err)
 		return 1
 	}
-	level.Set(cfg.LogLevel)
-	if cfg.LogLevelInvalid {
+	level.Set(self.LogLevel)
+	if self.LogLevelInvalid {
 		log.Warn("LOG_LEVEL is not a known level, so the host logs at info")
 	}
-	log.Info("The runner host is starting", "host", cfg.Self.Name, "version", version)
-	err = host.Run(ctx, cfg, &host.Options{
-		Log: log, Version: version, Hangup: hup,
-		Reload: config.LoadHost,
+	log.Info("The runner host is starting", "host", self.Name, "version", version)
+	err = host.Run(ctx, self, &host.Options{
+		Log: log, Version: version,
 		Health: health.NewStatus(health.WithMarker(host.HealthMarker), health.WithLogger(log)),
 	})
-	if err != nil {
+	return hostExit(log, err)
+}
+
+// hostExit is the exit code of a host whose Run answered err.
+func hostExit(log *slog.Logger, err error) int {
+	switch {
+	case errors.Is(err, host.ErrRestart):
+		log.Info("The runner host exits to restart on its new section", "code", restartCode)
+		return restartCode
+	case err != nil:
 		log.Error("The runner host stopped on a failure", "error", err)
 		return 1
 	}

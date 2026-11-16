@@ -33,20 +33,26 @@ var dockerPools = func() []netip.Prefix {
 var errNoSubnet = errors.New("netsetup: job subnet")
 
 // Conflicts answers what of h's section the job subnet s takes from the
-// host: a resolver inside it, whose lookups the bridge would capture, and an
-// allow entry it overlaps, which jobs could no longer reach. Each names its
-// field.
-func Conflicts(s netip.Prefix, h *config.Host) []string {
+// host, each at its field: a resolver inside it, whose lookups the bridge
+// would capture, and an allow entry it overlaps, which jobs could no longer
+// reach.
+func Conflicts(s netip.Prefix, h *config.Host) []config.FieldError {
 	at := "hosts." + h.Name
-	var out []string
+	var out []config.FieldError
 	for i, r := range h.DNS {
 		if s.Contains(r) {
-			out = append(out, fmt.Sprintf("%s contains the resolver %s of %s.dns[%d]", s, r, at, i))
+			out = append(out, config.FieldError{
+				Path:    fmt.Sprintf("%s.dns[%d]", at, i),
+				Message: fmt.Sprintf("%s lies inside the job subnet %s, whose bridge would capture the host's own lookups", r, s),
+			})
 		}
 	}
 	for i, a := range h.Egress.Allow {
 		if s.Overlaps(a.To) {
-			out = append(out, fmt.Sprintf("%s overlaps %s of %s.egress.allow[%d]", s, a.To, at, i))
+			out = append(out, config.FieldError{
+				Path:    fmt.Sprintf("%s.egress.allow[%d].to", at, i),
+				Message: fmt.Sprintf("%s overlaps the job subnet %s, so jobs could not reach it", a.To, s),
+			})
 		}
 	}
 	return out
