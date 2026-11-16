@@ -3,7 +3,7 @@ package host
 import (
 	"bytes"
 	"context"
-	"encoding/json"
+	"encoding/json/v2"
 	"errors"
 	"log/slog"
 	"os"
@@ -549,19 +549,37 @@ const (
 // JSON escapes for HTML, is saved and read back whole beside its fallback.
 func TestAStateAtTheDeliveryCapIsReadBack(t *testing.T) {
 	s, _, _ := upSupervisor(t, sectionOf(1, lanHost, smallJSON))
-	next := sectionOf(2, dnsHost, smallJSON, `"amp": {"runner_image": "base", "cpus": 1, "memory": "512MiB", "scopes": ["acme/app"], "command": ["/bin/sh", "-c", ""]}`)
-	body, err := json.Marshal(next)
-	if err != nil {
-		t.Fatal(err)
+	atCap := func(over int) *hostapi.Section {
+		next := sectionOf(2, dnsHost, smallJSON, `"amp": {"runner_image": "base", "cpus": 1, "memory": "512MiB", "scopes": ["acme/app"], "command": ["/bin/sh", "-c", ""]}`)
+		body, err := json.Marshal(next)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fill := hostapi.SectionLimit - len(body) + over
+		unit := "\u2028<>&"
+		next.Settings = bytes.Replace(next.Settings, []byte(`"-c", ""`), []byte(`"-c", "`+strings.Repeat(unit, fill/len(unit))+strings.Repeat("x", fill%len(unit))+`"`), 1)
+		if body, _ = json.Marshal(next); len(body) != hostapi.SectionLimit+over {
+			t.Fatalf("the PUT body is %d bytes, want %d", len(body), hostapi.SectionLimit+over)
+		}
+		return next
 	}
-	fill := hostapi.SectionLimit - len(body) - 2
-	next.Settings = bytes.Replace(next.Settings, []byte(`"-c", ""`), []byte(`"-c", "`+strings.Repeat("&", fill)+`"`), 1)
+	if _, err := apiOf(s).PutSection(t.Context(), atCap(1)); err == nil {
+		t.Error("a PUT body one byte over the cap was taken")
+	}
+	next := atCap(0)
 	if ans := put(t, s, next); ans.Applies != hostapi.SectionPendingRestart {
 		t.Fatalf("PUT = %+v", ans)
 	}
 	st := stateOf(t, s)
 	if st.Section == nil || hashOf(t, st.Section) != hashOf(t, next) || st.Fallback == nil || st.Fallback.Revision != 1 {
-		t.Errorf("read back section %v and fallback %v, want revision 2 over revision 1", st.Section != nil, st.Fallback)
+		t.Fatalf("read back section %v and fallback %v, want revision 2 over revision 1", st.Section != nil, st.Fallback)
+	}
+	delivered := next.Settings.Clone()
+	if err := delivered.Compact(); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(st.Section.Settings, delivered) {
+		t.Errorf("saved settings of %d bytes, want the %d delivered", len(st.Section.Settings), len(delivered))
 	}
 }
 
@@ -588,6 +606,9 @@ func TestAStateFileOfAnotherShapeIsUnreadable(t *testing.T) {
 	for _, tc := range []struct{ name, file string }{
 		{"a section of another shape", `{"settings":{},"revision":1}`},
 		{"two states", `{}{}`},
+		{"null", `null`},
+		{"a duplicated member", `{"section":null,"section":null}`},
+		{"a member of another case", `{"SECTION":{}}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var logged bytes.Buffer

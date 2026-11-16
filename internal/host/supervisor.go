@@ -42,10 +42,10 @@ const (
 // metaTimeout bounds a read of GitHub's meta endpoint.
 const metaTimeout = 30 * time.Second
 
-// ErrRestart ends the Run of a host that restarts to apply its section:
+// ErrRestart ends the Run of a host that restarts into a fresh namespace:
 // the caller exits with a non-zero code, so the container's restart policy
-// boots it again on the section it saved.
-var ErrRestart = errors.New("the host restarts to apply its section")
+// boots it again on the state it saved.
+var ErrRestart = errors.New("the host restarts")
 
 // Options are what a host runs with beyond its environment.
 type Options struct {
@@ -139,8 +139,8 @@ func newSupervisor(self *config.Self, opts *Options, path string, p *seams) *sup
 // daemon, which stops each runner. Throughout, it keeps one connection to
 // the control plane open on the hosts socket and serves the host API over
 // it. Any failure before the host is up leaves no daemon; a guard or daemon
-// failure later stops the daemon and answers why, and a restart to apply a
-// section answers ErrRestart.
+// failure later stops the daemon and answers why, and a restart answers
+// ErrRestart.
 func Run(ctx context.Context, self *config.Self, opts *Options) error {
 	return newSupervisor(self, opts, sectionPath, systemSeams(self, opts.Log)).runLinked(ctx, dialSocket(hostlink.SocketPath))
 }
@@ -396,7 +396,9 @@ func (s *supervisor) bootSaved(ctx context.Context) {
 }
 
 // awaitSection answers the section the host boots on: bootSaved's, or else
-// the first one delivered; nil when ctx ends first.
+// the first one delivered; nil when ctx ends first, or has ended once a
+// section is delivered, so a run cancelled while it waits ends with its
+// cause.
 func (s *supervisor) awaitSection(ctx context.Context) *accepted {
 	s.sectionMu.Lock()
 	booting, running := s.phase.Load() == phaseBooting, s.running
@@ -418,6 +420,10 @@ func (s *supervisor) awaitSection(ctx context.Context) *accepted {
 	case <-ctx.Done():
 		return nil
 	case next := <-s.arrived:
+		// With both ready, select picks either (Go spec).
+		if ctx.Err() != nil {
+			return nil
+		}
 		return next
 	}
 }

@@ -9,7 +9,7 @@ import (
 	"github.com/cplieger/manade/internal/host"
 )
 
-// A host that restarts to apply its section exits 75, which on-failure
+// A host that restarts exits 75, which on-failure
 // restarts as unless-stopped does.
 func TestHostExit(t *testing.T) {
 	log := slog.New(slog.DiscardHandler)

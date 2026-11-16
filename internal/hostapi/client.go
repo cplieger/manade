@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	jsonv2 "encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
@@ -193,15 +194,14 @@ func (c *Client) callBytes(ctx context.Context, op string, bound time.Duration, 
 func (c *Client) send(ctx context.Context, hc *http.Client, op, method, path string, in any) (io.ReadCloser, int, error) {
 	var body io.Reader = http.NoBody
 	if in != nil {
-		var b bytes.Buffer
-		enc := json.NewEncoder(&b)
-		// HTML escaping turns each <, > and & into six bytes, so a section
-		// within SectionLimit could cross the host's body cap.
-		enc.SetEscapeHTML(false)
-		if err := enc.Encode(in); err != nil {
+		// v2 adds no newline and escapes neither HTML nor U+2028 and
+		// U+2029, so a section within SectionLimit stays within the host's
+		// body cap.
+		b, err := jsonv2.Marshal(in)
+		if err != nil {
 			return nil, 0, fmt.Errorf("host API %s: %w", op, err)
 		}
-		body = &b
+		body = bytes.NewReader(b)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, c.base+path, body)
 	if err != nil {

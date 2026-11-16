@@ -1,12 +1,11 @@
 package host
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"net/netip"
 	"path/filepath"
@@ -28,16 +27,16 @@ const sectionPath = stateDir + "/section.json"
 // decides from the file alone.
 type hostState struct {
 	// Section is the section the next start boots; nil waits for one.
-	Section *hostapi.Section `json:"section,omitempty"`
+	Section *hostapi.Section `json:"section,omitzero"`
 	// Fallback is the section the host ran before an Unbooted Section, if
 	// any.
-	Fallback *hostapi.Section `json:"fallback,omitempty"`
+	Fallback *hostapi.Section `json:"fallback,omitzero"`
 	// Refused is a boot's refusal, kept for the next start only.
-	Refused *hostapi.SectionRefusal `json:"refused,omitempty"`
+	Refused *hostapi.SectionRefusal `json:"refused,omitzero"`
 	// Unbooted marks a Section that has not booted on this host, so a boot
 	// step's failure is its refusal rather than the host's. Section is the
 	// section each boot of a run runs, so the mark is that section's.
-	Unbooted bool `json:"unbooted,omitempty"`
+	Unbooted bool `json:"unbooted,omitzero"`
 }
 
 // accepted is a section that passed the host's checks.
@@ -111,8 +110,8 @@ func refusedError(fe []config.FieldError) *hostapi.SectionRefusedError {
 const stateLimit = 3 * hostapi.SectionLimit
 
 // readState answers the host's state at path, false when there is none. A
-// file holding anything but one hostState is an error, so a file of another
-// shape is never read as an empty state.
+// file holding anything but one hostState object is an error, so a file of
+// another shape is never read as an empty state.
 func readState(ctx context.Context, path string) (hostState, bool, error) {
 	var st hostState
 	b, err := filesafe.ReadBounded(ctx, path, stateLimit)
@@ -122,13 +121,12 @@ func readState(ctx context.Context, path string) (hostState, bool, error) {
 	if err != nil {
 		return st, false, err
 	}
-	dec := json.NewDecoder(bytes.NewReader(b))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&st); err != nil {
-		return hostState{}, false, fmt.Errorf("%s: %w", path, err)
+	// Unmarshal reads null into a struct as nothing at all.
+	if jsontext.Value(b).Kind() != '{' {
+		return hostState{}, false, fmt.Errorf("%s: the state is not a JSON object", path)
 	}
-	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
-		return hostState{}, false, fmt.Errorf("%s: more than one state", path)
+	if err := json.Unmarshal(b, &st, json.RejectUnknownMembers(true)); err != nil {
+		return hostState{}, false, fmt.Errorf("%s: %w", path, err)
 	}
 	return st, true, nil
 }
@@ -145,15 +143,13 @@ var writeFile = filesafe.WriteFile
 // new one; errNotDurable when only the last step failed. A state readState
 // would refuse as too large is refused before anything is written.
 func writeState(ctx context.Context, path string, st *hostState) error {
-	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
-	// HTML escaping turns each <, > and & of a section's settings into six
-	// bytes, so two sections within the delivery cap could pass stateLimit.
-	enc.SetEscapeHTML(false)
-	if err := enc.Encode(st); err != nil {
+	// v2 escapes neither HTML nor U+2028 and U+2029, so a section takes no
+	// more bytes here than it was delivered in.
+	b, err := json.Marshal(st)
+	if err != nil {
 		return err
 	}
-	res, err := writeFile(ctx, path, buf.Bytes(), filesafe.WithMode(0o600), filesafe.WithMkdirAll(true), filesafe.WithMaxBytes(stateLimit))
+	res, err := writeFile(ctx, path, b, filesafe.WithMode(0o600), filesafe.WithMkdirAll(true), filesafe.WithMaxBytes(stateLimit))
 	if err != nil {
 		return fmt.Errorf("writing %s: %w", filepath.Base(path), err)
 	}
@@ -199,8 +195,8 @@ func (s *supervisor) commit(ctx context.Context, st hostState) error {
 var saveRetry = time.Minute
 
 // keepSaving saves the host's state again while its last save failed,
-// until ctx ends. A save that succeeds with a restart owed ends the run
-// with ErrRestart.
+// until ctx ends. A save that puts the state at its path with a restart
+// owed ends the run with ErrRestart, as bootRefused restarts on one.
 func (s *supervisor) keepSaving(ctx context.Context) {
 	t := time.NewTicker(saveRetry)
 	defer t.Stop()
@@ -212,13 +208,13 @@ func (s *supervisor) keepSaving(ctx context.Context) {
 		}
 		s.sectionMu.Lock()
 		if s.unsaved {
-			_ = s.save(ctx)
+			err := s.save(ctx)
 			if !s.unsaved {
 				s.log.Info("The host's state was saved")
-				if s.restartOwed {
-					s.log.Warn("The host saved the state its failed boot left, so it restarts into a fresh namespace")
-					s.cancelRun(ErrRestart)
-				}
+			}
+			if err == nil && s.restartOwed {
+				s.log.Warn("The host saved the state its failed boot left, so it restarts into a fresh namespace")
+				s.cancelRun(ErrRestart)
 			}
 		}
 		s.sectionMu.Unlock()

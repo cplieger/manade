@@ -188,28 +188,66 @@ func TestARunSavesItsStateAgain(t *testing.T) {
 }
 
 // A run waiting with a boot refusal's restart owed, its state unsaved,
-// ends with ErrRestart once a retry saves that state.
+// ends with ErrRestart once a retry puts that state at its path, durable
+// or not, as bootRefused restarts on either.
 func TestARunTakesTheRestartItsStateOwed(t *testing.T) {
-	s := waitingAs(t, &config.Self{Name: "lan"})
-	refused := &hostapi.SectionRefusal{Hash: "a1", Errors: []hostapi.FieldError{{Path: "hosts.lan.dns", Message: "no answer"}}}
-	s.state, s.unsaved, s.restartOwed = hostState{Refused: refused}, true, true
-	retry := saveRetry
-	saveRetry = 10 * time.Millisecond
-	t.Cleanup(func() { saveRetry = retry })
-	ran := make(chan error, 1)
-	go func() {
-		ran <- s.runLinked(t.Context(), func(context.Context) (net.Conn, error) { return nil, errors.New("no control plane") })
-	}()
-	select {
-	case err := <-ran:
-		if !errors.Is(err, ErrRestart) {
-			t.Errorf("runLinked = %v, want ErrRestart", err)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("the run still waits after its state was saved")
+	for _, durable := range []bool{true, false} {
+		t.Run(map[bool]string{true: "a durable save", false: "a save whose directory sync fails"}[durable], func(t *testing.T) {
+			s := waitingAs(t, &config.Self{Name: "lan"})
+			refused := &hostapi.SectionRefusal{Hash: "a1", Errors: []hostapi.FieldError{{Path: "hosts.lan.dns", Message: "no answer"}}}
+			s.state, s.unsaved, s.restartOwed = hostState{Refused: refused}, true, true
+			inner, retry := writeFile, saveRetry
+			writeFile = func(ctx context.Context, path string, b []byte, opts ...filesafe.WriteOption) (filesafe.Result, error) {
+				res, err := inner(ctx, path, b, opts...)
+				res.Durable = res.Durable && durable
+				return res, err
+			}
+			saveRetry = 10 * time.Millisecond
+			t.Cleanup(func() { writeFile, saveRetry = inner, retry })
+			ran := make(chan error, 1)
+			go func() {
+				ran <- s.runLinked(t.Context(), func(context.Context) (net.Conn, error) { return nil, errors.New("no control plane") })
+			}()
+			select {
+			case err := <-ran:
+				if !errors.Is(err, ErrRestart) {
+					t.Errorf("runLinked = %v, want ErrRestart", err)
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatal("the run still waits after its state was saved")
+			}
+			if st, _, err := readState(t.Context(), s.sectionPath); err != nil || st.Refused == nil {
+				t.Errorf("saved %+v, %v; want the refusal", st, err)
+			}
+		})
 	}
-	if st, _, err := readState(t.Context(), s.sectionPath); err != nil || st.Refused == nil {
-		t.Errorf("saved %+v, %v; want the refusal", st, err)
+}
+
+// A first section that reaches a waiting host after its run was cancelled
+// to restart is never booted: the boot and the run answer the restart.
+func TestASectionDeliveredAfterTheRestartBootsNothing(t *testing.T) {
+	s := waitingOn(t, lanSelf(), newUpFixture(t).platform())
+	next, err := check(s.self, sectionOf(1, lanHost, smallJSON))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rctx, cancel := context.WithCancelCause(t.Context())
+	defer cancel(nil)
+	s.cancelRun = cancel
+	cancel(ErrRestart)
+	for range 20 {
+		s.arrived <- next
+		if n, err := s.boot(rctx); n != nil || err != nil {
+			t.Fatalf("boot = %v, %v; want nil, nil", n, err)
+		}
+		select {
+		case <-s.arrived:
+		default:
+		}
+	}
+	s.arrived <- next
+	if err := s.run(t.Context(), rctx, cancel); !errors.Is(err, ErrRestart) {
+		t.Errorf("run = %v, want ErrRestart", err)
 	}
 }
 

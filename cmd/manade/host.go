@@ -32,7 +32,7 @@ func runHost(args []string, stderr io.Writer) int {
 	return 2
 }
 
-// restartCode is the exit of a host that restarts to apply its section:
+// restartCode is the exit of a host that restarts:
 // non-zero, so on-failure restarts it too (EX_TEMPFAIL, sysexits.h).
 const restartCode = 75
 
@@ -65,7 +65,7 @@ func serveHost(stderr io.Writer) int {
 func hostExit(log *slog.Logger, err error) int {
 	switch {
 	case errors.Is(err, host.ErrRestart):
-		log.Info("The runner host exits to restart on its new section", "code", restartCode)
+		log.Info("The runner host exits to restart", "code", restartCode)
 		return restartCode
 	case err != nil:
 		log.Error("The runner host stopped on a failure", "error", err)
