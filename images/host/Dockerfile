@@ -23,7 +23,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 # platform floor (kernel 4.4, cgroup v1) before it merges: Docker 29 warns
 # that its cgroup v1 support ends by May 2029
 # (https://github.com/moby/moby/issues/51111).
-FROM docker:29-dind@sha256:7bf70dcb85c822e3fa6f2d332143e474b99147b9d7b39102b0cfe8b04a7dd61b
+FROM docker:29-dind@sha256:4bbc7223f81db790097c6dea42fb93e05b8fead4f0431fbe6ccaba6e8473201c
 ARG PKG_REFRESH=static
 # The image ships both iptables variants and the legacy symlink farm the
 # supervisor puts first in PATH on a kernel without nf_tables.
