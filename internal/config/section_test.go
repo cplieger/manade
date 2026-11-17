@@ -63,6 +63,7 @@ func TestParseSectionRefusals(t *testing.T) {
 		{"noOwnHost", `{"hosts": {}}`, "hosts"},
 		{"anotherHost", `{"hosts": {"nas": {}, "lan": {}}}`, "hosts.lan"},
 		{"capacity", `{"hosts": {"nas": {"capacity": {"cpus": 2, "memory": "4GiB"}}}}`, "hosts.nas.capacity"},
+		{"accepting", `{"hosts": {"nas": {"accepting": false}}}`, "hosts.nas.accepting"},
 		{"profileHosts", `{"hosts": {"nas": {}}, "profiles": {"p": {"hosts": ["nas"]}}}`, "profiles.p.hosts"},
 		{"profileDeleting", `{"hosts": {"nas": {}}, "profiles": {"p": {"deleting": true}}}`, "profiles.p.deleting"},
 		{"profileRetiring", `{"hosts": {"nas": {}}, "profiles": {"p": {"retiring": ["acme/app"]}}}`, "profiles.p.retiring"},

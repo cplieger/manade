@@ -46,13 +46,13 @@ func (c *Config) checkDefault(s *Scope, p *problems) {
 	case !ok:
 		p.addf(at, "names no profile %s; define it or choose another", quote(s.DefaultProfile))
 		return
-	case pr.usable(s.Key):
+	case pr.Usable(s.Key):
 		return
 	case pr.Deleting:
 		p.addf(at, "%s is being deleted; choose another default profile", quote(pr.Name))
 		return
 	}
-	if slices.ContainsFunc(c.Profiles, func(o Profile) bool { return o.usable(s.Key) }) {
+	if slices.ContainsFunc(c.Profiles, func(o Profile) bool { return o.Usable(s.Key) }) {
 		p.addf(at, "%s is this scope's default profile but %s may not use it; choose another", quote(pr.Name), quote(s.Key))
 		return
 	}
@@ -60,13 +60,22 @@ func (c *Config) checkDefault(s *Scope, p *problems) {
 }
 
 // checkDeleting refuses a profile prev holds as being deleted that c holds
-// as an ordinary one: only the pool ends a deletion, by removing the
-// profile once its queue is empty.
+// as an ordinary one, or as serving a scope prev's did not: only the pool
+// ends a deletion, by removing the profile once its queue is empty.
 func (c *Config) checkDeleting(prev *Config, p *problems) {
 	for i := range prev.Profiles {
 		old := &prev.Profiles[i]
-		if pr, ok := c.Profile(old.Name); ok && old.Deleting && !pr.Deleting {
+		pr, ok := c.Profile(old.Name)
+		switch {
+		case !ok || !old.Deleting:
+		case !pr.Deleting:
 			p.addf(profilePath(old.Name), "%s is still being deleted; choose another name, or wait until it is gone", quote(old.Name))
+		default:
+			for j, key := range pr.Retiring {
+				if !old.leaving(key) {
+					p.addf(profilePath(old.Name)+".retiring["+strconv.Itoa(j)+"]", "%s is being deleted, so no scope may start using it", quote(old.Name))
+				}
+			}
 		}
 	}
 }

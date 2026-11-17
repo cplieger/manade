@@ -167,8 +167,8 @@ type Profile struct {
 	Deleting                 bool
 }
 
-// defaultMaxLifetime is a profile's max_lifetime when the document sets none.
-const defaultMaxLifetime = 2 * time.Hour
+// DefaultMaxLifetime is a profile's max_lifetime when the document sets none.
+const DefaultMaxLifetime = 2 * time.Hour
 
 // maxLifetimeCap is GitHub's limit on a job on a self-hosted runner
 // (https://docs.github.com/en/actions/administering-github-actions/usage-limits-billing-and-administration), so the run-duration
@@ -189,16 +189,29 @@ type Mount struct {
 	ReadOnly bool
 }
 
-// allowed reports whether the scope with key may use the profile. Keys match
+// Allowed reports whether the scope with key may use the profile. Keys match
 // without case, as GitHub's owner and repository names do.
-func (p *Profile) allowed(key string) bool {
+func (p *Profile) Allowed(key string) bool {
 	return p.Scopes == nil || slices.ContainsFunc(p.Scopes, func(s string) bool { return strings.EqualFold(s, key) })
 }
 
-// usable reports whether new jobs of the scope with key may be routed to the
+// Usable reports whether new jobs of the scope with key may be routed to the
 // profile: allowed, not leaving the scope and not being deleted.
-func (p *Profile) usable(key string) bool {
-	return p.allowed(key) && !p.Deleting && !slices.ContainsFunc(p.Retiring, func(s string) bool { return strings.EqualFold(s, key) })
+func (p *Profile) Usable(key string) bool {
+	return p.Allowed(key) && !p.Deleting && !p.leaving(key)
+}
+
+// leaving reports a retiring entry for the scope with key.
+func (p *Profile) leaving(key string) bool {
+	return slices.ContainsFunc(p.Retiring, func(s string) bool { return strings.EqualFold(s, key) })
+}
+
+// Serves reports whether the scope with key keeps a scale set of the
+// profile: one it may use, or one it is leaving, whose queued and assigned
+// jobs still run. A profile being deleted serves only the scopes its
+// retiring entries name.
+func (p *Profile) Serves(key string) bool {
+	return p.leaving(key) || p.Allowed(key) && !p.Deleting
 }
 
 // Grants names each elevated field the profile sets away from its default,
@@ -331,7 +344,7 @@ func (fp *docProfile) resources(pr *Profile, at func(string) string, p *problems
 	pr.PIDs = field(p, at("pids"), fp.PIDs, "4096", positive(1<<22))
 	pr.Disk = field(p, at("disk"), fp.Disk, "", parsePositiveSize)
 	pr.ShmSize = field(p, at("shm_size"), fp.ShmSize, "", parsePositiveSize)
-	pr.MaxLifetime = field(p, at("max_lifetime"), fp.MaxLifetime, defaultMaxLifetime.String(), parseDuration)
+	pr.MaxLifetime = field(p, at("max_lifetime"), fp.MaxLifetime, DefaultMaxLifetime.String(), parseDuration)
 	if pr.MaxLifetime > maxLifetimeCap {
 		p.addf(at("max_lifetime"), "want at most 120h (5 days), GitHub's limit on a job on a self-hosted runner, got %s", quote(string(fp.MaxLifetime)))
 	}

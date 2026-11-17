@@ -164,7 +164,7 @@ func serving(t *testing.T, s *supervisor, d runnerDaemon, img runnerImages) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(t.Context())
 	s.runners = newRunners(ctx, &runnersConfig{
-		Daemon: d, Images: img, Served: s.served.Load(), Log: s.log,
+		Daemon: d, Images: img, Served: s.served.Load(), Log: s.log, Cgroups: newFakeCgroups(),
 		DataFree: func() (uint64, error) { return 1 << 30, nil },
 	})
 	if err := s.runners.load(ctx); err != nil {

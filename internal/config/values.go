@@ -30,6 +30,7 @@ var byteUnits = map[string]int64{
 var (
 	sizeRe = regexp.MustCompile(`^(\d{1,15})(B|KiB|MiB|GiB|TiB)$`)
 	cpusRe = regexp.MustCompile(`^(\d{1,6})(?:\.(\d{1,3}))?$`)
+	daysRe = regexp.MustCompile(`^(\d{1,3})d$`)
 )
 
 // problemError is a problem without its field path, which problems.add records.
@@ -85,6 +86,24 @@ func parseDuration(raw string) (time.Duration, error) {
 		return 0, invalid("want a positive duration such as 10m or 2h", raw)
 	}
 	return d, nil
+}
+
+// day is the unit of a retention setting, written as whole days ("90d").
+const day = 24 * time.Hour
+
+// days answers a parser of whole days from lo to hi, written "<n>d".
+func days(lo, hi int64) func(string) (time.Duration, error) {
+	return func(raw string) (time.Duration, error) {
+		m := daysRe.FindStringSubmatch(raw)
+		var n int64
+		if m != nil {
+			n, _ = strconv.ParseInt(m[1], 10, 64)
+		}
+		if m == nil || n < lo || n > hi {
+			return 0, invalid(fmt.Sprintf("want whole days from %dd to %dd", lo, hi), raw)
+		}
+		return time.Duration(n) * day, nil
+	}
 }
 
 func parseBool(raw string) (bool, error) {

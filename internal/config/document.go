@@ -19,6 +19,14 @@ type document struct {
 	Queue    struct {
 		HeadReserveAfter scalar `json:"head_reserve_after"`
 	} `json:"queue"`
+	Pool struct {
+		Name           string `json:"name"`
+		RunnerVariable string `json:"runner_variable"`
+	} `json:"pool"`
+	History struct {
+		Runs     scalar `json:"runs"`
+		Evidence scalar `json:"evidence"`
+	} `json:"history"`
 	Images docImages  `json:"images"`
 	Scopes []docScope `json:"scopes"`
 }
@@ -75,11 +83,28 @@ const (
 
 var (
 	ownerRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]{0,38}$`)
-	repoRe  = regexp.MustCompile(`^[A-Za-z0-9._-]{1,100}$`)
+	// poolNameRe keeps a runner name, the pool name and a suffix, at most
+	// 60 bytes.
+	poolNameRe = regexp.MustCompile(`^[a-z][a-z0-9-]{0,13}$`)
+	repoRe     = regexp.MustCompile(`^[A-Za-z0-9._-]{1,100}$`)
+	// variableRe is GitHub's rule for a variable name; the GITHUB_ prefix,
+	// which GitHub reserves without case, is refused beside it
+	// (https://docs.github.com/en/actions/reference/workflows-and-actions/variables#naming-conventions-for-configuration-variables).
+	variableRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 )
 
 func (d *document) apply(cfg *Config, p *problems) {
 	cfg.HeadReserveAfter = field(p, "queue.head_reserve_after", d.Queue.HeadReserveAfter, "2m", parseDuration)
+	cfg.PoolName = cmp.Or(d.Pool.Name, "manade")
+	if !poolNameRe.MatchString(cfg.PoolName) {
+		p.add("pool.name", invalid("want 1 to 14 lowercase letters, digits or dashes, starting with a letter", cfg.PoolName))
+	}
+	cfg.RunnerVariable = cmp.Or(d.Pool.RunnerVariable, "MANADE_RUNNER")
+	if !variableRe.MatchString(cfg.RunnerVariable) || strings.HasPrefix(strings.ToUpper(cfg.RunnerVariable), "GITHUB_") {
+		p.add("pool.runner_variable", invalid("want letters, digits or underscores, not starting with a digit or GITHUB_", cfg.RunnerVariable))
+	}
+	cfg.History.Runs = field(p, "history.runs", d.History.Runs, "90d", days(7, 400))
+	cfg.History.Evidence = field(p, "history.evidence", d.History.Evidence, "7d", days(1, 30))
 	refresh := parseRefresh(p, "images.refresh", cmp.Or(string(d.Images.Refresh), "1h"))
 	cfg.Scopes = d.scopes(p)
 	cfg.Hosts = d.hosts(refresh, p)
@@ -162,4 +187,18 @@ func (ds *docScope) target(path string, p *problems) Scope {
 		p.add(path+".enterprise", invalid("want an enterprise slug", ds.Enterprise))
 	}
 	return Scope{Kind: ScopeEnterprise, Owner: ds.Enterprise, Key: "enterprises/" + ds.Enterprise}
+}
+
+// ScopeOf answers the scope key names, as its settings entry parses with
+// nothing but its target set: what reaches a scope the settings no longer
+// hold.
+func ScopeOf(key string) Scope {
+	ds := docScope{Org: key}
+	if name, ok := strings.CutPrefix(key, "enterprises/"); ok {
+		ds = docScope{Enterprise: name}
+	} else if strings.Contains(key, "/") {
+		ds = docScope{Repo: key}
+	}
+	s, _ := ds.parse("", &problems{})
+	return s
 }

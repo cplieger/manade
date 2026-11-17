@@ -51,6 +51,9 @@ type Host struct {
 	Egress       Egress
 	Capacity     Capacity
 	ImageRefresh time.Duration
+	// Accepting is false while the operator drains the host: it takes no
+	// new job and its running jobs finish.
+	Accepting bool
 }
 
 // Capacity is a host's budget, all zero when its section sets none; Disk
@@ -69,7 +72,8 @@ type docHost struct {
 	Network  struct {
 		Subnet scalar `json:"subnet"`
 	} `json:"network"`
-	Egress docEgress `json:"egress"`
+	Egress    docEgress `json:"egress"`
+	Accepting scalar    `json:"accepting"`
 	// Refused by name, so each refusal says what replaces the key or why it is gone.
 	Address      jsontext.Value `json:"address"`
 	RegistryAuth jsontext.Value `json:"registry_auth"`
@@ -97,6 +101,7 @@ func (dh *docHost) parse(name, path string, refresh time.Duration, p *problems) 
 		p.addf(at("registry_auth"), "refused: set MANADE_REGISTRY_AUTH or MANADE_REGISTRY_AUTH_FILE on the host's machine instead")
 	}
 	h.Capacity = dh.Capacity.parse(at("capacity"), p)
+	h.Accepting = field(p, at("accepting"), dh.Accepting, "true", parseBool)
 	if dh.Images.Refresh != "" {
 		h.ImageRefresh = parseRefresh(p, at("images.refresh"), string(dh.Images.Refresh))
 	}

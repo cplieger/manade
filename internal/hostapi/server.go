@@ -36,12 +36,10 @@ type Backend interface {
 	DeleteRunner(ctx context.Context, name string, diag bool) ([]byte, error)
 	// Logs answers the runner's last tail lines, or ErrUnknownRunner.
 	Logs(ctx context.Context, name string, tail int) ([]byte, error)
-	// Diag answers the runner's _diag folder as a tar of at most DiagLimit
-	// bytes, or ErrUnknownRunner.
-	Diag(ctx context.Context, name string) ([]byte, error)
 	// Subscribe sends each runner whose state changes until ctx ends, then
-	// closes the channel; it may close it early for a reader that lags.
-	Subscribe(ctx context.Context) <-chan Runner
+	// closes the channel; it may close it early for a reader that lags. A
+	// host that is not up answers ErrWaitingForSection or ErrStarting.
+	Subscribe(ctx context.Context) (<-chan Runner, error)
 	// Probe runs the egress probe, after any run in progress ends.
 	Probe(ctx context.Context) (ProbeReport, error)
 	// ProbeDeadline bounds a probe request: two runs of the current plan.
@@ -142,7 +140,7 @@ type Server struct {
 	backend    Backend
 	log        *slog.Logger
 	instanceID string
-	// heartbeat is Heartbeat, a test seam.
+	// heartbeat is heartbeatEvery, a test seam.
 	heartbeat time.Duration
 }
 
@@ -152,7 +150,7 @@ func NewServer(backend Backend, instanceID string, log *slog.Logger) *Server {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Server{backend: backend, instanceID: instanceID, log: log, heartbeat: Heartbeat}
+	return &Server{backend: backend, instanceID: instanceID, log: log, heartbeat: heartbeatEvery}
 }
 
 // Handler answers every route under /v1.
@@ -163,7 +161,6 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /v1/runners", s.bounded(callBound, s.runners))
 	mux.Handle("DELETE /v1/runners/{name}", s.bounded(deleteBound, s.deleteRunner))
 	mux.Handle("GET /v1/runners/{name}/logs", s.bounded(callBound, s.logs))
-	mux.Handle("GET /v1/runners/{name}/diag", s.bounded(callBound, s.diag))
 	mux.HandleFunc("GET /v1/events", s.events)
 	mux.HandleFunc("POST /v1/probe", s.probe)
 	mux.Handle("PUT /v1/section", s.bounded(callBound, s.putSection))
@@ -295,11 +292,11 @@ func (s *Server) logs(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	tail := LogTailDefault
+	tail := logTailDefault
 	if raw := r.URL.Query().Get("tail"); raw != "" {
 		n, err := strconv.Atoi(raw)
-		if err != nil || n < 1 || n > LogTailMax {
-			s.writeJSON(w, http.StatusBadRequest, &errorBody{Code: codeBadRequest, Message: fmt.Sprintf("tail must be 1 to %d", LogTailMax)})
+		if err != nil || n < 1 || n > logTailMax {
+			s.writeJSON(w, http.StatusBadRequest, &errorBody{Code: codeBadRequest, Message: fmt.Sprintf("tail must be 1 to %d", logTailMax)})
 			return
 		}
 		tail = n
@@ -319,19 +316,6 @@ func (s *Server) logs(w http.ResponseWriter, r *http.Request) {
 	s.writeBytes(w, "text/plain; charset=utf-8", b, logLimit)
 }
 
-func (s *Server) diag(w http.ResponseWriter, r *http.Request) {
-	name, ok := s.runnerName(w, r)
-	if !ok {
-		return
-	}
-	b, err := s.backend.Diag(r.Context(), name)
-	if err != nil {
-		s.writeBackendError(w, err)
-		return
-	}
-	s.writeBytes(w, "application/x-tar", b, DiagLimit)
-}
-
 func (s *Server) runnerName(w http.ResponseWriter, r *http.Request) (string, bool) {
 	name := r.PathValue("name")
 	if !runnerNameRe.MatchString(name) {
@@ -346,7 +330,11 @@ func (s *Server) runnerName(w http.ResponseWriter, r *http.Request) (string, boo
 func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), eventsBound)
 	defer cancel()
-	changes := s.backend.Subscribe(ctx)
+	changes, err := s.backend.Subscribe(ctx)
+	if err != nil {
+		s.writeBackendError(w, err)
+		return
+	}
 	w.Header().Set("Content-Type", "application/x-ndjson")
 	w.WriteHeader(http.StatusOK)
 	enc := json.NewEncoder(w)
@@ -354,7 +342,7 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	defer tick.Stop()
 	restarting := s.backend.Restarting()
 	write := func(ev *Event) bool { return s.writeLine(w, enc, ev) }
-	if !write(&Event{Type: EventHeartbeat, Time: time.Now(), InstanceID: s.instanceID}) {
+	if !write(&Event{Type: eventHeartbeat, Time: time.Now(), InstanceID: s.instanceID}) {
 		return
 	}
 	for {
@@ -373,7 +361,7 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 			}
 			ev = Event{Type: EventRunner, Runner: &run}
 		case <-tick.C:
-			ev = Event{Type: EventHeartbeat}
+			ev = Event{Type: eventHeartbeat}
 		case <-restarting:
 			write(&Event{Type: EventRestarting, Time: time.Now(), InstanceID: s.instanceID})
 			return

@@ -33,9 +33,9 @@ func TestPoolStateParses(t *testing.T) {
 	}
 	t.Run("usable", func(t *testing.T) {
 		t.Parallel()
-		if !small.usable("acme/app") || small.usable("ACME/Web") || build.usable("acme/app") {
+		if !small.Usable("acme/app") || small.Usable("ACME/Web") || build.Usable("acme/app") {
 			t.Errorf("usable: small app %v, small web %v, build app %v; want true, false, false",
-				small.usable("acme/app"), small.usable("ACME/Web"), build.usable("acme/app"))
+				small.Usable("acme/app"), small.Usable("ACME/Web"), build.Usable("acme/app"))
 		}
 	})
 }
@@ -139,5 +139,68 @@ func TestMaxLifetimeCap(t *testing.T) {
 			}
 			wantErr(t, err, "profiles.p.max_lifetime: want at most 120h (5 days), GitHub's limit on a job on a self-hosted runner")
 		})
+	}
+}
+
+func TestHostAccepting(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, raw string
+		want      bool
+	}{
+		{"default", "", true},
+		{"drained", `, "accepting": false`, false},
+		{"resumed", `, "accepting": true`, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			d := object(jsonScopes, `"hosts": {"default": {"capacity": {"cpus": 16, "memory": "64GiB"}`+tc.raw+`}}`, jsonProfile(""))
+			cfg := mustBuildJSON(t, &Config{}, d)
+			if h, _ := cfg.Host("default"); h.Accepting != tc.want {
+				t.Errorf("accepting = %v, want %v", h.Accepting, tc.want)
+			}
+		})
+	}
+	t.Run("word", func(t *testing.T) {
+		t.Parallel()
+		d := object(jsonScopes, `"hosts": {"default": {"accepting": "no"}}`, jsonProfile(""))
+		wantErr(t, buildJSON(nil, d), `hosts.default.accepting: want true or false`)
+	})
+}
+
+// A scale set serves the scopes its profile may use and those it is
+// leaving, whose jobs still run; a profile being deleted serves only what
+// it is leaving.
+func TestProfileServes(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		p       Profile
+		app, wb bool
+	}{
+		{"everyScope", Profile{}, true, true},
+		{"listed", Profile{Scopes: []string{"acme/app"}}, true, false},
+		{"leavingListed", Profile{Retiring: []string{"ACME/Web"}}, true, true},
+		{"leavingUnlisted", Profile{Scopes: []string{"acme/app"}, Retiring: []string{"acme/web"}}, true, true},
+		{"deleting", Profile{Deleting: true, Retiring: []string{"acme/web"}}, false, true},
+		{"deleted", Profile{Deleting: true}, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if a, w := tc.p.Serves("acme/app"), tc.p.Serves("acme/web"); a != tc.app || w != tc.wb {
+				t.Errorf("serves app %v, web %v; want %v, %v", a, w, tc.app, tc.wb)
+			}
+		})
+	}
+}
+
+// A profile being deleted only loses scopes: a save cannot give it one.
+func TestDeletingProfileTakesNoNewScope(t *testing.T) {
+	t.Parallel()
+	prev := mustBuildJSON(t, &Config{}, twoScopes(`"small"`, `"small"`, "", `"deleting": true, "retiring": ["acme/web"]`))
+	err := buildJSON(prev, twoScopes(`"small"`, `"small"`, "", `"deleting": true, "retiring": ["acme/web", "acme/app"]`))
+	wantErr(t, err, `profiles.build.retiring[1]: "build" is being deleted, so no scope may start using it`)
+	if err := buildJSON(prev, twoScopes(`"small"`, `"small"`, "", `"deleting": true, "retiring": ["ACME/web"]`)); err != nil {
+		t.Errorf("the same scope in another case: %v", err)
 	}
 }

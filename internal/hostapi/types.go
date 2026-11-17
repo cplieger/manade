@@ -34,9 +34,9 @@ const (
 	// eventsBound ends an events stream, after which the client reconnects
 	// and lists again.
 	eventsBound = time.Hour
-	// Heartbeat is how often an events stream writes a line when no runner
+	// heartbeatEvery is how often an events stream writes a line when no runner
 	// changes, so a client can tell an idle stream from a dead link.
-	Heartbeat = 30 * time.Second
+	heartbeatEvery = 30 * time.Second
 )
 
 // clientSlack is how much longer the client waits than the server's bound,
@@ -52,9 +52,9 @@ const (
 	SectionLimit = 1 << 20
 	// jitLimit caps a JIT config; GitHub's are a few KiB of base64.
 	jitLimit = 48 << 10
-	// LogTailDefault and LogTailMax bound a log tail's lines.
-	LogTailDefault = 50
-	LogTailMax     = 1000
+	// logTailDefault and logTailMax bound a log tail's lines.
+	logTailDefault = 50
+	logTailMax     = 1000
 	// logLimit caps a log tail's bytes; docker.LogKeep owns the value.
 	logLimit = docker.LogKeep
 	// DiagLimit caps a runner's _diag tar.
@@ -460,10 +460,25 @@ type Runner struct {
 	RemovedBy string `json:"removed_by,omitempty"`
 	// Orphans are containers of this runner's name that outlived its
 	// failed entry; its DELETE removes them.
-	Orphans   []string `json:"orphans,omitempty"`
-	Limits    Limits   `json:"limits"`
-	RunnerID  int64    `json:"runner_id"`
-	OOMKilled bool     `json:"oom_killed"`
+	Orphans []string `json:"orphans,omitempty"`
+	// Usage is an exited runner's, read from its own cgroup; nil when the
+	// host found none.
+	Usage     *Usage `json:"usage,omitempty"`
+	Limits    Limits `json:"limits"`
+	RunnerID  int64  `json:"runner_id"`
+	OOMKilled bool   `json:"oom_killed"`
+}
+
+// Usage is what a runner used over its container's life.
+type Usage struct {
+	// CPU is its processes' CPU time; Ran is its container's start to its
+	// exit, the span CPU covers.
+	CPU time.Duration `json:"cpu_ns"`
+	Ran time.Duration `json:"ran_ns"`
+	// PeakMemory is the highest working set sampled while it ran, or its
+	// cgroup's watermark after an OOM kill or with no sample; 0 when
+	// neither was read.
+	PeakMemory int64 `json:"peak_memory,omitempty"`
 }
 
 // RunnerAnswer is a POST /v1/runners answer.
@@ -485,7 +500,7 @@ type EventType string
 // The event types.
 const (
 	EventRunner    EventType = "runner"
-	EventHeartbeat EventType = "heartbeat"
+	eventHeartbeat EventType = "heartbeat"
 	// EventRestarting is the stream's last line: the host restarts to apply
 	// its section, and its connection ends.
 	EventRestarting EventType = "restarting"

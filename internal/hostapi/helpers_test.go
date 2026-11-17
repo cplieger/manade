@@ -13,9 +13,9 @@ import (
 
 // fakeBackend is a Backend whose answers each test sets.
 type fakeBackend struct {
-	err     error
-	changes chan Runner
-	probe   func(ctx context.Context) (ProbeReport, error)
+	err, subscribeErr error
+	changes           chan Runner
+	probe             func(ctx context.Context) (ProbeReport, error)
 	// section answers each PUT /v1/section; sections records each one.
 	section    func(*Section) (SectionAnswer, error)
 	sections   []Section
@@ -67,9 +67,10 @@ func (f *fakeBackend) DeleteRunner(_ context.Context, name string, diag bool) ([
 
 func (f *fakeBackend) Logs(context.Context, string, int) ([]byte, error) { return f.logs, f.err }
 
-func (f *fakeBackend) Diag(context.Context, string) ([]byte, error) { return f.diag, f.err }
-
-func (f *fakeBackend) Subscribe(ctx context.Context) <-chan Runner {
+func (f *fakeBackend) Subscribe(ctx context.Context) (<-chan Runner, error) {
+	if f.subscribeErr != nil {
+		return nil, f.subscribeErr
+	}
 	out := make(chan Runner)
 	go func() {
 		defer close(out)
@@ -89,7 +90,7 @@ func (f *fakeBackend) Subscribe(ctx context.Context) <-chan Runner {
 			}
 		}
 	}()
-	return out
+	return out, nil
 }
 
 func (f *fakeBackend) Probe(ctx context.Context) (ProbeReport, error) {

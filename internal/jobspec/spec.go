@@ -29,6 +29,11 @@ const (
 	LabelImageCheck = "manade.image-check"
 )
 
+// CgroupDir holds each runner's own cgroup, CgroupDir/<runner name> in
+// every hierarchy: its container's cgroup parent, which outlives the
+// container so the host reads its usage after it exits.
+const CgroupDir = "manade-runners"
+
 // jitConfigEnv is the variable GitHub's runner reads its one-time config from.
 const jitConfigEnv = "ACTIONS_RUNNER_INPUT_JITCONFIG"
 
@@ -148,6 +153,7 @@ func (h *Host) Runner(p *config.Profile, r *Runner) (*docker.CreateRequest, erro
 	if err != nil {
 		return nil, err
 	}
+	hc.CgroupParent = "/" + CgroupDir + "/" + r.Name
 	if hc.Mounts, err = h.mounts(p); err != nil {
 		return nil, err
 	}

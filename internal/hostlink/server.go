@@ -55,6 +55,8 @@ type Server struct {
 	// hijacked before then and registered after is closed at once, since
 	// Serve no longer waits for it.
 	closed bool
+	// accepting is set while Serve's accept loop runs.
+	accepting atomic.Bool
 }
 
 // NewServer answers hosts' upgrades. log may be nil for slog.Default.
@@ -72,6 +74,10 @@ func (s *Server) Link(name string) (*Link, bool) {
 	l, ok := s.links[name]
 	return l, ok
 }
+
+// Accepting reports that Serve's accept loop runs: a listener that
+// failed, or one not served yet, reads false.
+func (s *Server) Accepting() bool { return s.accepting.Load() }
 
 // Serve answers upgrades on ln until ctx ends, then closes ln and every
 // host's connection and waits for them.
@@ -91,7 +97,12 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 		ErrorLog:          slog.NewLogLogger(s.log.Handler(), slog.LevelWarn),
 	}
 	done := make(chan error, 1)
-	go func() { done <- srv.Serve(ln) }()
+	s.accepting.Store(true)
+	go func() {
+		err := srv.Serve(ln)
+		s.accepting.Store(false)
+		done <- err
+	}()
 	var err error
 	select {
 	case serr := <-done:

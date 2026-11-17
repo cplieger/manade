@@ -1,7 +1,9 @@
 package store
 
 import (
+	"encoding/binary"
 	"encoding/json"
+	"time"
 
 	"github.com/cplieger/bolttable"
 )
@@ -25,13 +27,77 @@ type stamp struct {
 // of its own, which no open writes.
 var stampKey = []byte("store")
 
-// meta holds one row per fact, each decoded by the code that owns it, so a
-// write of one fact leaves every other byte for byte.
-var schema, meta = declare()
+// tables is every table and index this build declares. meta holds one row
+// per fact, each decoded by its owner, so a write of one fact leaves every
+// other byte for byte; journal holds one row per change to this file's
+// state, keyed in the order written.
+type tables struct {
+	meta             *bolttable.Table[[]byte, json.RawMessage]
+	scaleSets        *bolttable.Table[[]byte, ScaleSet]
+	routes           *bolttable.Table[[]byte, Route]
+	journal          *bolttable.Table[uint64, entry]
+	journalCount     *bolttable.Counter[uint64, entry]
+	runs             *bolttable.Table[uint64, Run]
+	runsByRunner     *bolttable.Index[uint64, Run]
+	runsOpen         *bolttable.Index[uint64, Run]
+	runsByAge        *bolttable.Index[uint64, Run]
+	blobs            *bolttable.Table[uint64, Blob]
+	exits            *bolttable.Table[[]byte, Exit]
+	hostEvents       *bolttable.Table[uint64, HostEvent]
+	hostEventsByHost *bolttable.Index[uint64, HostEvent]
+	hostEventsByAge  *bolttable.Index[uint64, HostEvent]
+	probes           *bolttable.Table[uint64, Probe]
+	probesByHost     *bolttable.Index[uint64, Probe]
+	probesByAge      *bolttable.Index[uint64, Probe]
+	hostSeen         *bolttable.Table[[]byte, HostSeen]
+}
 
-func declare() (*bolttable.Schema, *bolttable.Table[[]byte, json.RawMessage]) {
-	s := bolttable.NewSchema(schemaName)
-	m := bolttable.Must(bolttable.Define(bolttable.Must(s.Namespace("meta")), prefixMeta, "meta",
+var schema, declared = declare(bolttable.NewSchema(schemaName))
+
+var (
+	meta, scaleSets, routes      = declared.meta, declared.scaleSets, declared.routes
+	journal, journalCount        = declared.journal, declared.journalCount
+	runs, runsByRunner, runsOpen = declared.runs, declared.runsByRunner, declared.runsOpen
+	runsByAge, blobs, exits      = declared.runsByAge, declared.blobs, declared.exits
+	hostEvents, hostEventsByHost = declared.hostEvents, declared.hostEventsByHost
+	hostEventsByAge, hostSeen    = declared.hostEventsByAge, declared.hostSeen
+	probes, probesByHost         = declared.probes, declared.probesByHost
+	probesByAge                  = declared.probesByAge
+)
+
+// declare declares every namespace of this build in s.
+func declare(s *bolttable.Schema) (*bolttable.Schema, *tables) {
+	var t tables
+	t.meta = bolttable.Must(bolttable.Define(bolttable.Must(s.Namespace("meta")), prefixMeta, "meta",
 		bolttable.BytesKey{}, bolttable.JSON[json.RawMessage](1), bolttable.TableOptions{}))
-	return s, m
+	gh := bolttable.Must(s.Namespace("github"))
+	t.scaleSets = bolttable.Must(bolttable.Define(gh, prefixScaleSets, "scalesets",
+		bolttable.BytesKey{}, bolttable.JSON[ScaleSet](1), bolttable.TableOptions{}))
+	t.routes = bolttable.Must(bolttable.Define(gh, prefixRoutes, "routes",
+		bolttable.BytesKey{}, bolttable.JSON[Route](1), bolttable.TableOptions{}))
+	t.journal = bolttable.Must(bolttable.Define(bolttable.Must(s.Namespace("journal")), prefixJournal, "journal",
+		bolttable.Uint64Key{}, bolttable.JSON[entry](1), bolttable.TableOptions{}))
+	t.journalCount = bolttable.Must(bolttable.DefineCounter(t.journal, "journal_rows", 1, func(uint64, *entry) int64 { return 1 }))
+	hist := bolttable.Must(s.Namespace("history"))
+	t.runs = bolttable.Must(bolttable.Define(hist, prefixRuns, "runs",
+		bolttable.Uint64Key{}, bolttable.JSON[Run](1), bolttable.TableOptions{}))
+	t.runsByRunner, t.runsOpen, t.runsByAge = runIndexes(t.runs)
+	t.blobs = bolttable.Must(bolttable.Define(hist, prefixBlobs, "runblobs",
+		bolttable.Uint64Key{}, bolttable.JSON[Blob](1), bolttable.TableOptions{}))
+	if err := bolttable.CascadePrefix(t.runs, t.blobs, 1, func(id uint64) []byte { return binary.BigEndian.AppendUint64(nil, id) }); err != nil {
+		panic(err)
+	}
+	t.exits = bolttable.Must(bolttable.Define(hist, prefixExits, "exits",
+		bolttable.BytesKey{}, bolttable.JSON[Exit](1), bolttable.TableOptions{}))
+	t.hostEvents = bolttable.Must(bolttable.Define(hist, prefixHostEvents, "hostevents",
+		bolttable.Uint64Key{}, bolttable.JSON[HostEvent](1), bolttable.TableOptions{}))
+	t.hostEventsByHost, t.hostEventsByAge = timeIndexes(t.hostEvents, "hostevents",
+		func(e *HostEvent) string { return e.Host }, func(e *HostEvent) time.Time { return e.At })
+	t.probes = bolttable.Must(bolttable.Define(hist, prefixProbes, "probes",
+		bolttable.Uint64Key{}, bolttable.JSON[Probe](1), bolttable.TableOptions{}))
+	t.probesByHost, t.probesByAge = timeIndexes(t.probes, "probes",
+		func(p *Probe) string { return p.Host }, func(p *Probe) time.Time { return p.At })
+	t.hostSeen = bolttable.Must(bolttable.Define(hist, prefixHostSeen, "hostseen",
+		bolttable.BytesKey{}, bolttable.JSON[HostSeen](1), bolttable.TableOptions{}))
+	return s, &t
 }

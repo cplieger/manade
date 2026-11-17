@@ -100,7 +100,7 @@ func finishUp(t *testing.T, s *supervisor) (run context.Context) {
 	s.served.Store(sv)
 	s.prober = probe.NewRunner(&probe.Config{Log: s.log, Host: s.probeHost})
 	s.images = images.New(&images.Config{Host: s.running.host, Log: s.log, Profiles: sv.Profiles})
-	s.runners = newRunners(t.Context(), &runnersConfig{Served: sv, Images: s.images, Log: s.log})
+	s.runners = newRunners(t.Context(), &runnersConfig{Served: sv, Images: s.images, Log: s.log, Cgroups: newFakeCgroups()})
 	run, s.cancelRun = context.WithCancelCause(t.Context())
 	s.sectionMu.Lock()
 	s.phase.Store(phaseUp)
@@ -266,8 +266,8 @@ func TestAFirstBootWaitsForItsSection(t *testing.T) {
 		if _, err := b.Probe(t.Context()); !errors.Is(err, hostapi.ErrWaitingForSection) {
 			t.Errorf("Probe = %v", err)
 		}
-		if _, open := <-b.Subscribe(t.Context()); open {
-			t.Error("a waiting host's events stream carries a runner")
+		if _, err := b.Subscribe(t.Context()); !errors.Is(err, hostapi.ErrWaitingForSection) {
+			t.Errorf("Subscribe = %v", err)
 		}
 	})
 	select {

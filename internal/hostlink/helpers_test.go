@@ -41,15 +41,13 @@ func (*backend) DeleteRunner(context.Context, string, bool) ([]byte, error) { re
 
 func (*backend) Logs(context.Context, string, int) ([]byte, error) { return nil, nil }
 
-func (*backend) Diag(context.Context, string) ([]byte, error) { return nil, nil }
-
 func (*backend) PutSection(context.Context, *hostapi.Section) (hostapi.SectionAnswer, error) {
 	return hostapi.SectionAnswer{Applies: hostapi.SectionApplied}, nil
 }
 
 func (*backend) Restarting() <-chan struct{} { return nil }
 
-func (b *backend) Subscribe(ctx context.Context) <-chan hostapi.Runner {
+func (b *backend) Subscribe(ctx context.Context) (<-chan hostapi.Runner, error) {
 	out := make(chan hostapi.Runner)
 	go func() {
 		defer close(out)
@@ -66,7 +64,7 @@ func (b *backend) Subscribe(ctx context.Context) <-chan hostapi.Runner {
 			}
 		}
 	}()
-	return out
+	return out, nil
 }
 
 func (b *backend) Probe(ctx context.Context) (hostapi.ProbeReport, error) {

@@ -1,6 +1,7 @@
 package jobspec
 
 import (
+	"encoding/json"
 	"errors"
 	"io/fs"
 	"os"
@@ -560,6 +561,27 @@ func TestNewHostProtects(t *testing.T) {
 		if !slices.Contains(h.protected, want) {
 			t.Errorf("protected %v lacks %s", h.protected, want)
 		}
+	}
+}
+
+// A runner's container is made under its own cgroup parent, named after
+// the runner, which outlives the container so its usage can be read after
+// it exits; the Engine API names the field CgroupParent.
+func TestRunnerHasItsOwnCgroup(t *testing.T) {
+	h, _ := testHost(t, false, Platform{})
+	req, err := h.Runner(profile(), runner())
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := json.Marshal(req.HostConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `"CgroupParent":"/manade-runners/manade-small-0123456789ab"`; !strings.Contains(string(b), want) {
+		t.Errorf("host config = %s, want %s", b, want)
+	}
+	if hc := h.Probe(&Probe{Run: "run-1", ImageID: "sha256:probe"}).HostConfig; hc.CgroupParent != "" {
+		t.Errorf("a probe's cgroup parent = %q, want the daemon's default", hc.CgroupParent)
 	}
 }
 

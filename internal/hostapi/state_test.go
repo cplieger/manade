@@ -1,6 +1,7 @@
 package hostapi
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -149,4 +150,25 @@ func TestStateLimitsAndLabels(t *testing.T) {
 			t.Errorf("started = %v, want zero", got.StartedAt)
 		}
 	})
+}
+
+// An exited runner shows its container's usage, on the wire as cpu_ns,
+// ran_ns and peak_memory; a running one shows none.
+func TestStateShowsAnExitsUsage(t *testing.T) {
+	u := &Usage{CPU: 90 * time.Second, Ran: 5 * time.Minute, PeakMemory: 300 << 20}
+	exited, _ := State(&Container{Name: "r1", State: docker.StateExited, Usage: u}, nil)
+	if exited.Usage == nil || *exited.Usage != *u {
+		t.Errorf("an exited runner's usage = %+v, want %+v", exited.Usage, u)
+	}
+	b, err := json.Marshal(exited)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `"usage":{"cpu_ns":90000000000,"ran_ns":300000000000,"peak_memory":314572800}`; !strings.Contains(string(b), want) {
+		t.Errorf("wire = %s, want %s", b, want)
+	}
+	running, _ := State(&Container{Name: "r1", State: docker.StateRunning, Usage: u}, nil)
+	if running.Usage != nil {
+		t.Errorf("a running runner's usage = %+v, want none", running.Usage)
+	}
 }

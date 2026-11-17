@@ -217,6 +217,14 @@ func TestDeleteRunner(t *testing.T) {
 			t.Errorf("logs = %q, want one WARN naming the runner and the size", l)
 		}
 	})
+	t.Run("a diag at the limit is answered whole", func(t *testing.T) {
+		b := &fakeBackend{diag: make([]byte, DiagLimit)}
+		srv := serve(t, b)
+		resp, body := do(t, http.MethodDelete, srv.URL+"/v1/runners/r1?diag=1", "")
+		if resp.StatusCode != http.StatusOK || len(body) != DiagLimit {
+			t.Errorf("answer %d with %d bytes, want 200 with %d", resp.StatusCode, len(body), DiagLimit)
+		}
+	})
 	t.Run("diag asked with no container answers 204", func(t *testing.T) {
 		srv := serve(t, &fakeBackend{})
 		resp, _ := do(t, http.MethodDelete, srv.URL+"/v1/runners/r1?diag=1", "")
@@ -304,19 +312,6 @@ func TestLogs(t *testing.T) {
 	})
 }
 
-func TestDiagRefusesAnOversizeTar(t *testing.T) {
-	srv := serve(t, &fakeBackend{diag: make([]byte, DiagLimit+1)})
-	resp, _ := do(t, http.MethodGet, srv.URL+"/v1/runners/r1/diag", "")
-	if resp.StatusCode != http.StatusInternalServerError {
-		t.Errorf("answer %d, want 500", resp.StatusCode)
-	}
-	srv = serve(t, &fakeBackend{diag: make([]byte, DiagLimit)})
-	resp, body := do(t, http.MethodGet, srv.URL+"/v1/runners/r1/diag", "")
-	if resp.StatusCode != http.StatusOK || len(body) != DiagLimit {
-		t.Errorf("answer %d with %d bytes, want 200 with %d", resp.StatusCode, len(body), DiagLimit)
-	}
-}
-
 func TestEvents(t *testing.T) {
 	b := &fakeBackend{changes: make(chan Runner)}
 	s := NewServer(b, "inst-1", nil)
@@ -344,13 +339,13 @@ func TestEvents(t *testing.T) {
 		}
 		return ev
 	}
-	if ev := next(); ev.Type != EventHeartbeat || ev.InstanceID != "inst-1" {
+	if ev := next(); ev.Type != eventHeartbeat || ev.InstanceID != "inst-1" {
 		t.Errorf("first line = %+v, want a heartbeat", ev)
 	}
 	b.changes <- Runner{Name: "r1", State: StateExited}
 	for {
 		ev := next()
-		if ev.Type == EventHeartbeat {
+		if ev.Type == eventHeartbeat {
 			continue
 		}
 		if ev.Type != EventRunner || ev.Runner == nil || ev.Runner.Name != "r1" || ev.Runner.State != StateExited || ev.InstanceID != "inst-1" {
@@ -361,9 +356,28 @@ func TestEvents(t *testing.T) {
 	close(b.changes)
 	for sc.Scan() {
 		var ev Event
-		if err := json.Unmarshal(sc.Bytes(), &ev); err != nil || ev.Type != EventHeartbeat {
+		if err := json.Unmarshal(sc.Bytes(), &ev); err != nil || ev.Type != eventHeartbeat {
 			t.Errorf("after the backend closed: %s", sc.Bytes())
 		}
+	}
+}
+
+// An events stream asked of a host that is not up answers its 503, as
+// every route but status and the section does, which the client reads as
+// the same refusal.
+func TestEventsBeforeTheHostIsUp(t *testing.T) {
+	for code, err := range map[string]error{codeWaiting: ErrWaitingForSection, codeStarting: ErrStarting} {
+		t.Run(code, func(t *testing.T) {
+			b := &fakeBackend{subscribeErr: err}
+			resp, body := do(t, http.MethodGet, serve(t, b).URL+"/v1/events", "")
+			if resp.StatusCode != http.StatusServiceUnavailable || errorOf(t, body).Code != code {
+				t.Errorf("answer %d %s, want 503 %s", resp.StatusCode, body, code)
+			}
+			got := linkClient(t, b).Events(t.Context(), func(*Event) { t.Error("a line from a host that is not up") })
+			if !errors.Is(got, err) {
+				t.Errorf("Events = %v, want %v", got, err)
+			}
+		})
 	}
 }
 
