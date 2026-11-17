@@ -61,7 +61,9 @@ func (g *generation) stops() []Stop {
 }
 
 // count adds the scale set of profile in the scope with key to st: its
-// jobs, and whether they have all run. A scope the settings no longer hold
+// jobs, and whether they have all run, read after the scope's routing
+// variable settled in this generation, so no job routed before the
+// variable changed is missed. A scope the settings no longer hold
 // or that is public leaves the scale set nothing the pool can run; one
 // with no scale set recorded yet cannot be read, so it has not ended.
 func (g *generation) count(st *Stop, key, profile string) {
@@ -82,7 +84,8 @@ func (g *generation) count(st *Stop, key, profile string) {
 	st.Queued += queued
 	st.Assigned += stats.Assigned
 	st.Jobs = append(st.Jobs, sc.jobsOf(profile)...)
-	fresh := b.asg.at.After(g.born) && (sc.cfg.Kind != config.ScopeRepo || sc.readAt.After(g.born) && !sc.partial)
+	since := sc.routed
+	fresh := !since.IsZero() && b.asg.at.After(since) && (sc.cfg.Kind != config.ScopeRepo || sc.readAt.After(since) && !sc.partial)
 	st.Ended = st.Ended && fresh && queued == 0 && stats.Assigned == 0
 }
 

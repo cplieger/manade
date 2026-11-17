@@ -9,12 +9,14 @@
 package github
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -140,12 +142,17 @@ func (a *answer) err() error {
 // when the source keeps the token, the same token is sent again after each
 // of discardDelays, so a fresh token's replication delay costs no mint.
 func (r *REST) get(ctx context.Context, c *http.Client, src forgeapi.CredentialSource, u string) (answer, error) {
+	return r.request(ctx, c, src, http.MethodGet, u, nil)
+}
+
+// request is get for any method, with body sent as JSON when not nil.
+func (r *REST) request(ctx context.Context, c *http.Client, src forgeapi.CredentialSource, method, u string, body []byte) (answer, error) {
 	token, err := src.Token(ctx)
 	if err != nil {
 		return answer{}, fmt.Errorf("github: token: %w", err)
 	}
 	for i := 0; ; i++ {
-		a, err := r.send(ctx, c, token, u)
+		a, err := r.send(ctx, c, method, token, u, body)
 		if err != nil || a.status != http.StatusUnauthorized {
 			return a, err
 		}
@@ -159,12 +166,20 @@ func (r *REST) get(ctx context.Context, c *http.Client, src forgeapi.CredentialS
 	}
 }
 
-func (*REST) send(ctx context.Context, c *http.Client, token, u string) (answer, error) {
+// send sends one request with body as JSON, none when body is nil.
+func (*REST) send(ctx context.Context, c *http.Client, method, token, u string, body []byte) (answer, error) {
 	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, http.NoBody)
+	var rd io.Reader = http.NoBody
+	if body != nil {
+		rd = bytes.NewReader(body)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, u, rd)
 	if err != nil {
 		return answer{}, fmt.Errorf("github: request: %w", httpclient.LogSafeError(err))
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Accept", "application/vnd.github+json")
@@ -174,11 +189,11 @@ func (*REST) send(ctx context.Context, c *http.Client, token, u string) (answer,
 		return answer{}, fmt.Errorf("github: %w", httpclient.RedactTransportError(err, "", httpclient.Secret(token)))
 	}
 	defer func() { _ = resp.Body.Close() }()
-	body, err := httpclient.ReadLimitedBody(resp.Body, maxBody)
+	got, err := httpclient.ReadLimitedBody(resp.Body, maxBody)
 	if err != nil {
 		return answer{}, fmt.Errorf("github: reading the answer: %w", httpclient.LogSafeError(err))
 	}
-	return answer{status: resp.StatusCode, header: resp.Header, body: body}, nil
+	return answer{status: resp.StatusCode, header: resp.Header, body: got}, nil
 }
 
 // getJSON reads u on the plain client into v; found is false on a 404.

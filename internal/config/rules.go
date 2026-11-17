@@ -46,13 +46,13 @@ func (c *Config) checkDefault(s *Scope, p *problems) {
 	case !ok:
 		p.addf(at, "names no profile %s; define it or choose another", quote(s.DefaultProfile))
 		return
-	case pr.usable(s.Key):
+	case pr.Usable(s.Key):
 		return
 	case pr.Deleting:
 		p.addf(at, "%s is being deleted; choose another default profile", quote(pr.Name))
 		return
 	}
-	if slices.ContainsFunc(c.Profiles, func(o Profile) bool { return o.usable(s.Key) }) {
+	if slices.ContainsFunc(c.Profiles, func(o Profile) bool { return o.Usable(s.Key) }) {
 		p.addf(at, "%s is this scope's default profile but %s may not use it; choose another", quote(pr.Name), quote(s.Key))
 		return
 	}

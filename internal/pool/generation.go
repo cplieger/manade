@@ -78,8 +78,13 @@ func newGeneration(r *Registry, s *Settings) *generation {
 		g.hosts = append(g.hosts, &host{cfg: &cfg.Hosts[i], want: make(chan struct{}, 1), wake: make(chan struct{}, 1)})
 	}
 	for i := range cfg.Scopes {
-		// A scope this generation adds is read at once.
-		g.scopes[cfg.Scopes[i].Key] = &scope{cfg: &cfg.Scopes[i], unregister: map[string]int64{}, wanted: true}
+		// A scope this generation adds is read at once. An enterprise scope
+		// has no routing variable, so it is routed from the start.
+		sc := &scope{cfg: &cfg.Scopes[i], unregister: map[string]int64{}, wanted: true}
+		if sc.cfg.Kind == config.ScopeEnterprise {
+			sc.routed = g.born
+		}
+		g.scopes[cfg.Scopes[i].Key] = sc
 	}
 	return g
 }
@@ -92,9 +97,13 @@ type scope struct {
 	// above its assignments, which keeps the proof refreshed. readAt is
 	// when the last complete read of its queued jobs ended.
 	proof, read, failed, above, readAt time.Time
+	// routed is when the scope's routing variable settled in this
+	// generation, zero until then; routeTry, when its last routing began.
+	routed, routeTry time.Time
 	// ensureErr is why the scope's scale sets could not be ensured, nil
 	// once they are; the ensure loop retries it.
 	ensureErr error
+	route     RouteStatus
 	cfg       *config.Scope
 	// unregister holds, by runner name, the registrations of ended
 	// runners whose removal GitHub has not yet taken.
@@ -411,7 +420,7 @@ func sameSpec(a, b *config.Profile) bool {
 func (sc *scope) carry(o *scope) {
 	sc.proof, sc.read, sc.failed, sc.above, sc.readAt = o.proof, o.read, o.failed, o.above, o.readAt
 	sc.unregister, sc.jobs = o.unregister, o.jobs
-	sc.partial, sc.public, sc.wanted = o.partial, o.public, o.wanted
+	sc.partial, sc.public, sc.wanted, sc.route = o.partial, o.public, o.wanted, o.route
 }
 
 // carry takes old's GitHub-side state for the same scale set: its

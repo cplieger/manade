@@ -43,9 +43,9 @@ func (g *generation) runVisibility(ctx context.Context) {
 	}
 }
 
-// visibility reads every scope due now, outside the lock, one at a time;
-// a read the stop cuts short records nothing. With no credential nothing
-// can be read.
+// visibility reads every scope due now, outside the lock, one at a time,
+// then routes the scopes due; a read the stop cuts short records nothing.
+// With no credential nothing can be read.
 func (g *generation) visibility(ctx context.Context) {
 	if !g.credentialed {
 		return
@@ -73,6 +73,7 @@ func (g *generation) visibility(ctx context.Context) {
 		g.verdict(sc, private, err, now)
 		g.mu.Unlock()
 	}
+	g.routing(ctx, all, now)
 	if all {
 		if err := g.gh.ScaleSets.Recheck(ctx); err != nil && ctx.Err() == nil {
 			g.log.Warn("Resolving the scopes' installations failed, so their clients stay as they are until the next pass", "error", err)
@@ -97,6 +98,8 @@ func (g *generation) verdict(sc *scope, private bool, err error, at time.Time) {
 		g.log.Error("A scope's repository is public or its runner group admits public repositories, so the pool stops serving it",
 			"scope", sc.cfg.Key)
 		g.reg.closeScope(sc.cfg.Key)
+		// Its variable is deleted at once, so no new job is routed to it.
+		sc.routed, sc.routeTry = time.Time{}, time.Time{}
 		g.wakeAll()
 	default:
 		if !sc.failed.IsZero() {

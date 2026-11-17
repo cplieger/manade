@@ -45,6 +45,9 @@ type scaleSets interface {
 type restAPI interface {
 	Private(ctx context.Context, s *config.Scope) (bool, error)
 	Runner(ctx context.Context, s *config.Scope, id int64) (github.Runner, bool, error)
+	Variable(ctx context.Context, s *config.Scope, name string) (value string, found bool, err error)
+	SetVariable(ctx context.Context, s *config.Scope, name, value string) error
+	DeleteVariable(ctx context.Context, s *config.Scope, name string) error
 }
 
 // scaleSetRecords is the store's record of every scale set the pool
@@ -89,6 +92,7 @@ type Deps struct {
 	Metrics Recorder
 	Settle  settler
 	Records scaleSetRecords
+	Routes  routeRecords
 	Log     *slog.Logger
 }
 
@@ -106,14 +110,17 @@ type Registry struct {
 	sessions map[setKey]*session
 	// recorded holds the store's scale-set records once read, nil before.
 	recorded map[setKey]github.ScaleSet
-	changed  chan struct{}
-	now      func() time.Time
-	swg      sync.WaitGroup
+	// routeRecs holds the store's route records by scope without case once
+	// read, nil before.
+	routeRecs map[string]Route
+	changed   chan struct{}
+	now       func() time.Time
+	swg       sync.WaitGroup
 	// mu guards cur: a handler call holds it for reading, so no call lands
 	// in a generation after its successor copied it. smu guards spawn and
 	// sessions, and is never held while a generation's lock is taken or a
 	// session's close is waited on; syncMu serializes sync across that
-	// wait. rmu guards recorded and serializes its writes.
+	// wait. rmu guards recorded and routeRecs and serializes their writes.
 	mu                    sync.RWMutex
 	smu, syncMu, pmu, rmu sync.Mutex
 }

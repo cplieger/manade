@@ -44,6 +44,11 @@ func TestBuildDefaults(t *testing.T) {
 			t.Errorf("pool.name = %q, want manade", cfg.PoolName)
 		}
 	})
+	t.Run("runnerVariable", func(t *testing.T) {
+		if cfg.RunnerVariable != "MANADE_RUNNER" {
+			t.Errorf("pool.runner_variable = %q, want MANADE_RUNNER", cfg.RunnerVariable)
+		}
+	})
 	t.Run("profileHosts", func(t *testing.T) {
 		if got := profile(t, cfg, "p").Hosts; !slices.Equal(got, []string{"default"}) {
 			t.Errorf("hosts = %v, want [default]", got)
@@ -64,6 +69,16 @@ func TestParsePoolName(t *testing.T) {
 	}
 	if cfg.PoolName != "ci-2" {
 		t.Errorf("pool.name = %q, want ci-2", cfg.PoolName)
+	}
+}
+
+func TestParseRunnerVariable(t *testing.T) {
+	cfg, err := Parse([]byte(object(jsonScopes, jsonHost, jsonProfile(""), `"pool": {"runner_variable": "_CI_size2"}`)), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.RunnerVariable != "_CI_size2" {
+		t.Errorf("pool.runner_variable = %q, want _CI_size2", cfg.RunnerVariable)
 	}
 }
 
@@ -206,6 +221,9 @@ func TestBuildRefusals(t *testing.T) {
 		{"poolNameLong", withMember(`"pool": {"name": "a-fifteen-chars"}`), []string{"pool.name: want 1 to 14 lowercase letters"}},
 		{"poolNameUpper", withMember(`"pool": {"name": "Manade"}`), []string{"pool.name: want 1 to 14 lowercase letters"}},
 		{"poolNameDigitFirst", withMember(`"pool": {"name": "1pool"}`), []string{"pool.name: want 1 to 14 lowercase letters"}},
+		{"runnerVariableDigitFirst", withMember(`"pool": {"runner_variable": "2RUNNER"}`), []string{"pool.runner_variable: want letters, digits or underscores"}},
+		{"runnerVariableDash", withMember(`"pool": {"runner_variable": "MANADE-RUNNER"}`), []string{"pool.runner_variable: want letters, digits or underscores"}},
+		{"runnerVariableGitHub", withMember(`"pool": {"runner_variable": "github_runner"}`), []string{"pool.runner_variable: want letters, digits or underscores"}},
 		{"poolUnknown", withMember(`"pool": {"owner": "x"}`), []string{"pool.owner: unknown key"}},
 		{"topLevelCapacity", withMember(`"capacity": {"cpus": 1, "memory": "1GiB"}`), []string{"capacity: unknown key"}},
 		{"address", hosted(`"address": "https://nas:7464"`), []string{"hosts.h.address: refused: hosts dial the control plane"}},

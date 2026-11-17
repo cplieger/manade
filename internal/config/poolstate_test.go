@@ -33,9 +33,9 @@ func TestPoolStateParses(t *testing.T) {
 	}
 	t.Run("usable", func(t *testing.T) {
 		t.Parallel()
-		if !small.usable("acme/app") || small.usable("ACME/Web") || build.usable("acme/app") {
+		if !small.Usable("acme/app") || small.Usable("ACME/Web") || build.Usable("acme/app") {
 			t.Errorf("usable: small app %v, small web %v, build app %v; want true, false, false",
-				small.usable("acme/app"), small.usable("ACME/Web"), build.usable("acme/app"))
+				small.Usable("acme/app"), small.Usable("ACME/Web"), build.Usable("acme/app"))
 		}
 	})
 }

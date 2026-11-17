@@ -20,7 +20,8 @@ type document struct {
 		HeadReserveAfter scalar `json:"head_reserve_after"`
 	} `json:"queue"`
 	Pool struct {
-		Name string `json:"name"`
+		Name           string `json:"name"`
+		RunnerVariable string `json:"runner_variable"`
 	} `json:"pool"`
 	Images docImages  `json:"images"`
 	Scopes []docScope `json:"scopes"`
@@ -82,6 +83,10 @@ var (
 	// 60 bytes.
 	poolNameRe = regexp.MustCompile(`^[a-z][a-z0-9-]{0,13}$`)
 	repoRe     = regexp.MustCompile(`^[A-Za-z0-9._-]{1,100}$`)
+	// variableRe is GitHub's rule for a variable name; the GITHUB_ prefix,
+	// which GitHub reserves without case, is refused beside it
+	// (https://docs.github.com/en/actions/reference/workflows-and-actions/variables#naming-conventions-for-configuration-variables).
+	variableRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 )
 
 func (d *document) apply(cfg *Config, p *problems) {
@@ -89,6 +94,10 @@ func (d *document) apply(cfg *Config, p *problems) {
 	cfg.PoolName = cmp.Or(d.Pool.Name, "manade")
 	if !poolNameRe.MatchString(cfg.PoolName) {
 		p.add("pool.name", invalid("want 1 to 14 lowercase letters, digits or dashes, starting with a letter", cfg.PoolName))
+	}
+	cfg.RunnerVariable = cmp.Or(d.Pool.RunnerVariable, "MANADE_RUNNER")
+	if !variableRe.MatchString(cfg.RunnerVariable) || strings.HasPrefix(strings.ToUpper(cfg.RunnerVariable), "GITHUB_") {
+		p.add("pool.runner_variable", invalid("want letters, digits or underscores, not starting with a digit or GITHUB_", cfg.RunnerVariable))
 	}
 	refresh := parseRefresh(p, "images.refresh", cmp.Or(string(d.Images.Refresh), "1h"))
 	cfg.Scopes = d.scopes(p)

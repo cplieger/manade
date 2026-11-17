@@ -88,7 +88,7 @@ func TestAHostServesOnlyTheSectionOfTheCurrentRevision(t *testing.T) {
 func TestAFailedEnsureBootsTheGenerationAndIsRetried(t *testing.T) {
 	t.Parallel()
 	cfg := oneHost()
-	r := &rig{t: t, now: epoch, cfg: cfg, gh: newFakeGitHub(cfg), log: &logBuf{}, rev: 1, settler: &fakeSettler{}, records: &fakeRecords{sets: map[setKey]github.ScaleSet{}}}
+	r := &rig{t: t, now: epoch, cfg: cfg, gh: newFakeGitHub(cfg), log: &logBuf{}, rev: 1, settler: &fakeSettler{}, records: newRecords()}
 	r.gh.ensureFail = true
 	r.side = sideOf(r.gh)
 	r.hosts = []*fakeHost{newFakeHost(cfg, "default", sectionHash(1))}
@@ -169,7 +169,7 @@ func TestRunKeepsSessionsAcrossARevisionAndClosesThemAtShutdown(t *testing.T) {
 	side := &GitHub{ScaleSets: gh, REST: gh, Sweep: gh}
 	reg := NewRegistry(&Settings{Config: cfg, GitHub: side, Revision: 1, Sections: map[string]string{"default": sectionHash(1)}}, &Deps{
 		Links: &fakeLinks{hosts: []*fakeHost{h}}, Metrics: m, Settle: &fakeSettler{},
-		Records: &fakeRecords{sets: map[setKey]github.ScaleSet{}}, Log: slog.New(slog.DiscardHandler),
+		Records: newRecords(), Routes: newRecords(), Log: slog.New(slog.DiscardHandler),
 	})
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan struct{})

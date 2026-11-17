@@ -250,7 +250,7 @@ func TestEachJobReason(t *testing.T) {
 		r := quietRig(t, oneHost())
 		r.gh.set(func(g *fakeGitHub) { g.ensureFail = true })
 		cfg := cloneConfig(r.cfg)
-		cfg.Scopes = append(cfg.Scopes, config.Scope{Key: "acme/web", Owner: "acme", Repo: "web", Kind: config.ScopeRepo})
+		cfg.Scopes = append(cfg.Scopes, config.Scope{Key: "acme/web", Owner: "acme", Repo: "web", Kind: config.ScopeRepo, DefaultProfile: defaultOf(cfg, "acme/web")})
 		r.apply(cfg)
 		r.listed("acme/web", "small", 1)
 		snap := r.reg.Snapshot()

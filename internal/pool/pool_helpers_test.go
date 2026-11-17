@@ -381,7 +381,7 @@ func (*smodel) retire(cfg *config.Config, s *sset) {
 func (m *smodel) addScope(cfg *config.Config) {
 	m.added++
 	key := fmt.Sprintf("acme/n%d", m.added)
-	cfg.Scopes = append(cfg.Scopes, config.Scope{Key: key, Owner: "acme", Repo: fmt.Sprintf("n%d", m.added), Kind: config.ScopeRepo})
+	cfg.Scopes = append(cfg.Scopes, config.Scope{Key: key, Owner: "acme", Repo: fmt.Sprintf("n%d", m.added), Kind: config.ScopeRepo, DefaultProfile: defaultOf(cfg, key)})
 	for i := range cfg.Profiles {
 		if cfg.Profiles[i].Serves(key) {
 			m.sets = append(m.sets, &sset{scope: key, profile: cfg.Profiles[i].Name})

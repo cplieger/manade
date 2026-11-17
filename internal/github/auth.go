@@ -14,22 +14,31 @@ import (
 
 // The REST grants per scope kind. Administration is a repository
 // permission; an organization's runner groups answer to Self-hosted runners.
-const read = "read"
+const (
+	read     = "read"
+	metadata = "metadata"
+)
 
 var (
-	repoGrant = map[string]string{"metadata": read, "administration": read, "actions": read}
-	orgGrant  = map[string]string{"metadata": read, "organization_self_hosted_runners": read}
+	repoGrant = map[string]string{metadata: read, "administration": read, "actions": read}
+	orgGrant  = map[string]string{metadata: read, "organization_self_hosted_runners": read}
+	// The routing variable's grants (§9.2): its own, so the scope's grant
+	// stays read-only. Write includes read.
+	repoVariableGrant = map[string]string{metadata: read, "actions_variables": "write"}
+	orgVariableGrant  = map[string]string{metadata: read, "organization_actions_variables": "write"}
 )
 
 // ErrEnterpriseNeedsToken refuses an enterprise scope under a GitHub App:
 // only a classic token reaches an enterprise's runner groups (§9.2).
 var ErrEnterpriseNeedsToken = errors.New("github: an enterprise scope needs a classic token, and the credential is a GitHub App")
 
-// sourceKey names a scope's token source: its key and its configured
-// installation, since a changed installation_id needs a source of its own.
+// sourceKey names a scope's token source: its key, its configured
+// installation, since a changed installation_id needs a source of its own,
+// and whether it mints the variable grant.
 type sourceKey struct {
 	key          string
 	installation int64
+	variables    bool
 }
 
 // auth is one credential's token sources, made on a scope's first use.
@@ -58,13 +67,19 @@ func (a *auth) app() bool { return a.gh.AppKey != nil }
 
 // source answers s's token source, made on first use.
 func (a *auth) source(s *config.Scope) (forgeapi.CredentialSource, error) {
+	return a.sourceFor(s, false)
+}
+
+// sourceFor answers s's token source for the scope's grant, or for the
+// routing variable's when variables is set.
+func (a *auth) sourceFor(s *config.Scope, variables bool) (forgeapi.CredentialSource, error) {
 	if !a.app() {
 		return patSource{a.gh.Token}, nil
 	}
 	if s.Kind == config.ScopeEnterprise {
 		return nil, ErrEnterpriseNeedsToken
 	}
-	k := sourceKey{s.Key, s.InstallationID}
+	k := sourceKey{s.Key, s.InstallationID, variables}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if src, ok := a.byScope[k]; ok {
@@ -74,7 +89,7 @@ func (a *auth) source(s *config.Scope) (forgeapi.CredentialSource, error) {
 	if s.InstallationID != 0 {
 		in = creds.InstallationByID(s.InstallationID)
 	}
-	src, err := creds.NewAppSource(a.conn, a.gh.AppKey, creds.AppSourceConfig{Installation: in, Grant: grant(s)}, a.opts...)
+	src, err := creds.NewAppSource(a.conn, a.gh.AppKey, creds.AppSourceConfig{Installation: in, Grant: grant(s, variables)}, a.opts...)
 	if err != nil {
 		return nil, fmt.Errorf("github: token source for %s: %w", s.Key, err)
 	}
@@ -98,11 +113,16 @@ func selector(s *config.Scope) creds.Installation {
 	return creds.InstallationOfOrg(s.Owner)
 }
 
-// grant is s's REST grant: a repo scope's names its one repository, an
-// organization scope's none.
-func grant(s *config.Scope) creds.AppGrant {
-	if s.Kind == config.ScopeRepo {
+// grant is s's REST grant, or its routing variable's: a repo scope's names
+// its one repository, an organization scope's none.
+func grant(s *config.Scope, variables bool) creds.AppGrant {
+	switch {
+	case s.Kind == config.ScopeRepo && variables:
+		return creds.AppGrant{Permissions: repoVariableGrant, Repositories: []string{s.Repo}}
+	case s.Kind == config.ScopeRepo:
 		return creds.AppGrant{Permissions: repoGrant, Repositories: []string{s.Repo}}
+	case variables:
+		return creds.AppGrant{Permissions: orgVariableGrant}
 	}
 	return creds.AppGrant{Permissions: orgGrant}
 }
@@ -136,14 +156,14 @@ func (r *REST) proveInstallation(ctx context.Context, s *config.Scope) error {
 	if s.Kind == config.ScopeEnterprise {
 		return ErrEnterpriseNeedsToken
 	}
-	k := sourceKey{s.Key, s.InstallationID}
+	k := sourceKey{s.Key, s.InstallationID, false}
 	r.auth.mu.Lock()
 	done := r.auth.proven[k]
 	r.auth.mu.Unlock()
 	if done {
 		return nil
 	}
-	src, err := creds.NewAppSource(r.auth.conn, r.auth.gh.AppKey, creds.AppSourceConfig{Installation: selector(s), Grant: grant(s)}, r.auth.opts...)
+	src, err := creds.NewAppSource(r.auth.conn, r.auth.gh.AppKey, creds.AppSourceConfig{Installation: selector(s), Grant: grant(s, false)}, r.auth.opts...)
 	if err != nil {
 		return fmt.Errorf("github: installation lookup for %s: %w", s.Key, err)
 	}

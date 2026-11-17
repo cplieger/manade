@@ -29,6 +29,7 @@ const (
 	OpVisibility   Op = "visibility"
 	OpInstallation Op = "installation"
 	OpQueue        Op = "queue"
+	OpVariable     Op = "variable"
 )
 
 // ReadResult is one queued-jobs read's outcome. ReadUnchanged is a 304,

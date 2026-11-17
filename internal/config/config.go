@@ -28,7 +28,10 @@ type Config struct {
 	// ceilings are the hosts' ceilings the rules check against, by name.
 	ceilings map[string]*Ceiling
 	// PoolName is the GitHub session owner and the runner names' prefix.
-	PoolName         string
+	PoolName string
+	// RunnerVariable names the repository or organization variable that
+	// routes a scope's jobs to its default profile (§9.4).
+	RunnerVariable   string
 	Scopes           []Scope
 	Hosts            []Host
 	Profiles         []Profile

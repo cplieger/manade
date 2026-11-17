@@ -23,15 +23,26 @@ import (
 // name, and each profile's lifetimes.
 func poolConfig(hosts []hostSpec, profiles []profileSpec, scopes ...string) *config.Config {
 	cfg := testConfig(hosts, profiles)
-	cfg.PoolName = "manade"
+	cfg.PoolName, cfg.RunnerVariable = "manade", "MANADE_RUNNER"
 	for i := range cfg.Profiles {
 		cfg.Profiles[i].MaxLifetime, cfg.Profiles[i].IdleTimeout = 2*time.Hour, idleFor
 	}
 	for _, key := range scopes {
 		owner, repo, _ := strings.Cut(key, "/")
-		cfg.Scopes = append(cfg.Scopes, config.Scope{Key: key, Owner: owner, Repo: repo, Kind: config.ScopeRepo})
+		cfg.Scopes = append(cfg.Scopes, config.Scope{Key: key, Owner: owner, Repo: repo, Kind: config.ScopeRepo, DefaultProfile: defaultOf(cfg, key)})
 	}
 	return cfg
+}
+
+// defaultOf is the first profile by name the scope with key may use, as
+// the parser asks of a served scope.
+func defaultOf(cfg *config.Config, key string) string {
+	for i := range cfg.Profiles {
+		if cfg.Profiles[i].Usable(key) {
+			return cfg.Profiles[i].Name
+		}
+	}
+	return ""
 }
 
 // cloneConfig copies cfg deep enough that editing the copy's hosts,
@@ -261,14 +272,72 @@ type fakeGitHub struct {
 	busy    map[int64]bool
 	public  map[string]bool
 	removed []int64
-	next    int64
-	mu      sync.Mutex
+	// vars holds each scope's variables by scope and name without case;
+	// varOps, every variable write in order, as "set scope name value" or
+	// "delete scope name".
+	vars   map[string]string
+	varOps []string
+	next   int64
+	// varErr answers every variable call when set.
+	varErr error
+	mu     sync.Mutex
 	// jitFail refuses each JIT config; ensureFail, each ensure.
 	jitFail, ensureFail bool
 }
 
 func newFakeGitHub(cfg *config.Config) *fakeGitHub {
-	return &fakeGitHub{cfg: cfg, regs: map[int64]bool{}, busy: map[int64]bool{}, public: map[string]bool{}}
+	return &fakeGitHub{cfg: cfg, regs: map[int64]bool{}, busy: map[int64]bool{}, public: map[string]bool{}, vars: map[string]string{}}
+}
+
+func varKey(scope, name string) string { return strings.ToLower(scope + "\x00" + name) }
+
+func (g *fakeGitHub) Variable(_ context.Context, s *config.Scope, name string) (string, bool, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.varErr != nil {
+		return "", false, g.varErr
+	}
+	v, ok := g.vars[varKey(s.Key, name)]
+	return v, ok, nil
+}
+
+func (g *fakeGitHub) SetVariable(_ context.Context, s *config.Scope, name, value string) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.varErr != nil {
+		return g.varErr
+	}
+	g.vars[varKey(s.Key, name)] = value
+	g.varOps = append(g.varOps, "set "+s.Key+" "+name+" "+value)
+	return nil
+}
+
+func (g *fakeGitHub) DeleteVariable(_ context.Context, s *config.Scope, name string) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.varErr != nil {
+		return g.varErr
+	}
+	delete(g.vars, varKey(s.Key, name))
+	g.varOps = append(g.varOps, "delete "+s.Key+" "+name)
+	return nil
+}
+
+// variable answers scope's variable name as GitHub holds it.
+func (g *fakeGitHub) variable(scope, name string) (string, bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	v, ok := g.vars[varKey(scope, name)]
+	return v, ok
+}
+
+// takeOps answers the variable writes since the last call.
+func (g *fakeGitHub) takeOps() []string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	out := g.varOps
+	g.varOps = nil
+	return out
 }
 
 func (g *fakeGitHub) Ensure(_ context.Context, _ *config.Config, sc *config.Scope) ([]github.ScaleSet, error) {
@@ -441,9 +510,11 @@ func (s *fakeSettler) take() []settleCall {
 	return out
 }
 
-// fakeRecords is the store's scale-set record, which outlives a restart.
+// fakeRecords is the store's scale-set and route records, which outlive a
+// restart.
 type fakeRecords struct {
-	sets map[setKey]github.ScaleSet
+	sets   map[setKey]github.ScaleSet
+	routes map[string]Route
 	// fail refuses every read and write.
 	fail bool
 	mu   sync.Mutex
@@ -467,6 +538,29 @@ func (f *fakeRecords) RecordScaleSets(_ context.Context, sets []github.ScaleSet,
 	for _, ss := range sets {
 		f.sets[keyOf(ss)] = ss
 	}
+	return nil
+}
+
+func newRecords() *fakeRecords {
+	return &fakeRecords{sets: map[setKey]github.ScaleSet{}, routes: map[string]Route{}}
+}
+
+func (f *fakeRecords) Routes(context.Context) ([]Route, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.fail {
+		return nil, errors.New("fake: the store refused the read")
+	}
+	return slices.Collect(maps.Values(f.routes)), nil
+}
+
+func (f *fakeRecords) RecordRoute(_ context.Context, rt Route, _ time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.fail {
+		return errors.New("fake: the store refused the write")
+	}
+	f.routes[strings.ToLower(rt.Scope)] = rt
 	return nil
 }
 
@@ -498,7 +592,7 @@ func quietRig(t testing.TB, cfg *config.Config) *rig { return buildRig(t, cfg, &
 
 func buildRig(t testing.TB, cfg *config.Config, log *logBuf) *rig {
 	gh := newFakeGitHub(cfg)
-	r := &rig{t: t, now: epoch, cfg: cfg, gh: gh, side: sideOf(gh), log: log, rev: 1, settler: &fakeSettler{}, records: &fakeRecords{sets: map[setKey]github.ScaleSet{}}}
+	r := &rig{t: t, now: epoch, cfg: cfg, gh: gh, side: sideOf(gh), log: log, rev: 1, settler: &fakeSettler{}, records: newRecords()}
 	for i := range cfg.Hosts {
 		r.hosts = append(r.hosts, newFakeHost(cfg, cfg.Hosts[i].Name, sectionHash(r.rev)))
 	}
@@ -528,7 +622,7 @@ func (r *rig) settings() *Settings {
 func (r *rig) restart() {
 	r.m = newFakeMetrics()
 	r.reg = NewRegistry(r.settings(), &Deps{
-		Links: r.links, Metrics: r.m, Settle: r.settler, Records: r.records,
+		Links: r.links, Metrics: r.m, Settle: r.settler, Records: r.records, Routes: r.records,
 		Log: slog.New(slog.NewTextHandler(r.log, &slog.HandlerOptions{Level: slog.LevelDebug})),
 	})
 	r.reg.now = func() time.Time { return r.now }

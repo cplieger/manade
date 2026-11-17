@@ -195,9 +195,9 @@ func (p *Profile) Allowed(key string) bool {
 	return p.Scopes == nil || slices.ContainsFunc(p.Scopes, func(s string) bool { return strings.EqualFold(s, key) })
 }
 
-// usable reports whether new jobs of the scope with key may be routed to the
+// Usable reports whether new jobs of the scope with key may be routed to the
 // profile: allowed, not leaving the scope and not being deleted.
-func (p *Profile) usable(key string) bool {
+func (p *Profile) Usable(key string) bool {
 	return p.Allowed(key) && !p.Deleting && !p.leaving(key)
 }
 

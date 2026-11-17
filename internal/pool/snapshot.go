@@ -22,6 +22,9 @@ type Snapshot struct {
 	// Orphaned is every recorded scale set the settings would not ensure
 	// (§9.3), sorted by scope and profile.
 	Orphaned []Orphan
+	// Routes is every repository and organization scope's routing
+	// variable (§9.4), in settings order.
+	Routes []RouteStatus
 	// Revision is the settings revision the generation serves.
 	Revision uint64
 }
@@ -64,7 +67,7 @@ func (g *generation) snapshot() Snapshot {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	now := g.now()
-	snap := Snapshot{Revision: g.rev, Stops: g.stops(), Orphaned: g.orphans(g.reg.orphaned(g.cfg))}
+	snap := Snapshot{Revision: g.rev, Stops: g.stops(), Orphaned: g.orphans(g.reg.orphaned(g.cfg)), Routes: g.routeStatuses()}
 	a := g.l.allocate(now)
 	if a.headFound {
 		snap.HeadSince = a.headSince
