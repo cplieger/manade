@@ -160,34 +160,39 @@ func TestListenPollsAndAcks(t *testing.T) {
 	})
 }
 
-// At boot a conflict is a crashed predecessor's claim: it is retried every
-// 5 seconds, never stops serving, and raises one ERROR once it has lasted 2
-// minutes.
+// At boot a conflict may be a crashed predecessor's claim, so it is
+// retried every 5 seconds and the scale set stays served until the
+// conflict outlasts the lapse; past it, the scale set is held under the
+// owner GitHub names until the session opens.
 func TestListenBootConflict(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
 		conflicts int
-		errors    int
+		held      bool
 	}{
-		{name: "insideTwoMinutes", conflicts: 24},
-		{name: "twoMinutes", conflicts: 25, errors: 1},
-		{name: "longer", conflicts: 40, errors: 1},
+		{name: "insideTheLapse", conflicts: 16},
+		{name: "pastTheLapse", conflicts: 17, held: true},
+		{name: "longer", conflicts: 40, held: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			lf := newListen(t)
-			lf.b.conflict = tc.conflicts
+			lf.b.do(func(b *broker) {
+				b.conflict = tc.conflicts
+				b.holder = "The runner scale set small already has an active session for owner other-pool."
+			})
 			lf.run(t, 1, nil)
-			if len(lf.h.held) != 0 {
-				t.Errorf("held = %v, want never at boot", lf.h.held)
+			wantHeld, wantOwners, errs := []bool(nil), []string(nil), 0
+			if tc.held {
+				wantHeld, wantOwners, errs = []bool{true, false}, []string{"other-pool", ""}, 1
+			}
+			if !slices.Equal(lf.h.held, wantHeld) || !slices.Equal(lf.h.owners, wantOwners) {
+				t.Errorf("held = %v with owners %q, want %v with %q", lf.h.held, lf.h.owners, wantHeld, wantOwners)
 			}
 			if n := len(*lf.waits); n != tc.conflicts || slices.ContainsFunc(*lf.waits, func(d time.Duration) bool { return d != 5*time.Second }) {
 				t.Errorf("waits = %v, want %d of 5 seconds", *lf.waits, tc.conflicts)
 			}
-			if n := lf.rec.CountLevel(slog.LevelError, "after 2 minutes"); n != tc.errors {
-				t.Errorf("2-minute ERROR lines = %d, want %d", n, tc.errors)
-			}
-			if n := lf.rec.CountLevel(slog.LevelInfo, "opened after failing"); n != tc.errors {
-				t.Errorf("end lines = %d, want one for each ERROR", n)
+			if n := lf.rec.CountLevel(slog.LevelError, "holds the scale set's session"); n != errs {
+				t.Errorf("held ERROR lines = %d, want %d", n, errs)
 			}
 			if v := sample(t, lf.m, `manade_github_errors_total{op="session"}`); v != float64(tc.conflicts) {
 				t.Errorf("session errors = %v, want %d", v, tc.conflicts)

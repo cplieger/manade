@@ -17,11 +17,10 @@ import (
 // stops lapses about 70 seconds after its last poll began (75 at most), and
 // an idle poll returns after about 50.
 const (
-	retryEvery    = 5 * time.Second
-	conflictAlarm = 2 * time.Minute
-	lapse         = 75 * time.Second
-	maxGap        = 60 * time.Second
-	closeTimeout  = 10 * time.Second
+	retryEvery   = 5 * time.Second
+	lapse        = 75 * time.Second
+	maxGap       = 60 * time.Second
+	closeTimeout = 10 * time.Second
 	// createTimeout bounds one session create, the token requests it sends
 	// included.
 	createTimeout = time.Minute
@@ -101,7 +100,7 @@ type Handler interface {
 type ended int
 
 const (
-	booting  ended = iota // no session yet: a conflict is a crashed predecessor's claim
+	booting  ended = iota // no session yet: a conflict may be a crashed predecessor's claim
 	closed                // closed: a conflict is another process
 	unclosed              // the close failed: a conflict may be this session's own claim
 )
@@ -156,7 +155,7 @@ func (s *ScaleSets) Listen(ctx context.Context, scope *config.Scope, ss ScaleSet
 // answered for ended.
 type opening struct {
 	since, held, doubt time.Time
-	alarmed, warned    bool
+	warned             bool
 }
 
 // open creates the session, retrying after each refusal (pause), and
@@ -191,7 +190,7 @@ func (l *listen) opened(sess *scaleset.MessageSessionClient, o *opening) {
 		l.log.Info("The scale set's session is no longer held elsewhere, so it is served again", "duration", now.Sub(o.held).Round(time.Second))
 		l.h.Held(l.ss, false, "")
 	}
-	if o.warned || o.alarmed {
+	if o.warned {
 		l.log.Info("The scale set's session opened after failing", "duration", now.Sub(o.since).Round(time.Second))
 	}
 	l.sess, l.id, l.last = sess, 0, now
@@ -237,22 +236,20 @@ func unanswered(err error) bool {
 }
 
 // refused decides what a failed create means. A conflict is another process
-// at once after a counted close; after a failed close or a create that may
-// have left this pool's own claim, only once it outlasts the lapse; and
-// never at boot.
+// at once after a counted close; at boot, after a failed close or after a
+// create that may have left this pool's own claim, only once it outlasts
+// the lapse, since until then the claim may be this pool's or a crashed
+// predecessor's.
 func (l *listen) refused(err error, o *opening) {
 	conflict, now := errors.Is(err, scaleset.ConflictError), l.s.now()
 	// A failed create's possible claim dates from doubt, not since.
-	own, from := l.prev == unclosed || !o.doubt.IsZero(), cmp.Or(o.doubt, o.since)
+	own, from := l.prev != closed || !o.doubt.IsZero(), cmp.Or(o.doubt, o.since)
 	switch {
-	case conflict && o.held.IsZero() && l.prev != booting && (!own || now.Sub(from) > lapse):
+	case conflict && o.held.IsZero() && (!own || now.Sub(from) > lapse):
 		o.held = now
 		owner := holderOf(err)
 		l.log.Error("Another process holds the scale set's session, so the pool stops serving it", "owner", owner)
 		l.h.Held(l.ss, true, owner)
-	case conflict && l.prev == booting && !o.alarmed && now.Sub(o.since) >= conflictAlarm:
-		o.alarmed = true
-		l.log.Error("The scale set's session is still held elsewhere after 2 minutes, so another process may be serving it")
 	case !conflict && !o.warned:
 		o.warned = true
 		l.log.Warn("Creating the scale set's session failed, so it is retried every 5 seconds, or once GitHub's rate limit allows",
