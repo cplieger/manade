@@ -178,6 +178,9 @@ func (g *generation) step(ctx context.Context) {
 	uctx, cancel := context.WithTimeout(ctx, reconcileEvery)
 	defer cancel()
 	g.unregisterPending(uctx)
+	g.mu.Lock()
+	g.stepped = g.now()
+	g.mu.Unlock()
 }
 
 // await runs fn, a call to host i or to GitHub, with host i's loop marked

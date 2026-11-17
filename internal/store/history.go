@@ -90,7 +90,7 @@ type HistoryTx struct{ tx *bolttable.Tx }
 
 // UpdateHistory runs fn in one write transaction.
 func (s *Store) UpdateHistory(ctx context.Context, fn func(*HistoryTx) error) error {
-	return s.db.Update(ctx, func(tx *bolttable.Tx) error { return fn(&HistoryTx{tx: tx}) })
+	return s.update(ctx, func(tx *bolttable.Tx) error { return fn(&HistoryTx{tx: tx}) })
 }
 
 // Run answers run id's row.

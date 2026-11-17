@@ -108,9 +108,6 @@ func TestALostScaleSetIsEnsuredAgainUnderItsNewID(t *testing.T) {
 	if _, ok := r.p.servedSets()[setKey{app, "small"}]; ok {
 		t.Error("a lost scale set still wants a session under its old ID")
 	}
-	if h := r.reg.Health(); !h.Listening {
-		t.Errorf("health %+v, want a lost scale set's ended session to count against no lease", h)
-	}
 	r.pass()
 	snap = r.reg.Snapshot()
 	if w := waitingRun(t, &snap, 7); w.Detail != DetailEnsureFailed {

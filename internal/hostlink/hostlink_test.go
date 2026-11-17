@@ -475,3 +475,68 @@ func TestListenSocket(t *testing.T) {
 		}
 	})
 }
+
+// failingListener's Accept fails for good once fail is closed.
+type failingListener struct {
+	net.Listener
+	fail chan struct{}
+}
+
+func (l *failingListener) Accept() (net.Conn, error) {
+	<-l.fail
+	return nil, errors.New("test: the listener broke")
+}
+
+// The accept loop's state is what the host_listener check reads: set
+// while Serve accepts, cleared when its accept loop fails or it stops.
+func TestServerAccepting(t *testing.T) {
+	waitAccepting := func(t *testing.T, s *Server) {
+		t.Helper()
+		for deadline := time.Now().Add(5 * time.Second); !s.Accepting(); {
+			if time.Now().After(deadline) {
+				t.Fatal("Serve's accept loop never reported running")
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}
+	t.Run("aFailedAcceptLoop", func(t *testing.T) {
+		s := NewServer(slog.New(slog.DiscardHandler))
+		if s.Accepting() {
+			t.Error("Accepting before Serve, want false")
+		}
+		ln, err := ListenSocket(filepath.Join(t.TempDir(), "hosts.sock"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		fl := &failingListener{Listener: ln, fail: make(chan struct{})}
+		done := make(chan error, 1)
+		go func() { done <- s.Serve(t.Context(), fl) }()
+		waitAccepting(t, s)
+		close(fl.fail)
+		if err := <-done; err == nil {
+			t.Error("Serve returned nil after its accept loop failed")
+		}
+		if s.Accepting() {
+			t.Error("Accepting after the accept loop failed, want false")
+		}
+		_ = ln.Close()
+	})
+	t.Run("aStop", func(t *testing.T) {
+		s := NewServer(slog.New(slog.DiscardHandler))
+		ln, err := ListenSocket(filepath.Join(t.TempDir(), "hosts.sock"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithCancel(t.Context())
+		done := make(chan error, 1)
+		go func() { done <- s.Serve(ctx, ln) }()
+		waitAccepting(t, s)
+		cancel()
+		if err := <-done; err != nil {
+			t.Errorf("Serve = %v after the stop, want nil", err)
+		}
+		if s.Accepting() {
+			t.Error("Accepting after the stop, want false")
+		}
+	})
+}

@@ -97,7 +97,7 @@ func TestAFailedEnsureBootsTheGenerationAndIsRetried(t *testing.T) {
 	if r.small() != nil {
 		t.Fatal("a scale set exists although its ensure failed")
 	}
-	if h := r.reg.Health(); !h.Started {
+	if h := r.reg.Health(); !h.Booted {
 		t.Errorf("health %+v with GitHub unreachable at boot, want the generation booted", h)
 	}
 	r.gh.set(func(g *fakeGitHub) { g.ensureFail = false })

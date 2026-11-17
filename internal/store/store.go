@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"path/filepath"
 
 	"github.com/cplieger/bolttable"
 )
@@ -33,6 +34,9 @@ type Options struct {
 type Store struct {
 	db   *bolttable.DB
 	lock *bolttable.Lock
+	// dir is the directory holding the file.
+	dir    string
+	writes bolttable.WriteHealth
 }
 
 // Open opens or creates the file at path. Another holder of the file fails
@@ -84,7 +88,7 @@ func checkStamp(path, build string) error {
 }
 
 func start(path string, lock *bolttable.Lock, build string, log *slog.Logger) (*Store, error) {
-	db, err := bolttable.Open(path, schema, bolttable.Options{Lock: lock, Compact: compaction})
+	db, err := bolttable.Open(path, schema, bolttable.Options{Lock: lock, Compact: compaction, CommitFault: commitFault})
 	if err != nil {
 		return nil, err
 	}
@@ -93,7 +97,7 @@ func start(path string, lock *bolttable.Lock, build string, log *slog.Logger) (*
 	if err := db.Update(context.Background(), func(tx *bolttable.Tx) error { return record(tx, build) }); err != nil {
 		return nil, errors.Join(err, db.Close())
 	}
-	return &Store{db: db, lock: lock}, nil
+	return &Store{db: db, lock: lock, dir: filepath.Dir(path)}, nil
 }
 
 func logOpen(log *slog.Logger, r *bolttable.OpenReport) {

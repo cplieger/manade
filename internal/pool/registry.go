@@ -126,7 +126,10 @@ type Registry struct {
 	listed  map[string]bool
 	changed chan struct{}
 	now     func() time.Time
-	swg     sync.WaitGroup
+	// applying is when the revision being installed began, zero while none
+	// is; pmu guards it with pending.
+	applying time.Time
+	swg      sync.WaitGroup
 	// mu guards cur: a handler call holds it for reading, so no call lands
 	// in a generation after its successor copied it. smu guards spawn and
 	// sessions, and is never held while a generation's lock is taken or a
@@ -252,6 +255,14 @@ func (r *Registry) current() *generation {
 // boundary and the new one takes over its records and boots through the
 // boot path (§10.6). The caller starts the new generation's loops.
 func (r *Registry) install(ctx context.Context, s *Settings) *generation {
+	r.pmu.Lock()
+	r.applying = r.now()
+	r.pmu.Unlock()
+	defer func() {
+		r.pmu.Lock()
+		r.applying = time.Time{}
+		r.pmu.Unlock()
+	}()
 	g := newGeneration(r, s)
 	old := r.current()
 	if old != nil && old.gh == g.gh {
@@ -370,21 +381,17 @@ func (r *Registry) Lost(ss github.ScaleSet) {
 	}
 }
 
-// Beat refreshes the scale set's listener lease.
-func (r *Registry) Beat(ss github.ScaleSet) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	r.cur.beat(ss)
-}
-
-// Health reads the current generation's health; the zero Health before
-// Run installs one.
+// Health reads the pool's health now.
 func (r *Registry) Health() Health {
-	g := r.current()
-	if g == nil {
-		return Health{}
+	now := r.now()
+	var h Health
+	if g := r.current(); g != nil {
+		h = g.health(now)
 	}
-	return g.health()
+	r.pmu.Lock()
+	h.Applied = r.applying.IsZero() || now.Sub(r.applying) <= applyLease
+	r.pmu.Unlock()
+	return h
 }
 
 // Snapshot is the current generation's state for the pool's read series

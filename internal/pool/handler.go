@@ -40,12 +40,11 @@ func (g *generation) capacity(ss github.ScaleSet, start time.Time) int {
 // keeps polling.
 func (g *generation) opened(ss github.ScaleSet, st github.Stats) {
 	g.mu.Lock()
-	b, s := g.book(ss)
+	b, _ := g.book(ss)
 	if b == nil {
 		g.mu.Unlock()
 		return
 	}
-	s.opened = true
 	g.gate()
 	g.l.opened(b, st, g.now())
 	g.mu.Unlock()
@@ -134,15 +133,6 @@ func (g *generation) lost(ss github.ScaleSet) {
 	g.gate()
 	g.l.dropFlight(b, g.now())
 	wake(g.reensure)
-}
-
-// beat refreshes the scale set's listener lease.
-func (g *generation) beat(ss github.ScaleSet) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	if _, s := g.book(ss); s != nil {
-		s.beat = g.now()
-	}
 }
 
 // serving reports whether sc is served: scopeDetail names no reason it is

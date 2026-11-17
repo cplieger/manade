@@ -329,3 +329,54 @@ func TestUsageReachesTheRun(t *testing.T) {
 		}
 	})
 }
+
+// The recorder reads unhealthy once its queue has gone unemptied past its
+// lease, counted from when the queue last turned non-empty.
+func TestRecorderHealthFollowsTheQueue(t *testing.T) {
+	at := queued
+	rec, _ := recorder(t, &at)
+	if !rec.Healthy() {
+		t.Error("a new recorder reads unhealthy")
+	}
+	rec.Job(ss, "", new(message(github.Assigned, 1, "", "")), "")
+	at = at.Add(time.Minute)
+	rec.Job(ss, "nas", new(message(github.Started, 1, "r1", "")), "")
+	at = queued.Add(queueLease)
+	if !rec.Healthy() {
+		t.Error("unhealthy at the end of the lease from the first message")
+	}
+	at = at.Add(time.Second)
+	if rec.Healthy() {
+		t.Error("healthy with the queue unemptied past the lease")
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	rec.Run(ctx)
+	at = at.Add(time.Hour)
+	if !rec.Healthy() {
+		t.Error("unhealthy once the queue was written")
+	}
+	rec.Job(ss, "nas", new(message(github.Completed, 1, "r1", "succeeded")), "")
+	at = at.Add(queueLease)
+	if !rec.Healthy() {
+		t.Error("a message queued after the queue emptied counts from an earlier time")
+	}
+}
+
+// A write that leaves messages queued keeps the queue's time: a queue
+// that never empties reads unhealthy past the lease.
+func TestRecorderHealthOfAQueueThatNeverEmpties(t *testing.T) {
+	at := queued
+	rec, _ := recorder(t, &at)
+	rec.Job(ss, "", new(message(github.Assigned, 1, "", "")), "")
+	rec.Job(ss, "", new(message(github.Assigned, 2, "", "")), "")
+	at = at.Add(queueLease + time.Second)
+	rec.written(t.Context(), <-rec.q)
+	if rec.Healthy() {
+		t.Error("healthy past the lease with a message still queued since its start")
+	}
+	rec.written(t.Context(), <-rec.q)
+	if !rec.Healthy() {
+		t.Error("unhealthy once the queue emptied")
+	}
+}

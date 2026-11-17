@@ -1,6 +1,8 @@
 package obs
 
 import (
+	"bytes"
+	"errors"
 	"log/slog"
 	"maps"
 	"slices"
@@ -83,6 +85,11 @@ var series = map[string]measure.Type{
 	// Reconcile
 	"manade_reconcile_last_success_timestamp_seconds": measure.TypeGauge,
 	"manade_reconcile_deadline_timestamp_seconds":     measure.TypeGauge,
+	// Control plane
+	"manade_store_size_bytes":                        measure.TypeGauge,
+	"manade_store_free_bytes":                        measure.TypeGauge,
+	"manade_store_write_failures_total":              measure.TypeCounter,
+	"manade_housekeeping_deadline_timestamp_seconds": measure.TypeGauge,
 }
 
 // settings is two hosts, two profiles and two scopes: small runs on both
@@ -102,10 +109,29 @@ func settings() *config.Config {
 	}
 }
 
-// newMetrics answers Metrics over a snapshot the test sets.
+// fakeStore is the store's usage as a test sets it.
+type fakeStore struct {
+	sizeErr, freeErr error
+	size             int64
+	free, failures   uint64
+}
+
+func (f *fakeStore) Size() (int64, error)        { return f.size, f.sizeErr }
+func (f *fakeStore) VolumeFree() (uint64, error) { return f.free, f.freeErr }
+func (f *fakeStore) WriteFailures() uint64       { return f.failures }
+
+// newMetrics answers Metrics over a snapshot the test sets, an empty
+// store and no housekeeper run.
 func newMetrics(t *testing.T, snap *pool.Snapshot) *Metrics {
 	t.Helper()
-	m, err := New("v1.0.0-test", func() pool.Snapshot { return *snap }, slog.New(slog.DiscardHandler))
+	return newMetricsOver(t, &Sources{
+		Pool: func() pool.Snapshot { return *snap }, Store: &fakeStore{}, Housekeeping: func() time.Time { return time.Time{} },
+	})
+}
+
+func newMetricsOver(t *testing.T, src *Sources) *Metrics {
+	t.Helper()
+	m, err := New("v1.0.0-test", src, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -568,5 +594,58 @@ func TestDurationsUseTheLadderToSevenDays(t *testing.T) {
 				t.Errorf("%s le=%v = %d, want %d for one observation at %vs", c.name, b.UpperBound, b.Count, want, c.upper)
 			}
 		}
+	}
+}
+
+func TestStoreAndHousekeepingSeries(t *testing.T) {
+	st := &fakeStore{size: 3 << 20, free: 40 << 30, failures: 2}
+	due := at.Add(2 * time.Hour)
+	m := newMetricsOver(t, &Sources{
+		Pool: func() pool.Snapshot { return pool.Snapshot{} }, Store: st, Housekeeping: func() time.Time { return due },
+	})
+	fams := gather(t, m)
+	wantValue(t, fams, 3<<20, "manade_store_size_bytes")
+	wantValue(t, fams, 40<<30, "manade_store_free_bytes")
+	wantValue(t, fams, 2, "manade_store_write_failures_total")
+	wantValue(t, fams, unix(due), "manade_housekeeping_deadline_timestamp_seconds")
+	st.sizeErr = errors.New("test: the file is gone")
+	fams = gather(t, m)
+	wantAbsent(t, fams, "manade_store_size_bytes")
+	wantValue(t, fams, 40<<30, "manade_store_free_bytes")
+	st.sizeErr, st.freeErr = nil, errors.New("test: statfs failed")
+	fams = gather(t, m)
+	wantValue(t, fams, 3<<20, "manade_store_size_bytes")
+	wantAbsent(t, fams, "manade_store_free_bytes")
+	wantValue(t, fams, 2, "manade_store_write_failures_total")
+}
+
+func TestHousekeepingDeadlineIsZeroBeforeItsRun(t *testing.T) {
+	snap := pool.Snapshot{}
+	wantValue(t, gather(t, newMetrics(t, &snap)), 0, "manade_housekeeping_deadline_timestamp_seconds")
+}
+
+// A failing store read is warned once while it fails, and again once it
+// fails after a good read.
+func TestAFailingStoreReadIsWarnedOncePerStreak(t *testing.T) {
+	var log bytes.Buffer
+	st := &fakeStore{sizeErr: errors.New("test: the file is gone")}
+	m, err := New("v1.0.0-test", &Sources{
+		Pool: func() pool.Snapshot { return pool.Snapshot{} }, Store: st, Housekeeping: func() time.Time { return time.Time{} },
+	}, slog.New(slog.NewTextHandler(&log, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const line = "Reading the store's size failed"
+	gather(t, m)
+	gather(t, m)
+	if n := strings.Count(log.String(), line); n != 1 {
+		t.Errorf("warnings over two failing reads = %d, want 1", n)
+	}
+	st.sizeErr = nil
+	gather(t, m)
+	st.sizeErr = errors.New("test: the file is gone again")
+	gather(t, m)
+	if n := strings.Count(log.String(), line); n != 2 {
+		t.Errorf("warnings after a good read and a new failure = %d, want 2", n)
 	}
 }

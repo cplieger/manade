@@ -32,6 +32,9 @@ type sset struct {
 	scope, profile           string
 	queue, assigned, running []*sjob
 	pending                  []github.Event
+	// openedID is the scale set whose session the model opened, 0 before
+	// one: GitHub opens a session for each scale set ID.
+	openedID int
 }
 
 func (s *sset) stats() github.Stats {
@@ -68,6 +71,7 @@ func (m *smodel) open() {
 	for _, s := range m.sets {
 		if b := m.book(s); b != nil {
 			m.r.reg.Opened(b.ss, s.stats())
+			s.openedID = b.ss.ID
 		}
 	}
 }
@@ -119,11 +123,16 @@ func (m *smodel) scopes() map[string]bool {
 // allows, oldest first, and sends every pending message.
 func (m *smodel) poll(s *sset, n int) {
 	b := m.book(s)
-	if b == nil || m.r.p.sets[b].lost {
+	if b == nil {
+		s.openedID = 0
 		return
 	}
-	if !m.r.p.sets[b].opened {
+	if m.r.p.sets[b].lost {
+		return
+	}
+	if s.openedID != b.ss.ID {
 		m.r.reg.Opened(b.ss, s.stats())
+		s.openedID = b.ss.ID
 	}
 	figure := m.r.reg.Capacity(b.ss, m.r.now)
 	if figure < 0 {

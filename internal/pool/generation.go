@@ -28,10 +28,11 @@ const (
 // pass to the next generation, which boots through the same path.
 type generation struct {
 	// rechecked is when the last pass over every scope began; born, when
-	// the generation was built.
-	rechecked, born time.Time
-	reg             *Registry
-	d               *Deps
+	// the generation was built; stepped, when the pass loop last ended a
+	// pass, zero before one.
+	rechecked, born, stepped time.Time
+	reg                      *Registry
+	d                        *Deps
 	// gh is the credential's GitHub side, noCredential with none.
 	gh       *GitHub
 	cfg      *config.Config
@@ -136,17 +137,15 @@ func (sc *scope) jobsOf(profile string) []github.QueuedJob {
 // set is what the pool keeps of one scale set beside its book.
 type set struct {
 	scope *scope
-	// beat is the listener's last Beat; polled, when its last good poll
-	// ended.
-	beat, polled time.Time
-	// retryAt holds starts back after a failed JIT config.
-	retryAt time.Time
+	// polled is when its last good poll ended; retryAt holds starts back
+	// after a failed JIT config.
+	polled, retryAt time.Time
 	// holder is the owner GitHub named for a held session.
 	holder string
-	// opened reports a session opened; held, a session another process
-	// holds; lost, a scale set GitHub no longer has, which the scope's
-	// ensure finds or creates again.
-	opened, held, lost bool
+	// held reports a session another process holds; lost, a scale set
+	// GitHub no longer has, which the scope's ensure finds or creates
+	// again.
+	held, lost bool
 }
 
 // keepSets records old's scale sets whose scope and profile g's settings
@@ -231,9 +230,7 @@ func (g *generation) found(b *book, ss github.ScaleSet) {
 			rr.stale = true
 		}
 	}
-	if s.lost {
-		s.lost, s.beat = false, g.now()
-	}
+	s.lost = false
 }
 
 // runEnsure retries each scope whose ensure failed every ensureRetry until
@@ -420,7 +417,7 @@ func (g *generation) takeBook(old *generation, ob *book, at []int) {
 	if nb != nil {
 		nb.carry(ob, at, g.l.profiles[nb.profile].hosts)
 		s, os := g.sets[nb], old.sets[ob]
-		s.beat, s.polled, s.retryAt, s.opened, s.held, s.lost, s.holder = os.beat, os.polled, os.retryAt, os.opened, os.held, os.lost, os.holder
+		s.polled, s.retryAt, s.held, s.lost, s.holder = os.polled, os.retryAt, os.held, os.lost, os.holder
 		if s.lost {
 			wake(g.reensure)
 		}

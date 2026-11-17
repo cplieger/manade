@@ -7,6 +7,7 @@ import (
 	"cmp"
 	"context"
 	"log/slog"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -23,6 +24,10 @@ const queueSize = 4096
 // and of the gaps after them.
 const drainTimeout = 5 * time.Second
 
+// queueLease is how long the queue may stay unemptied before the recorder
+// reads unhealthy (§12.3).
+const queueLease = 2 * time.Minute
+
 // jobMsg is one job message waiting for its write.
 type jobMsg struct {
 	at     time.Time
@@ -36,14 +41,19 @@ type jobMsg struct {
 // message for Run, which writes them in order; Exited and Listed write
 // before they return.
 type Recorder struct {
-	st  *store.Store
-	log *slog.Logger
-	now func() time.Time
-	q   chan func(context.Context)
+	// busySince is when the queue last turned non-empty, zero while it is
+	// empty; qmu guards it and orders each send against the emptied
+	// check.
+	busySince time.Time
+	st        *store.Store
+	log       *slog.Logger
+	now       func() time.Time
+	q         chan func(context.Context)
 	// seen holds what the history last recorded of each host this process
 	// observed; only Run's writes touch it.
 	seen    map[string]*store.HostSeen
 	dropped atomic.Int64
+	qmu     sync.Mutex
 }
 
 var _ pool.Runs = (*Recorder)(nil)
@@ -69,13 +79,27 @@ func (rec *Recorder) Job(ss github.ScaleSet, host string, e *github.Event, waite
 
 // enqueue queues w for Run; a full queue drops it with a warning.
 func (rec *Recorder) enqueue(w func(context.Context)) {
+	rec.qmu.Lock()
+	defer rec.qmu.Unlock()
 	select {
 	case rec.q <- w:
+		if rec.busySince.IsZero() {
+			rec.busySince = rec.now()
+		}
 	default:
 		if rec.dropped.Add(1) == 1 {
 			rec.log.Warn("The history is behind, so messages are dropped from it until it catches up", "queued", queueSize)
 		}
 	}
+}
+
+// Healthy reports false once the queue has gone unemptied for longer than
+// queueLease.
+func (rec *Recorder) Healthy() bool {
+	rec.qmu.Lock()
+	since := rec.busySince
+	rec.qmu.Unlock()
+	return since.IsZero() || rec.now().Sub(since) <= queueLease
 }
 
 // Run writes the queued messages until ctx ends, then those still queued
@@ -109,13 +133,21 @@ func (rec *Recorder) drain(ctx context.Context) {
 	}
 }
 
-// written runs w, and reports the catch-up once the queue is empty.
+// written runs w, and marks the queue emptied and reports the catch-up
+// once it is empty.
 func (rec *Recorder) written(ctx context.Context, w func(context.Context)) {
 	w(ctx)
-	if len(rec.q) == 0 {
-		if n := rec.dropped.Swap(0); n > 0 {
-			rec.log.Info("The history caught up", "dropped", n)
-		}
+	rec.qmu.Lock()
+	empty := len(rec.q) == 0
+	if empty {
+		rec.busySince = time.Time{}
+	}
+	rec.qmu.Unlock()
+	if !empty {
+		return
+	}
+	if n := rec.dropped.Swap(0); n > 0 {
+		rec.log.Info("The history caught up", "dropped", n)
 	}
 }
 

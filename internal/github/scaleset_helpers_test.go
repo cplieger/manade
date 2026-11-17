@@ -348,7 +348,6 @@ type handler struct {
 	owners   []string
 	log      []string
 	capacity int
-	beats    int
 	lost     int
 	mu       sync.Mutex
 }
@@ -391,12 +390,6 @@ func (h *handler) Lost(ScaleSet) {
 	defer h.mu.Unlock()
 	h.lost++
 	h.log = append(h.log, "lost")
-}
-
-func (h *handler) Beat(ScaleSet) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.beats++
 }
 
 var _ Handler = (*handler)(nil)

@@ -625,15 +625,14 @@ func TestHealthIgnoresWhetherAnyHostServes(t *testing.T) {
 	t.Parallel()
 	r := newRig(t, oneHost())
 	r.reg.Opened(r.small().ss, github.Stats{})
-	r.reg.Beat(r.small().ss)
 	r.pass()
-	if !r.reg.Health().Healthy() {
-		t.Fatalf("health %+v after a pass, want healthy", r.reg.Health())
+	if h := r.reg.Health(); h != (Health{Booted: true, Passing: true, Reconciling: true, Applied: true}) {
+		t.Fatalf("health %+v after a pass, want healthy", h)
 	}
 	r.hosts[0].set(func(f *fakeHost) { f.down = true })
 	r.pass()
-	if !r.reg.Health().Healthy() {
-		t.Errorf("health %+v after a pass with no host serving, want healthy", r.reg.Health())
+	if h := r.reg.Health(); h != (Health{Booted: true, Passing: true, Reconciling: true, Applied: true}) {
+		t.Errorf("health %+v after a pass with no host serving, want healthy", h)
 	}
 	if r.serving("default") {
 		t.Error("the unreachable host reads as serving")
@@ -730,9 +729,6 @@ func TestShutdownEndsTheSessionsBeforeItsLastPass(t *testing.T) {
 	}
 	if got := r.hosts[0].running(); len(got) != 0 {
 		t.Errorf("running %v after the shutdown, want the idle runner removed", got)
-	}
-	if h := r.reg.Health(); !h.Stopping || h.Healthy() {
-		t.Errorf("health %+v after the shutdown, want Stopping", h)
 	}
 	if figure := r.reg.Capacity(r.small().ss, r.now); figure != 0 {
 		t.Errorf("capacity %d after the shutdown, want 0", figure)

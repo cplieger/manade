@@ -158,11 +158,6 @@ func TestListenPollsAndAcks(t *testing.T) {
 			t.Error("a message was acked before the pool had it")
 		}
 	})
-	t.Run("beats", func(t *testing.T) {
-		if h.beats != 7 {
-			t.Errorf("beats = %d, want 7: the create, 3 polls, 2 acks and the close", h.beats)
-		}
-	})
 }
 
 // At boot a conflict is a crashed predecessor's claim: it is retried every
@@ -298,9 +293,6 @@ func TestListenPollFailure(t *testing.T) {
 	if !slices.Equal(*lf.waits, []time.Duration{5 * time.Second, 5 * time.Second}) {
 		t.Errorf("waits = %v, want 5 seconds after each failure", *lf.waits)
 	}
-	if lf.h.beats != 5 {
-		t.Errorf("beats = %d, want the create, all three poll attempts and the close", lf.h.beats)
-	}
 }
 
 // A failed poll never reached GitHub's claim, so polls failing for more than
@@ -349,31 +341,26 @@ func TestListenDropsALatePoll(t *testing.T) {
 }
 
 // scaleset's retries are off for a poll, so a refusal waits in Listen: a
-// rate limit for its Retry-After, at least a minute and at most an hour, in
-// 5-second steps that each beat; anything else 5 seconds. Each create, poll
-// and close beats too; a wait past 60 seconds replaces the session.
+// rate limit for its Retry-After, at least a minute and at most an hour;
+// anything else 5 seconds. A wait past 60 seconds replaces the session.
 func TestListenPollRefusalWaits(t *testing.T) {
 	for _, tc := range []struct {
-		fail           http.HandlerFunc
-		name           string
-		wait           time.Duration
-		creates, beats int
+		fail    http.HandlerFunc
+		name    string
+		wait    time.Duration
+		creates int
 	}{
-		{name: "serverError", wait: retryEvery, creates: 1, beats: 4, fail: reply(http.StatusServiceUnavailable, `{"message":"unavailable"}`)},
-		{name: "retryAfter", wait: 90 * time.Second, creates: 2, beats: 24, fail: reply(http.StatusTooManyRequests, `{"message":"slow down"}`, "Retry-After", "90")},
-		{name: "secondaryLimit", wait: time.Minute, creates: 1, beats: 16, fail: reply(http.StatusForbidden, `{"message":"You have exceeded a secondary rate limit."}`)},
-		{name: "retryAfterADay", wait: time.Hour, creates: 2, beats: 726, fail: reply(http.StatusTooManyRequests, `{"message":"slow down"}`, "Retry-After", "86400")},
+		{name: "serverError", wait: retryEvery, creates: 1, fail: reply(http.StatusServiceUnavailable, `{"message":"unavailable"}`)},
+		{name: "retryAfter", wait: 90 * time.Second, creates: 2, fail: reply(http.StatusTooManyRequests, `{"message":"slow down"}`, "Retry-After", "90")},
+		{name: "secondaryLimit", wait: time.Minute, creates: 1, fail: reply(http.StatusForbidden, `{"message":"You have exceeded a secondary rate limit."}`)},
+		{name: "retryAfterADay", wait: time.Hour, creates: 2, fail: reply(http.StatusTooManyRequests, `{"message":"slow down"}`, "Retry-After", "86400")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			lf := newListen(t)
 			lf.b.pollFail, lf.b.failWith = 1, tc.fail
 			lf.run(t, 1, nil)
-			steps := slices.Repeat([]time.Duration{retryEvery}, int(tc.wait/retryEvery))
-			if !slices.Equal(*lf.waits, steps) {
-				t.Errorf("waits = %d of %v, want %v in 5-second steps", len(*lf.waits), *lf.waits, tc.wait)
-			}
-			if lf.h.beats != tc.beats {
-				t.Errorf("beats = %d, want %d", lf.h.beats, tc.beats)
+			if !slices.Equal(*lf.waits, []time.Duration{tc.wait}) {
+				t.Errorf("waits = %v, want one of %v", *lf.waits, tc.wait)
 			}
 			lf.b.do(func(b *broker) {
 				if len(b.polls) != 2 || b.creates != tc.creates {
@@ -405,9 +392,6 @@ func TestListenCutsAHeldPoll(t *testing.T) {
 	if len(*lf.waits) != 0 {
 		t.Errorf("waits = %v, want the replacement at once", *lf.waits)
 	}
-	if lf.h.beats != 6 {
-		t.Errorf("beats = %d, want 6: 2 creates, 2 polls and 2 closes", lf.h.beats)
-	}
 	if got := cut.asked(); len(got) != 2 || slices.ContainsFunc(got, func(d time.Duration) bool { return d != time.Minute }) {
 		t.Errorf("poll bounds = %v, want two of 60 seconds", got)
 	}
@@ -423,9 +407,6 @@ func TestListenCutsAHeldCreate(t *testing.T) {
 	if !slices.Equal(*lf.waits, []time.Duration{retryEvery}) {
 		t.Errorf("waits = %v, want one of 5 seconds", *lf.waits)
 	}
-	if lf.h.beats != 4 {
-		t.Errorf("beats = %d, want 4: 2 creates, the poll and the close", lf.h.beats)
-	}
 	lf.b.do(func(b *broker) {
 		if b.creates != 2 {
 			t.Errorf("creates = %d, want the cut one and its retry", b.creates)
@@ -440,25 +421,21 @@ func TestListenCutsAHeldCreate(t *testing.T) {
 // in Listen as a refused poll does, and scaleset sends it only once.
 func TestListenCreateRefusalWaits(t *testing.T) {
 	for _, tc := range []struct {
-		fail           http.HandlerFunc
-		name           string
-		wait           time.Duration
-		creates, beats int
+		fail    http.HandlerFunc
+		name    string
+		wait    time.Duration
+		creates int
 	}{
-		{name: "retryAfter", wait: 90 * time.Second, creates: 2, beats: 22, fail: reply(http.StatusTooManyRequests, `{"message":"slow down"}`, "Retry-After", "90")},
-		{name: "retryAfterInsideTheCreate", wait: time.Minute, creates: 2, beats: 16, fail: reply(http.StatusTooManyRequests, `{"message":"slow down"}`, "Retry-After", "20")},
-		{name: "serverErrorRetryAfter", wait: retryEvery, creates: 2, beats: 4, fail: reply(http.StatusServiceUnavailable, `{"message":"unavailable"}`, "Retry-After", "20")},
+		{name: "retryAfter", wait: 90 * time.Second, creates: 2, fail: reply(http.StatusTooManyRequests, `{"message":"slow down"}`, "Retry-After", "90")},
+		{name: "retryAfterInsideTheCreate", wait: time.Minute, creates: 2, fail: reply(http.StatusTooManyRequests, `{"message":"slow down"}`, "Retry-After", "20")},
+		{name: "serverErrorRetryAfter", wait: retryEvery, creates: 2, fail: reply(http.StatusServiceUnavailable, `{"message":"unavailable"}`, "Retry-After", "20")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			lf := newListen(t)
 			lf.b.createFail, lf.b.createWith = 1, tc.fail
 			lf.run(t, 1, nil)
-			steps := slices.Repeat([]time.Duration{retryEvery}, int(tc.wait/retryEvery))
-			if !slices.Equal(*lf.waits, steps) {
-				t.Errorf("waits = %d of %v, want %v in 5-second steps", len(*lf.waits), *lf.waits, tc.wait)
-			}
-			if lf.h.beats != tc.beats {
-				t.Errorf("beats = %d, want %d", lf.h.beats, tc.beats)
+			if !slices.Equal(*lf.waits, []time.Duration{tc.wait}) {
+				t.Errorf("waits = %v, want one of %v", *lf.waits, tc.wait)
 			}
 			lf.b.do(func(b *broker) {
 				if b.creates != tc.creates {

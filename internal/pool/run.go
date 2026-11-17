@@ -5,14 +5,17 @@ import (
 	"time"
 )
 
-// listenerLease is the longest a served listener goes between beats: the
-// spacing github.Handler.Beat owns, plus 10 seconds so a hanging GitHub, an
-// upstream, never reads as an unhealthy listener.
-const listenerLease = 75 * time.Second
-
 // ReconcileLease is how long a host's reconcile loop may go between beats
-// before it reads as wedged: six reconciler intervals.
-const ReconcileLease = 6 * reconcileEvery
+// before it reads as wedged, and passLease how long the pass loop may go
+// between passes: six reconciler intervals each.
+const (
+	ReconcileLease = 6 * reconcileEvery
+	passLease      = 6 * reconcileEvery
+)
+
+// applyLease is the longest one settings revision may take to apply: its
+// ensures, each bounded by ensureTimeout, and the boot pass.
+const applyLease = 10 * time.Minute
 
 // shutdownTimeout bounds the shutdown inside the shipped compose file's
 // 60-second stop_grace_period; a test seam.
@@ -89,34 +92,25 @@ func (g *generation) shutdown(endSessions func()) {
 	}
 }
 
-// Health is the pool's state for its health verdict: Started once the
-// first generation booted and every served scale set's session has
-// opened, Listening while each such listener beat within listenerLease,
-// Reconciling while each host's reconcile loop waits on a call or beat
-// within ReconcileLease, and Stopping once the shutdown began. A scope
-// proven public, or any scope with no credential, has no listener and
-// counts in neither. No host's own state
-// counts: hosts are upstreams, which their own series report.
-type Health struct{ Started, Listening, Reconciling, Stopping bool }
+// Health is the pool's part of the control plane's health (§12.3).
+// Booted holds once the first generation's boot pass has run; Passing
+// while the current generation's pass loop ended a pass within passLease;
+// Reconciling while each connected host's reconcile loop waits on a call
+// or beat within ReconcileLease; Applied while no settings revision has
+// taken longer than applyLease to apply. GitHub and the hosts are
+// upstreams, so no session, poll or host state counts.
+type Health struct{ Booted, Passing, Reconciling, Applied bool }
 
-// Healthy reports every field of h set and the pool not stopping.
-func (h Health) Healthy() bool { return h.Started && h.Listening && h.Reconciling && !h.Stopping }
-
-// health reads the generation's health now.
-func (g *generation) health() Health {
+// health reads the generation's health at now; Applied is the
+// registry's.
+func (g *generation) health(now time.Time) Health {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	now := g.now()
-	h := Health{Started: !g.booting, Listening: true, Reconciling: true, Stopping: g.stopping}
-	for _, s := range g.sets {
-		if s.scope.public || s.lost || !g.credentialed {
-			continue
-		}
-		h.Started = h.Started && s.opened
-		h.Listening = h.Listening && now.Sub(s.beat) <= listenerLease
-	}
+	h := Health{Booted: !g.booting, Passing: now.Sub(g.stepped) <= passLease, Reconciling: true}
 	for _, ho := range g.hosts {
-		h.Reconciling = h.Reconciling && (ho.waiting || now.Sub(ho.beat) <= ReconcileLease)
+		if _, connected := g.d.Links.Host(ho.cfg.Name); connected {
+			h.Reconciling = h.Reconciling && (ho.waiting || now.Sub(ho.beat) <= ReconcileLease)
+		}
 	}
 	return h
 }

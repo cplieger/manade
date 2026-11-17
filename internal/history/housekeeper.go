@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"log/slog"
+	"sync/atomic"
 	"time"
 
 	"github.com/cplieger/go/scheduler"
@@ -20,12 +21,19 @@ const (
 	journalMaxRows = 20000
 )
 
+// keepLease is how long the housekeeper may go without a finished run
+// before it reads unhealthy (§12.3): two of its hourly runs.
+const keepLease = 2 * keepEvery
+
 // Housekeeper applies the history's retention.
 type Housekeeper struct {
 	st       *store.Store
 	settings func() *config.Config
 	log      *slog.Logger
 	now      func() time.Time
+	// since is when Run began or the last run finished, in Unix
+	// nanoseconds, 0 before Run.
+	since atomic.Int64
 }
 
 // NewHousekeeper answers a housekeeper of st under the settings settings
@@ -36,7 +44,24 @@ func NewHousekeeper(st *store.Store, settings func() *config.Config, log *slog.L
 
 // Run keeps the store at once and every hour until ctx ends.
 func (k *Housekeeper) Run(ctx context.Context) {
+	k.since.Store(k.now().UnixNano())
 	scheduler.RunLoop(ctx, k.run, scheduler.LoopOptions{Interval: keepEvery, FireOnStart: true})
+}
+
+// Due answers when a finished run is due: keepLease after Run began or the
+// last run finished, zero before Run.
+func (k *Housekeeper) Due() time.Time {
+	since := k.since.Load()
+	if since == 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, since).Add(keepLease)
+}
+
+// Healthy reports false once Due has passed.
+func (k *Housekeeper) Healthy() bool {
+	due := k.Due()
+	return due.IsZero() || !k.now().After(due)
 }
 
 func (k *Housekeeper) run(ctx context.Context) {
@@ -47,6 +72,7 @@ func (k *Housekeeper) run(ctx context.Context) {
 		}
 		return
 	}
+	k.since.Store(k.now().UnixNano())
 	k.log.Info("Housekeeping finished")
 }
 

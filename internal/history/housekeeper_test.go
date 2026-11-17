@@ -1,7 +1,9 @@
 package history
 
 import (
+	"context"
 	"log/slog"
+	"path/filepath"
 	"strconv"
 	"testing"
 	"time"
@@ -64,4 +66,56 @@ func TestRetention(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
+}
+
+// A finished run is due two hours after Run began or the last run
+// finished; a failed run moves nothing.
+func TestHousekeeperDue(t *testing.T) {
+	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
+	cfg := settings(7*day, 2*day)
+	k := housekeeper(openStore(t), &cfg)
+	k.now = func() time.Time { return now }
+	if !k.Due().IsZero() || !k.Healthy() {
+		t.Errorf("Due %v, Healthy %v before Run, want zero and healthy", k.Due(), k.Healthy())
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	k.Run(ctx)
+	if want := now.Add(2 * time.Hour); !k.Due().Equal(want) {
+		t.Errorf("Due = %v after Run began, want %v", k.Due(), want)
+	}
+	now = now.Add(time.Hour)
+	k.run(t.Context())
+	if want := now.Add(2 * time.Hour); !k.Due().Equal(want) {
+		t.Errorf("Due = %v after a finished run, want %v", k.Due(), want)
+	}
+	now = now.Add(2 * time.Hour)
+	if !k.Healthy() {
+		t.Error("unhealthy at Due")
+	}
+	now = now.Add(time.Second)
+	if k.Healthy() {
+		t.Error("healthy past Due")
+	}
+}
+
+func TestAFailedHousekeepingRunMovesNoDeadline(t *testing.T) {
+	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
+	st, err := store.Open(filepath.Join(t.TempDir(), store.File), store.Options{Build: "test", Log: slog.New(slog.DiscardHandler)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := settings(7*day, 2*day)
+	k := housekeeper(st, &cfg)
+	k.now = func() time.Time { return now }
+	k.run(t.Context())
+	due := k.Due()
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(time.Hour)
+	k.run(t.Context())
+	if !k.Due().Equal(due) {
+		t.Errorf("Due = %v after a failed run, want it kept at %v", k.Due(), due)
+	}
 }

@@ -3,6 +3,7 @@ package obs
 import (
 	"context"
 	"slices"
+	"sync/atomic"
 
 	"github.com/cplieger/go/measure/v2"
 	"github.com/cplieger/manade/internal/config"
@@ -32,6 +33,7 @@ type descs struct {
 	sectionPending, sectionRefused, sectionCurrent, waitingSection     *measure.Desc
 	rulesRestored, oomKills, refused, startLatency                     *measure.Desc
 	reconciled, reconcileDue                                           *measure.Desc
+	storeSize, storeFree, writeFailures, housekeepingDue               *measure.Desc
 }
 
 func newDescs() descs {
@@ -110,6 +112,11 @@ func newDescs() descs {
 		reconcileDue: gauge("reconcile_deadline_timestamp_seconds",
 			"When the host's reconcile loop is due to end its next pass, time inside host and GitHub calls left out; 0 before the first.",
 			measure.UnitSeconds, host...),
+		storeSize:     gauge("store_size_bytes", "The size of the control plane's store file.", measure.UnitBytes),
+		storeFree:     gauge("store_free_bytes", "Free space on the volume that holds the control plane's store.", measure.UnitBytes),
+		writeFailures: counter("store_write_failures_total", "Writes to the control plane's store whose commit failed."),
+		housekeepingDue: gauge("housekeeping_deadline_timestamp_seconds",
+			"When the housekeeper's next finished run is due, 0 before it runs.", measure.UnitSeconds),
 	}
 }
 
@@ -124,12 +131,15 @@ func (d *descs) all() []*measure.Desc {
 		d.sectionPending, d.sectionRefused, d.sectionCurrent, d.waitingSection,
 		d.rulesRestored, d.oomKills, d.refused, d.startLatency,
 		d.reconciled, d.reconcileDue,
+		d.storeSize, d.storeFree, d.writeFailures, d.housekeepingDue,
 	}
 }
 
-// collect emits the read series from one snapshot.
+// collect emits the read series from one snapshot, the store and the
+// housekeeper.
 func (m *Metrics) collect(_ context.Context, e *measure.Emitter) {
-	s := m.snapshot()
+	m.emitStore(e)
+	s := m.src.Pool()
 	d := &m.d
 	e.Emit(d.booting, b2f(!s.Booted))
 	head := 0.0
@@ -281,4 +291,31 @@ func (m *Metrics) emitStatus(e *measure.Emitter, v *pool.HostView) {
 			e.Emit(d.probeResult, b2f(c.Pass), h, c.Name)
 		}
 	}
+}
+
+// emitStore emits the store's series and the housekeeping deadline. A
+// failing read leaves its series off the page, warned once while it fails.
+func (m *Metrics) emitStore(e *measure.Emitter) {
+	d := &m.d
+	if size, err := m.src.Store.Size(); m.readOK(&m.sizeFailing, "size", err) {
+		e.Emit(d.storeSize, float64(size))
+	}
+	if free, err := m.src.Store.VolumeFree(); m.readOK(&m.freeFailing, "free space", err) {
+		e.Emit(d.storeFree, float64(free))
+	}
+	e.Emit(d.writeFailures, float64(m.src.Store.WriteFailures()))
+	e.Emit(d.housekeepingDue, unixSeconds(m.src.Housekeeping()))
+}
+
+// readOK reports err nil, warning once when a read of what starts
+// failing.
+func (m *Metrics) readOK(failing *atomic.Bool, what string, err error) bool {
+	if err != nil {
+		if !failing.Swap(true) {
+			m.log.Warn("Reading the store's "+what+" failed, so its series is absent until a read succeeds", "error", err)
+		}
+		return false
+	}
+	failing.Store(false)
+	return true
 }

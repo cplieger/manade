@@ -42,7 +42,7 @@ func (s *Store) ScaleSets(ctx context.Context) ([]ScaleSet, error) {
 // moved to another ID, or one already gone, is kept and journals nothing.
 func (s *Store) DropScaleSet(ctx context.Context, ss ScaleSet, at time.Time) error {
 	key := scaleSetKey(ss.Scope, ss.Profile)
-	return s.db.Update(ctx, func(tx *bolttable.Tx) error {
+	return s.update(ctx, func(tx *bolttable.Tx) error {
 		cur, found, err := scaleSets.Get(tx.Read(), key)
 		if err != nil || !found || cur.ID != ss.ID {
 			return err
@@ -60,7 +60,7 @@ func (s *Store) DropScaleSet(ctx context.Context, ss ScaleSet, at time.Time) err
 // RecordScaleSets writes every one of sets in one transaction, each
 // replacing the record of the same scope and profile.
 func (s *Store) RecordScaleSets(ctx context.Context, sets []ScaleSet) error {
-	return s.db.Update(ctx, func(tx *bolttable.Tx) error {
+	return s.update(ctx, func(tx *bolttable.Tx) error {
 		for i := range sets {
 			if err := scaleSets.Put(tx, scaleSetKey(sets[i].Scope, sets[i].Profile), &sets[i]); err != nil {
 				return err

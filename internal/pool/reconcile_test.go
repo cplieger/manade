@@ -164,7 +164,6 @@ func TestASlowHostHoldsBackNoOtherHostsExits(t *testing.T) {
 	r := newRig(t, cfg)
 	b := r.small()
 	r.assign(b, 2, 0)
-	r.reg.Beat(b.ss)
 	r.pass()
 	slow, fast := r.hosts[0].running(), r.hosts[1].running()
 	if len(slow) != 1 || len(fast) != 1 {
@@ -181,7 +180,6 @@ func TestASlowHostHoldsBackNoOtherHostsExits(t *testing.T) {
 	}()
 	<-held
 	r.now = r.now.Add(2 * ReconcileLease)
-	r.reg.Beat(b.ss)
 	r.p.passHost(context.Background(), 1)
 	if _, ok := r.record(b, fast[0]); ok {
 		t.Error("fast's exit kept its slot while slow's DELETE was in flight")

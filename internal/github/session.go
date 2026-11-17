@@ -94,11 +94,6 @@ type Handler interface {
 	// Lost reports that GitHub no longer has the scale set: its session
 	// create answered not found. Listen returns after it.
 	Lost(ss ScaleSet)
-	// Beat marks the end of each session create, poll, ack and close,
-	// answered or not, and each 5 seconds of a rate limit's wait. Two beats
-	// are at most 5 seconds and one such call apart; a poll or a create
-	// lasts at most 60 seconds, an ack or a close 10.
-	Beat(ss ScaleSet)
 }
 
 // ended is how a scale set's previous session ended, which decides what a
@@ -170,7 +165,6 @@ func (l *listen) open(ctx context.Context) bool {
 	o := opening{since: l.s.now()}
 	for {
 		sess, err := l.create(ctx)
-		l.h.Beat(l.ss)
 		if err == nil {
 			l.opened(sess, &o)
 			return true
@@ -284,9 +278,9 @@ func holderOf(err error) string {
 var errLate = errors.New("the poll ran past 60 seconds, so its answer is dropped and the session replaced")
 
 // noRetry turns scaleset's own retries off for a poll and a create, whose
-// default waits out GitHub's Retry-After in full, up to 4 times, with no
-// beat. Listen retries them itself through pause, a poll after its gap
-// check.
+// default waits out GitHub's Retry-After in full, up to 4 times, inside
+// the one call and past a poll's 60-second gap. Listen retries them itself
+// through pause, a poll after its gap check.
 func noRetry(c *scaleset.RetryConfig) { c.Max = 0 }
 
 // poll sends one poll and hands its answer over, then acks its message. A
@@ -298,7 +292,6 @@ func (l *listen) poll(ctx context.Context, start time.Time) {
 	end := l.s.now()
 	late := pctx.Err() != nil || end.Sub(start) > maxGap
 	cancel()
-	l.h.Beat(l.ss)
 	if ctx.Err() != nil {
 		return
 	}
@@ -334,7 +327,6 @@ func (l *listen) poll(ctx context.Context, start time.Time) {
 	actx, cancel := context.WithTimeout(context.WithoutCancel(ctx), closeTimeout)
 	defer cancel()
 	err = l.sess.DeleteMessage(actx, msg.MessageID)
-	l.h.Beat(l.ss)
 	if err != nil {
 		l.s.rest.rec.GitHubError(OpPoll)
 		l.log.Warn("Acking a message failed", "error", failed("ack", err))
@@ -358,21 +350,14 @@ func (l *listen) pollFailed(ctx context.Context, err error, late bool) {
 
 // pause waits after a refused create or poll: a rate limit's Retry-After,
 // at least a minute and at most maxHold
-// (https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api),
-// in 5-second steps that each beat; anything else 5 seconds. It fails only
-// when ctx ends.
+// (https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api);
+// anything else 5 seconds. It fails only when ctx ends.
 func (l *listen) pause(ctx context.Context, err error) error {
 	var rl *scaleset.RateLimitError
 	if !errors.As(err, &rl) {
 		return sleep(ctx, retryEvery)
 	}
-	for d := min(max(time.Minute, rl.RetryAfter), maxHold); d > 0; d -= retryEvery {
-		if err := sleep(ctx, min(d, retryEvery)); err != nil {
-			return err
-		}
-		l.h.Beat(l.ss)
-	}
-	return nil
+	return sleep(ctx, min(max(time.Minute, rl.RetryAfter), maxHold))
 }
 
 func statsOf(st *scaleset.RunnerScaleSetStatistic) *Stats {
@@ -400,7 +385,6 @@ func (l *listen) close(ctx context.Context) ended {
 	defer cancel()
 	err := l.sess.Close(ctx)
 	l.sess = nil
-	l.h.Beat(l.ss)
 	switch {
 	case err == nil:
 		return closed

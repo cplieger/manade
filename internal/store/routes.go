@@ -33,7 +33,7 @@ func (s *Store) Routes(ctx context.Context) ([]Route, error) {
 // RecordRoute writes rt, replacing the record of its scope, compared
 // without case as GitHub compares owner and repository names.
 func (s *Store) RecordRoute(ctx context.Context, rt *Route) error {
-	return s.db.Update(ctx, func(tx *bolttable.Tx) error {
+	return s.update(ctx, func(tx *bolttable.Tx) error {
 		return routes.Put(tx, []byte(strings.ToLower(rt.Scope)), rt)
 	})
 }

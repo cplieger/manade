@@ -24,8 +24,8 @@ func TestNoCredentialBootsAndACredentialServes(t *testing.T) {
 	if w := waitingRun(t, &snap, 1); w.Reason != JobScopeNotServed || w.Detail != DetailNotConnected {
 		t.Errorf("job %+v, want scope_not_served (github_not_connected)", w)
 	}
-	if h := r.reg.Health(); !h.Started || h.Stopping {
-		t.Errorf("health %+v, want a started pool with no credential", h)
+	if h := r.reg.Health(); !h.Booted {
+		t.Errorf("health %+v, want a booted pool with no credential", h)
 	}
 	if n := len(r.p.servedSets()); n != 0 {
 		t.Errorf("sessions wanted = %d, want none with no credential", n)
