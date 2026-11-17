@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"log/slog"
 	"maps"
 	"reflect"
@@ -31,15 +32,17 @@ type generation struct {
 	rechecked, born time.Time
 	reg             *Registry
 	d               *Deps
-	cfg             *config.Config
-	sections        map[string]string
-	sets            map[*book]*set
-	now             func() time.Time
-	kick            chan struct{}
-	verify          chan struct{}
-	scopes          map[string]*scope
-	l               *ledger
-	log             *slog.Logger
+	// gh is the credential's GitHub side, noCredential with none.
+	gh       *GitHub
+	cfg      *config.Config
+	sections map[string]string
+	sets     map[*book]*set
+	now      func() time.Time
+	kick     chan struct{}
+	verify   chan struct{}
+	scopes   map[string]*scope
+	l        *ledger
+	log      *slog.Logger
 	// stopLoops ends the loops at their next pass boundary; nil until start.
 	stopLoops context.CancelFunc
 	// settled holds each stop handed to the settler.
@@ -56,12 +59,18 @@ type generation struct {
 	// booting holds health at starting until the first generation's boot
 	// pass has adopted every runner its hosts list.
 	booting, stopping bool
+	// credentialed is false while the settings hold no credential.
+	credentialed bool
 }
 
 func newGeneration(r *Registry, s *Settings) *generation {
 	cfg := s.Config
+	gh := s.GitHub
+	if gh == nil {
+		gh = noCredential
+	}
 	g := &generation{
-		reg: r, d: &r.d, cfg: cfg, sections: s.Sections, rev: s.Revision, log: r.d.Log, now: r.now,
+		reg: r, d: &r.d, gh: gh, credentialed: s.GitHub != nil, cfg: cfg, sections: s.Sections, rev: s.Revision, log: r.d.Log, now: r.now,
 		l: newLedger(cfg), booting: true, kick: make(chan struct{}, 1), verify: make(chan struct{}, 1),
 		scopes: map[string]*scope{}, sets: map[*book]*set{}, settled: map[setKey]bool{}, departed: map[string]map[string]int64{}, gone: map[string]*config.Scope{}, born: r.now(),
 	}
@@ -161,7 +170,7 @@ func (g *generation) lacksSets(sc *scope) bool {
 // ensureScope ensures sc's scale sets and records them, or the failure.
 func (g *generation) ensureScope(ctx context.Context, sc *scope) {
 	ectx, cancel := context.WithTimeout(ctx, ensureTimeout)
-	sets, err := g.d.GitHub.Ensure(ectx, sc.cfg)
+	sets, err := g.gh.ScaleSets.Ensure(ectx, g.cfg, sc.cfg)
 	cancel()
 	if err == nil {
 		g.reg.record(ctx, sets)
@@ -169,7 +178,7 @@ func (g *generation) ensureScope(ctx context.Context, sc *scope) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if err != nil {
-		if sc.ensureErr == nil && ctx.Err() == nil {
+		if sc.ensureErr == nil && ctx.Err() == nil && !errors.Is(err, errNoCredential) {
 			g.log.Warn("Ensuring a scope's scale sets failed, so the scope is not served until a retry succeeds", "scope", sc.cfg.Key, "error", err)
 		}
 		sc.ensureErr = err
@@ -248,15 +257,18 @@ func (g *generation) bookOf(scope, profile string) *book {
 	return nil
 }
 
-// servedSets answers the scale sets whose sessions should be open: every
-// one of a scope not proven public.
-func (g *generation) servedSets() map[setKey]github.ScaleSet {
+// servedSets answers the sessions that should be open: one per scale set
+// of a scope not proven public, none without a credential.
+func (g *generation) servedSets() map[setKey]want {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	out := map[setKey]github.ScaleSet{}
+	out := map[setKey]want{}
+	if !g.credentialed {
+		return out
+	}
 	for b, s := range g.sets {
 		if !s.scope.public {
-			out[setKey{b.ss.Scope, b.ss.Profile}] = b.ss
+			out[setKey{b.ss.Scope, b.ss.Profile}] = want{gh: g.gh, scope: s.scope.cfg, owner: g.cfg.PoolName, ss: b.ss}
 		}
 	}
 	return out
@@ -272,6 +284,8 @@ func (g *generation) takeOver(old *generation) {
 	for key, sc := range g.scopes {
 		if o := old.scopes[key]; o != nil {
 			sc.carry(o)
+			// A new credential reads every scope's visibility at once.
+			sc.wanted = sc.wanted || old.gh != g.gh
 		}
 	}
 	g.takeRemovals(old)
@@ -419,7 +433,7 @@ func (b *book) carry(o *book, at, hosts []int) {
 // settles it; g.mu is held.
 func (g *generation) gate() {
 	for b, s := range g.sets {
-		b.serve = !g.stopping && !s.scope.public && !s.held
+		b.serve = g.credentialed && !g.stopping && !s.scope.public && !s.held
 		b.fundable = b.serve && s.scope.private() && !s.scope.partial
 	}
 	now := g.now()

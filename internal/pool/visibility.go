@@ -44,8 +44,12 @@ func (g *generation) runVisibility(ctx context.Context) {
 }
 
 // visibility reads every scope due now, outside the lock, one at a time;
-// a read the stop cuts short records nothing.
+// a read the stop cuts short records nothing. With no credential nothing
+// can be read.
 func (g *generation) visibility(ctx context.Context) {
+	if !g.credentialed {
+		return
+	}
 	g.mu.Lock()
 	now := g.now()
 	all := now.Sub(g.rechecked) >= recheckEvery
@@ -61,7 +65,7 @@ func (g *generation) visibility(ctx context.Context) {
 	}
 	g.mu.Unlock()
 	for _, sc := range due {
-		private, err := g.d.REST.Private(ctx, sc.cfg)
+		private, err := g.gh.REST.Private(ctx, sc.cfg)
 		if ctx.Err() != nil {
 			return
 		}
@@ -70,7 +74,7 @@ func (g *generation) visibility(ctx context.Context) {
 		g.mu.Unlock()
 	}
 	if all {
-		if err := g.d.GitHub.Recheck(ctx); err != nil && ctx.Err() == nil {
+		if err := g.gh.ScaleSets.Recheck(ctx); err != nil && ctx.Err() == nil {
 			g.log.Warn("Resolving the scopes' installations failed, so their clients stay as they are until the next pass", "error", err)
 		}
 	}

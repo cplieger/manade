@@ -22,29 +22,29 @@ import (
 // /api/v3 and then talks to the actions service the registration names,
 // here /svc, and to each session's message queue, here /queue/<set>.
 type broker struct {
-	f          *fakeGitHub
+	createWith http.HandlerFunc
 	sets       map[int]*fakeSet
 	groups     map[string]int
 	queue      map[int][]string
 	remove     map[int64]int
-	patches    []string
+	onPoll     func()
+	f          *fakeGitHub
+	failWith   http.HandlerFunc
 	polls      []brokerPoll
+	patches    []string
 	acks       []int
 	initial    Stats
-	nextSet    int
-	nextMsg    int
-	creates    int
-	refused    int // creates answered 409
+	refused    int
 	closes     int
 	jits       int
 	deletes    int
-	conflict   int // creates still to answer 409, after createFail
-	createFail int // creates still to fail through createWith
-	createWith http.HandlerFunc
-	closeSt    int              // a close's status; 0 answers 204
-	pollFail   int              // polls still to fail
-	failWith   http.HandlerFunc // how they fail; nil answers 404
-	onPoll     func()           // runs as each poll arrives
+	conflict   int
+	createFail int
+	nextSet    int
+	closeSt    int
+	pollFail   int
+	creates    int
+	nextMsg    int
 	mu         sync.Mutex
 }
 
@@ -291,11 +291,11 @@ func (b *broker) removeRunner(w http.ResponseWriter, id int64) {
 }
 
 // newTestScaleSets builds ScaleSets over the fake, with now on c.
-func newTestScaleSets(t *testing.T, f *fakeGitHub, cfg *config.Config, gh *config.GitHub, c *clock) (*ScaleSets, *REST, *recorder, *capture.Recorder) {
+func newTestScaleSets(t *testing.T, f *fakeGitHub, gh *config.GitHub, c *clock) (*ScaleSets, *REST, *recorder, *capture.Recorder) {
 	t.Helper()
-	r, m, rec := newTestREST(t, f, cfg, gh)
+	r, m, rec := newTestREST(t, f, gh)
 	tr := f.srv.Client().Transport.(*http.Transport).Clone()
-	s := newScaleSets(cfg, gh, tr, r, "test", f.srv.URL)
+	s := newScaleSets(gh, tr, r, "test", f.srv.URL)
 	s.now = c.now
 	return s, r, m, rec
 }

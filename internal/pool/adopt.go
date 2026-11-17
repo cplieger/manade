@@ -48,14 +48,15 @@ func (g *generation) adopt(ctx context.Context, i int, a *action) bool {
 // adoptRunning judges a running runner no record holds, in scope sc: busy
 // is held with the limits its host built it with, and idle is deregistered
 // and removed, since a scale set with no session gets it no job. One of a
-// dropped scope GitHub does not answer for keeps its reservation until it
-// ends or passes its lifetime, so no host waits on a scope it cannot read.
+// dropped scope GitHub does not answer for, or any with no credential to
+// ask with, keeps its reservation until it ends or passes its lifetime, so
+// no host waits on a scope it cannot read.
 func (g *generation) adoptRunning(ctx context.Context, i int, a *action, sc *config.Scope) bool {
 	lr := &a.lr
 	dropped := g.scopes[lr.Scope] == nil
-	gr, found, err := g.d.REST.Runner(ctx, sc, lr.RunnerID)
+	gr, found, err := g.gh.REST.Runner(ctx, sc, lr.RunnerID)
 	switch {
-	case err != nil && dropped:
+	case err != nil && (dropped || errors.Is(err, errNoCredential)):
 		g.hold(i, a, busy)
 		return true
 	case err != nil:
@@ -69,7 +70,7 @@ func (g *generation) adoptRunning(ctx context.Context, i int, a *action, sc *con
 		g.hold(i, a, busy)
 		return true
 	}
-	switch err := g.d.GitHub.RemoveRunner(ctx, sc, lr.RunnerID); {
+	switch err := g.gh.ScaleSets.RemoveRunner(ctx, sc, lr.RunnerID); {
 	case err == nil:
 		return g.remove(ctx, i, lr.Name)
 	case errors.Is(err, github.ErrRunnerBusy):

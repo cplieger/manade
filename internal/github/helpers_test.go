@@ -213,18 +213,14 @@ func (c *clock) unix(d time.Duration) string { return strconv.FormatInt(c.now().
 
 // newTestREST builds REST over the fake, with forgeapi trusting the fake's
 // certificate as its connection's only CA.
-func newTestREST(t *testing.T, f *fakeGitHub, cfg *config.Config, gh *config.GitHub) (*REST, *recorder, *capture.Recorder) {
+func newTestREST(t *testing.T, f *fakeGitHub, gh *config.GitHub) (*REST, *recorder, *capture.Recorder) {
 	t.Helper()
 	log, rec := capture.New()
 	m := &recorder{values: map[string]float64{}}
 	ca := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: f.srv.Certificate().Raw})
 	conn := forgeapi.Connection{WebBaseURL: f.srv.URL, APIBaseURL: f.srv.URL, CABytes: ca}
 	tr := f.srv.Client().Transport.(*http.Transport).Clone()
-	r, err := newREST(cfg, gh, tr, &conn, f.srv.URL, m, log, forgeapi.WithPrivateAddresses(true), forgeapi.WithLogger(log))
-	if err != nil {
-		t.Fatalf("newREST: %v", err)
-	}
-	return r, m, rec
+	return newREST(gh, tr, &conn, f.srv.URL, m, log, forgeapi.WithPrivateAddresses(true), forgeapi.WithLogger(log)), m, rec
 }
 
 // recorder holds what the client recorded under each series' exposition

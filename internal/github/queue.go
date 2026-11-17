@@ -56,18 +56,20 @@ type Queue struct {
 	Complete bool
 }
 
-// Sweep reads every repo scope's queued jobs, one request at a time. It is
-// not safe for concurrent use: Run is its one caller.
+// Sweep reads every repo scope's queued jobs, one request at a time, for
+// the settings each Run names. It is not safe for concurrent use: one Run
+// at a time is its caller.
 type Sweep struct {
-	rest     *REST
-	log      *slog.Logger
-	now      func() time.Time
+	rest *REST
+	log  *slog.Logger
+	now  func() time.Time
+	// profiles maps each profile's name without case to its name, for the
+	// sweep in progress.
 	profiles map[string]string
 	memo     map[memoKey]memo
 	quotas   map[string]*quota
 	failing  map[string]time.Time
-	over     map[string]time.Time
-	scopes   []*config.Scope
+	over     map[memoKey]time.Time
 }
 
 // memoKey names a scope's runs list in state, or else run's jobs list.
@@ -93,35 +95,22 @@ type quota struct {
 	billed              int
 }
 
-// NewSweep builds the sweep over cfg's repo scopes and profiles.
-func NewSweep(cfg *config.Config, r *REST) *Sweep {
-	s := &Sweep{
-		rest: r, log: r.log, now: time.Now, profiles: map[string]string{}, memo: map[memoKey]memo{},
-		quotas: map[string]*quota{}, failing: map[string]time.Time{}, over: map[string]time.Time{},
+// NewSweep builds the sweep under r's credential.
+func NewSweep(r *REST) *Sweep {
+	return &Sweep{
+		rest: r, log: r.log, now: time.Now, memo: map[memoKey]memo{},
+		quotas: map[string]*quota{}, failing: map[string]time.Time{}, over: map[memoKey]time.Time{},
 	}
-	for i := range cfg.Scopes {
-		s.quotas[r.auth.limit[cfg.Scopes[i].Key]] = &quota{}
-	}
-	for i := range cfg.Scopes {
-		if cfg.Scopes[i].Kind == config.ScopeRepo {
-			s.scopes = append(s.scopes, &cfg.Scopes[i])
-		}
-	}
-	// GitHub matches runs-on labels without case.
-	for i := range cfg.Profiles {
-		s.profiles[strings.ToLower(cfg.Profiles[i].Name)] = cfg.Profiles[i].Name
-	}
-	return s
 }
 
-// Run sweeps until ctx ends, handing each sweep's reads to sink with the
-// time the sweep ended. hot reports whether the pool has free budget, which
-// reads every started run's jobs on every sweep. Each sweep starts at least
-// 10 seconds after the previous one ended, later when a credential's rate
-// limit needs it (spacing).
-func (s *Sweep) Run(ctx context.Context, hot func() bool, sink func(ended time.Time, qs []Queue)) {
+// Run sweeps cfg's repo scopes until ctx ends, handing each sweep's reads
+// to sink with the time the sweep ended. hot reports whether the pool has
+// free budget, which reads every started run's jobs on every sweep. Each
+// sweep starts at least 10 seconds after the previous one ended, later
+// when a credential's rate limit needs it (spacing).
+func (s *Sweep) Run(ctx context.Context, cfg *config.Config, hot func() bool, sink func(ended time.Time, qs []Queue)) {
 	for ctx.Err() == nil {
-		qs := s.sweep(ctx, hot())
+		qs := s.sweep(ctx, cfg, hot())
 		sink(s.now(), qs)
 		if sleep(ctx, s.spacing()) != nil {
 			return
@@ -129,14 +118,15 @@ func (s *Sweep) Run(ctx context.Context, hot func() bool, sink func(ended time.T
 	}
 }
 
-func (s *Sweep) sweep(ctx context.Context, hot bool) []Queue {
+func (s *Sweep) sweep(ctx context.Context, cfg *config.Config, hot bool) []Queue {
 	for _, q := range s.quotas {
 		q.billed = 0
 	}
-	out := make([]Queue, 0, len(s.scopes))
-	for _, sc := range s.scopes {
+	scopes := s.prepare(cfg)
+	out := make([]Queue, 0, len(scopes))
+	for _, sc := range scopes {
 		q := Queue{Scope: sc.Key}
-		if !s.now().Before(s.quotas[s.rest.auth.limit[sc.Key]].until) {
+		if !s.now().Before(s.quota(sc).until) {
 			jobs, err := s.readScope(ctx, sc, hot)
 			q.Jobs, q.Complete = jobs, err == nil
 			s.settle(sc, err)
@@ -144,6 +134,39 @@ func (s *Sweep) sweep(ctx context.Context, hot bool) []Queue {
 		out = append(out, q)
 	}
 	return out
+}
+
+// prepare reads cfg's profiles for this sweep and answers its repo scopes,
+// dropping what earlier sweeps kept of scopes cfg no longer holds.
+func (s *Sweep) prepare(cfg *config.Config) []*config.Scope {
+	// GitHub matches runs-on labels without case.
+	s.profiles = map[string]string{}
+	for i := range cfg.Profiles {
+		s.profiles[strings.ToLower(cfg.Profiles[i].Name)] = cfg.Profiles[i].Name
+	}
+	var scopes []*config.Scope
+	held := map[string]bool{}
+	for i := range cfg.Scopes {
+		if cfg.Scopes[i].Kind == config.ScopeRepo {
+			scopes = append(scopes, &cfg.Scopes[i])
+			held[cfg.Scopes[i].Key] = true
+		}
+	}
+	maps.DeleteFunc(s.memo, func(k memoKey, _ memo) bool { return !held[k.scope] })
+	maps.DeleteFunc(s.failing, func(k string, _ time.Time) bool { return !held[k] })
+	maps.DeleteFunc(s.over, func(k memoKey, _ time.Time) bool { return !held[k.scope] })
+	return scopes
+}
+
+// quota is sc's rate limit's standing, made on first use.
+func (s *Sweep) quota(sc *config.Scope) *quota {
+	name := s.rest.auth.limit(sc)
+	q := s.quotas[name]
+	if q == nil {
+		q = &quota{}
+		s.quotas[name] = q
+	}
+	return q
 }
 
 // settle logs a scope's failing reads as a standing state and stamps a
@@ -229,7 +252,7 @@ func (s *Sweep) runs(ctx context.Context, sc *config.Scope, state string) ([]int
 
 // window logs a runs list past GitHub's window as a standing state.
 func (s *Sweep) window(sc *config.Scope, state string, total int) {
-	key := sc.Key + "/" + state
+	key := memoKey{scope: sc.Key, state: state}
 	since, was := s.over[key]
 	switch over := total > runsWindow; {
 	case over && !was:
@@ -332,7 +355,11 @@ func (s *Sweep) pages(ctx context.Context, sc *config.Scope, path string, most i
 // error holds every read on that rate limit (holdFor); any other refusal
 // fails this scope's read alone.
 func (s *Sweep) read(ctx context.Context, sc *config.Scope, u string) (answer, error) {
-	src, q := s.rest.auth.source(sc), s.quotas[s.rest.auth.limit[sc.Key]]
+	src, err := s.rest.auth.source(sc)
+	if err != nil {
+		return answer{}, err
+	}
+	q := s.quota(sc)
 	hits := s.rest.cache.State().Hits
 	a, err := s.rest.get(ctx, s.rest.cached, src, u)
 	if err == nil {

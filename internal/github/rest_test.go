@@ -96,8 +96,9 @@ func TestNewRESTAppBehindPrivateProxy(t *testing.T) {
 			}
 			withProxy := *gh
 			withProxy.Proxy = proxy
-			if _, err := NewREST(cfg, &withProxy, tr, nil, log); err != nil {
-				t.Errorf("NewREST behind %s: %v, want the App's token sources built", tc.proxy, err)
+			r := NewREST(&withProxy, tr, nil, log)
+			if _, err := r.auth.source(scope(t, cfg, "acme/app")); err != nil {
+				t.Errorf("a token source behind %s: %v, want the App's token source built", tc.proxy, err)
 			}
 		})
 	}
@@ -151,7 +152,7 @@ func TestPrivate(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFake(t)
 			cfg, gh := load(t, false, patLayout)
-			r, m, _ := newTestREST(t, f, cfg, gh)
+			r, m, _ := newTestREST(t, f, gh)
 			f.route(tc.path, reply(cmp.Or(tc.code, http.StatusOK), tc.body))
 			got, err := r.Private(t.Context(), scope(t, cfg, tc.scope))
 			if got != tc.want || (err != nil) != tc.fails || (tc.is != nil && !errors.Is(err, tc.is)) {
@@ -183,7 +184,7 @@ func TestPrivateCutShortCountsOnlyADeadline(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFake(t)
 			cfg, gh := load(t, false, patLayout)
-			r, m, _ := newTestREST(t, f, cfg, gh)
+			r, m, _ := newTestREST(t, f, gh)
 			ctx, cancel := tc.ctx(t)
 			defer cancel()
 			f.route("/repos/acme/app", func(w http.ResponseWriter, req *http.Request) {
@@ -240,7 +241,7 @@ func TestPrivatePagesRunnerGroups(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFake(t)
 			cfg, gh := load(t, false, patLayout)
-			r, _, _ := newTestREST(t, f, cfg, gh)
+			r, _, _ := newTestREST(t, f, gh)
 			tc.route(f)
 			got, err := r.Private(t.Context(), scope(t, cfg, "acme"))
 			if got != tc.want || (err == nil) != tc.want {
@@ -267,17 +268,19 @@ func scope(t *testing.T, cfg *config.Config, key string) *config.Scope {
 func TestRunnerAtScopeURL(t *testing.T) {
 	f := newFake(t)
 	cfg, gh := load(t, false, patLayout)
-	r, _, _ := newTestREST(t, f, cfg, gh)
+	r, _, _ := newTestREST(t, f, gh)
 	f.route("/repos/acme/app/actions/runners/5", jsonOK(`{"status":"online","busy":true}`))
 	f.route("/orgs/acme/actions/runners/5", jsonOK(`{"status":"offline","busy":false}`))
 	f.route("/repos/acme/app/actions/runners/8", jsonOK(`{"status":"online"}`))
 	f.route("/enterprises/big/actions/runners/6", reply(http.StatusForbidden, `{}`))
 	f.route("/enterprises/big/actions/runners", jsonOK(`{"total_count":0,"runners":[]}`))
 	for _, tc := range []struct {
-		name, scope string
-		want        Runner
-		id          int64
-		found, fail bool
+		name  string
+		scope string
+		id    int64
+		want  Runner
+		found bool
+		fail  bool
 	}{
 		{name: "repoBusy", scope: "acme/app", id: 5, want: Runner{Busy: true}, found: true},
 		{name: "orgOffline", scope: "acme", id: 5, found: true},
@@ -325,9 +328,9 @@ func TestGetResendsKeptTokenAfter401(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		keep     []bool
+		waits    []time.Duration
 		refusals int
 		sends    int
-		waits    []time.Duration
 		status   int
 	}{
 		{name: "replicationDelay", keep: []bool{true}, refusals: 1, sends: 2, waits: []time.Duration{time.Second}, status: 200},
@@ -337,8 +340,8 @@ func TestGetResendsKeptTokenAfter401(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFake(t)
-			cfg, gh := load(t, false, patLayout)
-			r, _, _ := newTestREST(t, f, cfg, gh)
+			_, gh := load(t, false, patLayout)
+			r, _, _ := newTestREST(t, f, gh)
 			waits := noSleep(t)
 			var n int
 			f.route("/repos/acme/app", func(w http.ResponseWriter, _ *http.Request) {
@@ -363,8 +366,8 @@ func TestGetResendsKeptTokenAfter401(t *testing.T) {
 
 func TestGetRetryLeavesRateLimitsToCaller(t *testing.T) {
 	f := newFake(t)
-	cfg, gh := load(t, false, patLayout)
-	r, _, _ := newTestREST(t, f, cfg, gh)
+	_, gh := load(t, false, patLayout)
+	r, _, _ := newTestREST(t, f, gh)
 	f.route("/repos/acme/app", reply(http.StatusTooManyRequests, `{}`, "Retry-After", "1"))
 	a, err := r.get(t.Context(), r.plain, patSource{}, f.srv.URL+"/repos/acme/app")
 	if err != nil || a.status != http.StatusTooManyRequests || !errors.Is(a.err(), httpclient.ErrRateLimited) {

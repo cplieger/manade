@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cplieger/manade/internal/config"
 	"github.com/cplieger/manade/internal/github"
 )
 
@@ -89,6 +90,7 @@ func TestAFailedEnsureBootsTheGenerationAndIsRetried(t *testing.T) {
 	cfg := oneHost()
 	r := &rig{t: t, now: epoch, cfg: cfg, gh: newFakeGitHub(cfg), log: &logBuf{}, rev: 1, settler: &fakeSettler{}, records: &fakeRecords{sets: map[setKey]github.ScaleSet{}}}
 	r.gh.ensureFail = true
+	r.side = sideOf(r.gh)
 	r.hosts = []*fakeHost{newFakeHost(cfg, "default", sectionHash(1))}
 	r.links = &fakeLinks{hosts: r.hosts}
 	r.restart()
@@ -138,7 +140,7 @@ type recordingGitHub struct {
 	mu     sync.Mutex
 }
 
-func (g *recordingGitHub) Listen(ctx context.Context, ss github.ScaleSet, _ github.Handler) {
+func (g *recordingGitHub) Listen(ctx context.Context, _ *config.Scope, ss github.ScaleSet, _ string, _ github.Handler) {
 	k := setKey{ss.Scope, ss.Profile}
 	g.mu.Lock()
 	g.open[k]++
@@ -164,8 +166,9 @@ func TestRunKeepsSessionsAcrossARevisionAndClosesThemAtShutdown(t *testing.T) {
 	gh := &recordingGitHub{fakeGitHub: newFakeGitHub(cfg), open: map[setKey]int{}}
 	h := newFakeHost(cfg, "default", sectionHash(1))
 	m := newFakeMetrics()
-	reg := NewRegistry(&Settings{Config: cfg, Revision: 1, Sections: map[string]string{"default": sectionHash(1)}}, &Deps{
-		GitHub: gh, REST: gh, Sweep: gh, Links: &fakeLinks{hosts: []*fakeHost{h}}, Metrics: m, Settle: &fakeSettler{},
+	side := &GitHub{ScaleSets: gh, REST: gh, Sweep: gh}
+	reg := NewRegistry(&Settings{Config: cfg, GitHub: side, Revision: 1, Sections: map[string]string{"default": sectionHash(1)}}, &Deps{
+		Links: &fakeLinks{hosts: []*fakeHost{h}}, Metrics: m, Settle: &fakeSettler{},
 		Records: &fakeRecords{sets: map[setKey]github.ScaleSet{}}, Log: slog.New(slog.DiscardHandler),
 	})
 	ctx, cancel := context.WithCancel(t.Context())
@@ -177,7 +180,7 @@ func TestRunKeepsSessionsAcrossARevisionAndClosesThemAtShutdown(t *testing.T) {
 	waitFor(t, "the first session", func() bool { open, _ := gh.sessions(); return open == 1 })
 	next := cloneConfig(cfg)
 	next.HeadReserveAfter = time.Minute
-	reg.Apply(&Settings{Config: next, Revision: 2, Sections: map[string]string{"default": sectionHash(2)}})
+	reg.Apply(&Settings{Config: next, GitHub: side, Revision: 2, Sections: map[string]string{"default": sectionHash(2)}})
 	waitFor(t, "revision 2 serving", func() bool { return reg.Snapshot().Revision == 2 })
 	if open, opened := gh.sessions(); open != 1 || opened != 1 {
 		t.Errorf("sessions open %d, opened %d after a revision that keeps the scale set; want the one session kept", open, opened)

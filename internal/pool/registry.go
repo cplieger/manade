@@ -34,9 +34,9 @@ type Links interface {
 // scaleSets is the scale-set side the pool drives, one per credential:
 // every call names its scope.
 type scaleSets interface {
-	Ensure(ctx context.Context, scope *config.Scope) ([]github.ScaleSet, error)
-	Listen(ctx context.Context, ss github.ScaleSet, h github.Handler)
-	JIT(ctx context.Context, ss github.ScaleSet, name string) (github.JIT, error)
+	Ensure(ctx context.Context, cfg *config.Config, scope *config.Scope) ([]github.ScaleSet, error)
+	Listen(ctx context.Context, scope *config.Scope, ss github.ScaleSet, owner string, h github.Handler)
+	JIT(ctx context.Context, scope *config.Scope, ss github.ScaleSet, name string) (github.JIT, error)
 	RemoveRunner(ctx context.Context, scope *config.Scope, id int64) error
 	Recheck(ctx context.Context) error
 }
@@ -61,11 +61,23 @@ type sweeper interface {
 	Run(ctx context.Context, cfg *config.Config, hot func() bool, sink func(ended time.Time, qs []github.Queue))
 }
 
-// Settings is one settings revision as the pool reads it: the model and,
-// by host name, the hash of the section the control plane delivers that
-// host for this revision. A host serves only while it runs that section.
+// GitHub is one credential's GitHub side. A revision naming the same
+// *GitHub as the one before keeps every session open; a different one is a
+// credential change, which closes every session before any opens under it.
+type GitHub struct {
+	ScaleSets scaleSets
+	REST      restAPI
+	Sweep     sweeper
+}
+
+// Settings is one settings revision as the pool reads it: the model, the
+// credential's GitHub side (nil with no credential, which serves no scope)
+// and, by host name, the hash of the section the control plane delivers
+// that host for this revision. A host serves only while it runs that
+// section.
 type Settings struct {
 	Config   *config.Config
+	GitHub   *GitHub
 	Sections map[string]string
 	Revision uint64
 }
@@ -73,9 +85,6 @@ type Settings struct {
 // Deps is what the pool drives; every field but Log, which may be nil for
 // slog.Default, is required.
 type Deps struct {
-	GitHub  scaleSets
-	REST    restAPI
-	Sweep   sweeper
 	Links   Links
 	Metrics Recorder
 	Settle  settler
@@ -90,8 +99,8 @@ type Deps struct {
 type Registry struct {
 	d   Deps
 	cur *generation
-	// spawn opens ss's session, answering what closes it; nil until Run.
-	spawn   func(ss github.ScaleSet) context.CancelFunc
+	// spawn opens w's session; nil until Run.
+	spawn   func(w want) *session
 	pending *Settings
 	// sessions holds each open scale-set session by scope and profile.
 	sessions map[setKey]*session
@@ -102,19 +111,31 @@ type Registry struct {
 	swg      sync.WaitGroup
 	// mu guards cur: a handler call holds it for reading, so no call lands
 	// in a generation after its successor copied it. smu guards spawn and
-	// sessions, and is never held while a generation's lock is taken. rmu
-	// guards recorded and serializes its writes.
-	mu            sync.RWMutex
-	smu, pmu, rmu sync.Mutex
+	// sessions, and is never held while a generation's lock is taken or a
+	// session's close is waited on; syncMu serializes sync across that
+	// wait. rmu guards recorded and serializes its writes.
+	mu                    sync.RWMutex
+	smu, syncMu, pmu, rmu sync.Mutex
 }
 
 // setKey names a scale set by scope and profile.
 type setKey struct{ scope, profile string }
 
-// session is one scale set's open session.
+// session is one scale set's open session: what it was opened with, what
+// ends it and done, closed once its close is done.
 type session struct {
 	cancel context.CancelFunc
-	ss     github.ScaleSet
+	done   chan struct{}
+	want
+}
+
+// want is a session a generation serves: its scale set, the scope's
+// settings, the owner it opens under and the credential's GitHub side.
+type want struct {
+	gh    *GitHub
+	scope *config.Scope
+	owner string
+	ss    github.ScaleSet
 }
 
 // NewRegistry builds the pool for its first settings revision. It calls
@@ -178,10 +199,14 @@ func (r *Registry) take() *Settings {
 func (r *Registry) listenUnder(ctx context.Context) {
 	r.smu.Lock()
 	defer r.smu.Unlock()
-	r.spawn = func(ss github.ScaleSet) context.CancelFunc {
+	r.spawn = func(w want) *session {
 		sctx, cancel := context.WithCancel(ctx)
-		r.swg.Go(func() { r.d.GitHub.Listen(sctx, ss, r) })
-		return cancel
+		s := &session{want: w, cancel: cancel, done: make(chan struct{})}
+		r.swg.Go(func() {
+			defer close(s.done)
+			w.gh.ScaleSets.Listen(sctx, w.scope, w.ss, w.owner, r)
+		})
+		return s
 	}
 }
 
@@ -191,15 +216,17 @@ func (r *Registry) current() *generation {
 	return r.cur
 }
 
-// install builds the generation for s and makes it current. It keeps the
-// current generation's scale sets that s still serves and ensures the new
-// ones first; then the current generation stops at a pass boundary and the
-// new one takes over its records and boots through the boot path (§10.6).
-// The caller starts the new generation's loops.
+// install builds the generation for s and makes it current. Under the
+// same credential it keeps the current generation's scale sets that s
+// still serves; a new credential ensures every scope again, which finds
+// the scale sets by name and proves it reaches each scope (§9.1). The
+// ensures come first; then the current generation stops at a pass
+// boundary and the new one takes over its records and boots through the
+// boot path (§10.6). The caller starts the new generation's loops.
 func (r *Registry) install(ctx context.Context, s *Settings) *generation {
 	g := newGeneration(r, s)
 	old := r.current()
-	if old != nil {
+	if old != nil && old.gh == g.gh {
 		g.keepSets(old)
 	}
 	g.ensure(ctx)
@@ -222,22 +249,35 @@ func (r *Registry) install(ctx context.Context, s *Settings) *generation {
 }
 
 // sync opens a session for each scale set the current generation serves
-// and closes the rest.
+// and closes the rest. After a credential change every session is closed,
+// and each close done, before any opens under the new credential.
 func (r *Registry) sync() {
-	want := r.current().servedSets()
+	r.syncMu.Lock()
+	defer r.syncMu.Unlock()
+	g := r.current()
+	wants := g.servedSets()
 	r.smu.Lock()
-	defer r.smu.Unlock()
+	var closing []*session
 	for k, s := range r.sessions {
-		if ss, ok := want[k]; !ok || ss.ID != s.ss.ID {
+		if w, ok := wants[k]; !ok || w.ss.ID != s.ss.ID || w.owner != s.owner || w.gh != s.gh {
 			s.cancel()
 			delete(r.sessions, k)
+			closing = append(closing, s)
 		}
 	}
-	for k, ss := range want {
+	r.smu.Unlock()
+	for _, s := range closing {
+		if s.gh != g.gh {
+			<-s.done
+		}
+	}
+	r.smu.Lock()
+	defer r.smu.Unlock()
+	for k, w := range wants {
 		if _, open := r.sessions[k]; open || r.spawn == nil {
 			continue
 		}
-		r.sessions[k] = &session{cancel: r.spawn(ss), ss: ss}
+		r.sessions[k] = r.spawn(w)
 	}
 }
 

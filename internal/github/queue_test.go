@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/cplieger/go/slogx/capture"
+	"github.com/cplieger/manade/internal/config"
 )
 
 const queueLayout = `scopes:
@@ -30,23 +31,29 @@ const (
 
 func jobsPath(id int64) string { return fmt.Sprintf("%s/%d/jobs", runsPath, id) }
 
+// testSweep is a sweep with the settings its sweeps read.
+type testSweep struct {
+	*Sweep
+	cfg *config.Config
+}
+
 // newTestSweep builds a sweep over queueLayout on a settable clock, with
 // every runs list empty until a test routes it.
-func newTestSweep(t *testing.T, f *fakeGitHub) (*Sweep, *REST, *clock) {
+func newTestSweep(t *testing.T, f *fakeGitHub) (*testSweep, *REST, *clock) {
 	t.Helper()
 	cfg, gh := load(t, false, queueLayout)
-	r, _, _ := newTestREST(t, f, cfg, gh)
+	r, _, _ := newTestREST(t, f, gh)
 	for _, l := range []string{listQ, listIP, listW} {
 		f.route(l, etagged(runs(0)))
 	}
-	s := NewSweep(cfg, r)
+	s := &testSweep{Sweep: NewSweep(r), cfg: cfg}
 	c := &clock{t: time.Unix(1_800_000_000, 0)}
 	s.now = c.now
 	return s, r, c
 }
 
 // captureSweep sends s's log lines to a recorder.
-func captureSweep(t *testing.T, s *Sweep) *capture.Recorder {
+func captureSweep(t *testing.T, s *testSweep) *capture.Recorder {
 	t.Helper()
 	log, rec := capture.New()
 	s.log = log
@@ -73,7 +80,7 @@ func TestSweepListsQueuedJobsInsideStartedRuns(t *testing.T) {
 		[]string{"other", "queued", "ubuntu-latest"},
 		[]string{"done", "completed", "small"},
 	)))
-	qs := s.sweep(t.Context(), false)
+	qs := s.sweep(t.Context(), s.cfg, false)
 	if len(qs) != 1 || !qs[0].Complete {
 		t.Fatalf("sweep = %+v, want one complete read", qs)
 	}
@@ -93,8 +100,8 @@ func TestSweepRevalidatesUnchangedPages(t *testing.T) {
 	s, r, _ := newTestSweep(t, f)
 	f.route(listQ, etagged(runs(1, 3)))
 	f.route(jobsPath(3), etagged(jobsPage(3, []string{"test", "queued", "small"})))
-	first := s.sweep(t.Context(), false)
-	second := s.sweep(t.Context(), false)
+	first := s.sweep(t.Context(), s.cfg, false)
+	second := s.sweep(t.Context(), s.cfg, false)
 	if names(first[0]) != "test:small" || names(second[0]) != "test:small" || !second[0].Complete {
 		t.Fatalf("sweeps = %+v then %+v, want the same complete read", first, second)
 	}
@@ -104,7 +111,7 @@ func TestSweepRevalidatesUnchangedPages(t *testing.T) {
 	if got := sample(t, r.rec.(*recorder), `manade_rest_reads_total{result="unchanged"}`); got != 4 {
 		t.Errorf("unchanged reads = %v, want the second sweep's 4", got)
 	}
-	if q := s.quotas[r.auth.limit[s.scopes[0].Key]]; q.billed != 0 {
+	if q := s.quota(&s.cfg.Scopes[0]); q.billed != 0 {
 		t.Errorf("billed = %d, want no billed read in a sweep of 304s", q.billed)
 	}
 	if c := f.seen(jobsPath(3)); len(c) != 2 || c[1].header.Get("If-None-Match") == "" {
@@ -115,7 +122,7 @@ func TestSweepRevalidatesUnchangedPages(t *testing.T) {
 func TestSweepFollowsLinkPages(t *testing.T) {
 	page := func(n int) string { return listQ + "&page=" + fmt.Sprint(n) }
 	link := func(n int) string { return fmt.Sprintf(`<%%s%s>; rel="next", <%%s%s>; rel="last"`, page(n), page(3)) }
-	setup := func(t *testing.T, second http.HandlerFunc) (*Sweep, *fakeGitHub) {
+	setup := func(t *testing.T, second http.HandlerFunc) (*testSweep, *fakeGitHub) {
 		t.Helper()
 		f := newFake(t)
 		s, _, _ := newTestSweep(t, f)
@@ -128,15 +135,15 @@ func TestSweepFollowsLinkPages(t *testing.T) {
 		return s, f
 	}
 	t.Run("threePages", func(t *testing.T) {
-		var s *Sweep
+		var s *testSweep
 		var f *fakeGitHub
 		s, f = setup(t, func(w http.ResponseWriter, r *http.Request) {
 			etagged(runs(3, 2), "Link", fmt.Sprintf(link(3), f.srv.URL, f.srv.URL))(w, r)
 		})
-		if q := s.sweep(t.Context(), false)[0]; names(q) != "job1:small,job2:small,job3:small" || !q.Complete {
+		if q := s.sweep(t.Context(), s.cfg, false)[0]; names(q) != "job1:small,job2:small,job3:small" || !q.Complete {
 			t.Fatalf("first sweep = %+v, want the three pages' jobs", q)
 		}
-		if q := s.sweep(t.Context(), false)[0]; !q.Complete {
+		if q := s.sweep(t.Context(), s.cfg, false)[0]; !q.Complete {
 			t.Fatalf("second sweep = %+v, want complete", q)
 		}
 		var third int
@@ -152,7 +159,7 @@ func TestSweepFollowsLinkPages(t *testing.T) {
 	t.Run("failedSecondPage", func(t *testing.T) {
 		s, _ := setup(t, reply(http.StatusUnprocessableEntity, `{}`))
 		log := captureSweep(t, s)
-		q := s.sweep(t.Context(), false)[0]
+		q := s.sweep(t.Context(), s.cfg, false)[0]
 		if !log.HasAttr("Queue reads are failing", "scope", "acme/app") {
 			t.Errorf("logs = %v, want the failing-reads WARN", log.Messages())
 		}
@@ -171,7 +178,7 @@ func TestSweepFollowsLinkPages(t *testing.T) {
 		s, _, _ := newTestSweep(t, f)
 		other.route(runsPath, etagged(runs(3, 2)))
 		f.route(listQ, etagged(runs(3, 1), "Link", "<"+other.srv.URL+runsPath+`?page=2>; rel="next"`))
-		if q := s.sweep(t.Context(), false)[0]; q.Complete {
+		if q := s.sweep(t.Context(), s.cfg, false)[0]; q.Complete {
 			t.Errorf("sweep = %+v, want a link off the API origin refused", q)
 		}
 		if c := other.seen(runsPath); len(c) != 0 {
@@ -209,7 +216,7 @@ func TestSweepRanksNewestRunsPastWindow(t *testing.T) {
 	s, _, c := newTestSweep(t, f)
 	log := captureSweep(t, s)
 	endlessRuns(f, 100, 1500)
-	if q := s.sweep(t.Context(), false)[0]; !q.Complete {
+	if q := s.sweep(t.Context(), s.cfg, false)[0]; !q.Complete {
 		t.Fatalf("sweep = %+v, want a complete read of the newest 1,000 runs", q)
 	}
 	if got := len(f.seen(runsPath)) - 2; got != 10 {
@@ -218,13 +225,13 @@ func TestSweepRanksNewestRunsPastWindow(t *testing.T) {
 	if !log.HasAttr("passed GitHub's list limit", "runs", "1500") || !log.HasAttr("passed GitHub's list limit", "state", "queued") {
 		t.Errorf("logs = %v, want the window WARN with the state and count", log.Messages())
 	}
-	s.sweep(t.Context(), false)
+	s.sweep(t.Context(), s.cfg, false)
 	if got := log.Count("passed GitHub's list limit"); got != 1 {
 		t.Errorf("window WARN lines = %d, want 1 while the state stands", got)
 	}
 	f.route(listQ, etagged(runs(3)))
 	c.advance(90 * time.Second)
-	s.sweep(t.Context(), false)
+	s.sweep(t.Context(), s.cfg, false)
 	if !log.HasAttr("back inside GitHub's list limit", "duration", "1m30s") {
 		t.Errorf("logs = %v, want the window's end line with its duration", log.Messages())
 	}
@@ -238,7 +245,7 @@ func TestSweepRefusesShortPagesAtTheBound(t *testing.T) {
 	s, _, _ := newTestSweep(t, f)
 	log := captureSweep(t, s)
 	endlessRuns(f, 50, 900)
-	if q := s.sweep(t.Context(), false)[0]; q.Complete {
+	if q := s.sweep(t.Context(), s.cfg, false)[0]; q.Complete {
 		t.Errorf("sweep = %+v, want an incomplete read after 500 of the list's runs", q)
 	}
 	if got := len(f.seen(runsPath)); got != 10 {
@@ -251,10 +258,11 @@ func TestSweepRefusesShortPagesAtTheBound(t *testing.T) {
 
 func TestSweepHoldsOnRateLimit(t *testing.T) {
 	for _, tc := range []struct {
-		header     func(c *clock) []string
-		name, body string
-		code       int
-		waits      []time.Duration
+		header func(c *clock) []string
+		name   string
+		body   string
+		waits  []time.Duration
+		code   int
 	}{
 		{
 			name: "primaryUntilReset", code: http.StatusForbidden, waits: []time.Duration{5 * time.Minute, 5 * time.Minute},
@@ -279,17 +287,17 @@ func TestSweepHoldsOnRateLimit(t *testing.T) {
 			for i, wait := range tc.waits {
 				f.route(listQ, reply(tc.code, cmp.Or(tc.body, `{"message":"limited"}`), tc.header(c)...))
 				before := len(f.seen(runsPath))
-				if q := s.sweep(t.Context(), false)[0]; q.Complete || len(f.seen(runsPath)) != before+1 {
+				if q := s.sweep(t.Context(), s.cfg, false)[0]; q.Complete || len(f.seen(runsPath)) != before+1 {
 					t.Fatalf("limited sweep %d = %+v, want one refused read", i, q)
 				}
 				c.advance(wait - time.Second)
-				if q := s.sweep(t.Context(), false)[0]; q.Complete || len(f.seen(runsPath)) != before+1 {
+				if q := s.sweep(t.Context(), s.cfg, false)[0]; q.Complete || len(f.seen(runsPath)) != before+1 {
 					t.Fatalf("sweep %d a second before the wait sent a read", i)
 				}
 				c.advance(time.Second)
 			}
 			f.route(listQ, etagged(runs(0)))
-			if q := s.sweep(t.Context(), false)[0]; !q.Complete {
+			if q := s.sweep(t.Context(), s.cfg, false)[0]; !q.Complete {
 				t.Fatalf("sweep after the wait = %+v, want complete", q)
 			}
 			if log.CountLevel(slog.LevelWarn, "GitHub rate limit reached") != 1 || !log.Contains("Queue reads resumed after the rate limit") {
@@ -300,10 +308,10 @@ func TestSweepHoldsOnRateLimit(t *testing.T) {
 			}
 			// The success ended the doubling: the next refusal waits the first wait.
 			f.route(listQ, reply(tc.code, cmp.Or(tc.body, `{}`), tc.header(c)...))
-			s.sweep(t.Context(), false)
+			s.sweep(t.Context(), s.cfg, false)
 			c.advance(tc.waits[0])
 			before := len(f.seen(runsPath))
-			s.sweep(t.Context(), false)
+			s.sweep(t.Context(), s.cfg, false)
 			if len(f.seen(runsPath)) == before {
 				t.Errorf("a refusal after a success held reads past %v", tc.waits[0])
 			}
@@ -316,16 +324,16 @@ func TestSweepHoldsOnRateLimit(t *testing.T) {
 func TestSweepPlainRefusalHoldsNothing(t *testing.T) {
 	f := newFake(t)
 	cfg, gh := load(t, false, "scopes: [{repo: acme/app}, {repo: other/web}]\nprofiles: {small: {}}\n")
-	r, _, _ := newTestREST(t, f, cfg, gh)
-	s := NewSweep(cfg, r)
-	log := captureSweep(t, s)
+	r, _, _ := newTestREST(t, f, gh)
+	s := NewSweep(r)
+	log := captureSweep(t, &testSweep{Sweep: s, cfg: cfg})
 	for _, l := range []string{listQ, listIP, listW} {
 		f.route(l, reply(http.StatusForbidden, `{"message":"Resource protected by organization SAML enforcement."}`))
 	}
 	web := "/repos/other/web/actions/runs"
 	f.route(web, etagged(runs(0)))
 	for range 2 {
-		qs := s.sweep(t.Context(), false)
+		qs := s.sweep(t.Context(), cfg, false)
 		if len(qs) != 2 || qs[0].Complete || !qs[1].Complete {
 			t.Fatalf("sweep = %+v, want acme/app failed and other/web read whole", qs)
 		}
@@ -346,7 +354,7 @@ func TestSweepPlainRefusalHoldsNothing(t *testing.T) {
 func TestSweepHoldsTheAccountsInstallation(t *testing.T) {
 	f := newFake(t)
 	cfg, gh := load(t, true, appLayout)
-	r, _, _ := newTestREST(t, f, cfg, gh)
+	r, _, _ := newTestREST(t, f, gh)
 	f.app(42, "/repos/acme/app/installation", "/repos/acme/web/installation")
 	f.app(77)
 	f.route(listQ, reply(http.StatusTooManyRequests, `{"message":"limited"}`, "Retry-After", "120"))
@@ -355,7 +363,7 @@ func TestSweepHoldsTheAccountsInstallation(t *testing.T) {
 			f.route("/repos/"+repo+"/actions/runs?status="+state+"&per_page=100", etagged(runs(0)))
 		}
 	}
-	qs := NewSweep(cfg, r).sweep(t.Context(), false)
+	qs := NewSweep(r).sweep(t.Context(), cfg, false)
 	if len(qs) != 3 || qs[0].Complete || qs[1].Complete || !qs[2].Complete {
 		t.Fatalf("sweep = %+v, want acme/app limited, acme/web held, solo/tool read whole", qs)
 	}
@@ -380,7 +388,7 @@ func TestSweepRefusesAJobWithoutCreated(t *testing.T) {
 			s, _, _ := newTestSweep(t, f)
 			f.route(listQ, etagged(runs(1, 3)))
 			f.route(jobsPath(3), jsonOK(`{"total_count":1,"jobs":[`+tc.job+`]}`))
-			if q := s.sweep(t.Context(), false)[0]; q.Complete != tc.complete || len(q.Jobs) != 0 {
+			if q := s.sweep(t.Context(), s.cfg, false)[0]; q.Complete != tc.complete || len(q.Jobs) != 0 {
 				t.Errorf("sweep = %+v, want complete %v with no job", q, tc.complete)
 			}
 		})
@@ -408,7 +416,7 @@ func TestSweepSpacingKeepsReserve(t *testing.T) {
 				f.route(l, etagged(runs(1, 9), h...))
 			}
 			f.route(jobsPath(9), etagged(jobsPage(9, []string{"a", "queued", "small"}), h...))
-			s.sweep(t.Context(), false)
+			s.sweep(t.Context(), s.cfg, false)
 			if got := s.spacing(); got != tc.want {
 				t.Errorf("spacing = %v, want %v", got, tc.want)
 			}
@@ -430,7 +438,7 @@ func TestSweepReadsColdStartedRunsOncePerMinute(t *testing.T) {
 		{0, false, 1}, {30 * time.Second, false, 1}, {0, true, 2}, {59 * time.Second, false, 2}, {time.Second, false, 3},
 	} {
 		c.advance(step.advance)
-		s.sweep(t.Context(), step.hot)
+		s.sweep(t.Context(), s.cfg, step.hot)
 		if got := len(f.seen(jobsPath(4))); got != step.cold {
 			t.Errorf("step %d: cold run reads = %d, want %d", i, got, step.cold)
 		}
@@ -445,13 +453,13 @@ func TestSweepHonoursPollInterval(t *testing.T) {
 	s, _, c := newTestSweep(t, f)
 	f.route(listQ, etagged(runs(1, 6), "X-Poll-Interval", "60"))
 	f.route(jobsPath(6), etagged(jobsPage(6, []string{"a", "queued", "small"})))
-	s.sweep(t.Context(), false)
+	s.sweep(t.Context(), s.cfg, false)
 	c.advance(59 * time.Second)
-	if q := s.sweep(t.Context(), false)[0]; names(q) != "a:small" || !q.Complete {
+	if q := s.sweep(t.Context(), s.cfg, false)[0]; names(q) != "a:small" || !q.Complete {
 		t.Errorf("sweep inside the interval = %+v, want the last read's jobs", q)
 	}
 	c.advance(time.Second)
-	s.sweep(t.Context(), false)
+	s.sweep(t.Context(), s.cfg, false)
 	var queued int
 	for _, call := range f.seen(runsPath) {
 		if strings.HasPrefix(call.query, "status=queued") {
@@ -470,7 +478,7 @@ func TestSweepRunSpacesSweeps(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	var sweeps int
-	s.Run(ctx, func() bool { return false }, func(time.Time, []Queue) {
+	s.Run(ctx, s.cfg, func() bool { return false }, func(time.Time, []Queue) {
 		if sweeps++; sweeps == 3 {
 			cancel()
 		}

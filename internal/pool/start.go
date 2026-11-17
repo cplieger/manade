@@ -91,7 +91,10 @@ func (g *generation) start(parent context.Context, j launch) {
 	ctx, cancel := context.WithTimeout(parent, startTimeout)
 	defer cancel()
 	b, r := j.b, j.r
-	jit, err := g.d.GitHub.JIT(ctx, b.ss, r.name)
+	g.mu.Lock()
+	scope := g.sets[b].scope.cfg
+	g.mu.Unlock()
+	jit, err := g.gh.ScaleSets.JIT(ctx, scope, b.ss, r.name)
 	if err != nil {
 		g.mu.Lock()
 		g.l.end(b, r.name, g.now())
@@ -171,7 +174,7 @@ func (g *generation) unregister(ctx context.Context, scope, name string, id int6
 	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
 	defer cancel()
-	err := g.d.GitHub.RemoveRunner(ctx, cfg, id)
+	err := g.gh.ScaleSets.RemoveRunner(ctx, cfg, id)
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	owed := g.removals(scope)

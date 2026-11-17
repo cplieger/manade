@@ -47,13 +47,13 @@ func TestEnsure(t *testing.T) {
 	b.set(3, fakeSet{name: "small", labels: []string{"small"}, group: 7, disableUpdate: true})
 	b.set(4, fakeSet{name: "big", labels: []string{"big"}, group: 1})
 	b.set(5, fakeSet{name: "wide", labels: []string{"other"}, group: 1, disableUpdate: true})
-	s, _, m, rec := newTestScaleSets(t, f, cfg, gh, &clock{t: time.Now()})
+	s, _, m, rec := newTestScaleSets(t, f, gh, &clock{t: time.Now()})
 
-	repo, err := s.Ensure(t.Context(), scope(t, cfg, "acme/app"))
+	repo, err := s.Ensure(t.Context(), cfg, scope(t, cfg, "acme/app"))
 	if err != nil {
 		t.Fatalf("Ensure(acme/app) = %v", err)
 	}
-	org, err := s.Ensure(t.Context(), scope(t, cfg, "acme"))
+	org, err := s.Ensure(t.Context(), cfg, scope(t, cfg, "acme"))
 	if err != nil {
 		t.Fatalf("Ensure(acme) = %v", err)
 	}
@@ -108,7 +108,7 @@ func TestEnsure(t *testing.T) {
 	})
 	t.Run("unknownGroupFails", func(t *testing.T) {
 		delete(b.groups, "CI")
-		if _, err := s.Ensure(t.Context(), scope(t, cfg, "acme")); err == nil {
+		if _, err := s.Ensure(t.Context(), cfg, scope(t, cfg, "acme")); err == nil {
 			t.Fatal("Ensure succeeded without the runner group")
 		}
 		if v := sample(t, m, `manade_github_errors_total{op="scaleset"}`); v != 1 {
@@ -121,14 +121,14 @@ func TestJIT(t *testing.T) {
 	f := newFake(t)
 	cfg, gh := load(t, false, setLayout)
 	newBroker(t, f, "acme/app")
-	s, _, m, _ := newTestScaleSets(t, f, cfg, gh, &clock{t: time.Now()})
+	s, _, m, _ := newTestScaleSets(t, f, gh, &clock{t: time.Now()})
 	ss := ScaleSet{Scope: "acme/app", Profile: "small", ID: 9}
-	j, err := s.JIT(t.Context(), ss, "manade-small-1")
+	j, err := s.JIT(t.Context(), scope(t, cfg, ss.Scope), ss, "manade-small-1")
 	if err != nil || j.Config != "jit-manade-small-1" || j.RunnerID != 501 {
 		t.Errorf("JIT = %+v, %v, want the config for the named runner and its registration ID", j, err)
 	}
 	f.route("/svc/_apis/runtime/runnerscalesets/9/generatejitconfig", reply(http.StatusForbidden, `{}`))
-	if _, err := s.JIT(t.Context(), ss, "manade-small-2"); err == nil {
+	if _, err := s.JIT(t.Context(), scope(t, cfg, ss.Scope), ss, "manade-small-2"); err == nil {
 		t.Error("a refused JIT request succeeded")
 	}
 	if v := sample(t, m, `manade_github_errors_total{op="jit"}`); v != 1 {
@@ -140,7 +140,7 @@ func TestRemoveRunner(t *testing.T) {
 	f := newFake(t)
 	cfg, gh := load(t, false, setLayout)
 	b := newBroker(t, f, "acme/app", "acme/old")
-	s, _, m, _ := newTestScaleSets(t, f, cfg, gh, &clock{t: time.Now()})
+	s, _, m, _ := newTestScaleSets(t, f, gh, &clock{t: time.Now()})
 	b.do(func(b *broker) {
 		b.remove[2] = http.StatusNotFound
 		b.remove[3] = http.StatusBadRequest
@@ -200,9 +200,10 @@ func TestRecheckRebuildsAfterReinstall(t *testing.T) {
 			`{"token":"ghs_scaleset`+id+`","expires_at":"`+time.Now().Add(time.Hour).UTC().Format(time.RFC3339)+`"}`))
 	}
 	f.app(42, "/repos/acme/app/installation")
+	f.route("/repos/solo/tool/installation", jsonOK(`{"id":77}`))
 	c := &clock{t: time.Now()}
 	clockSleep(t, c)
-	s, r, _, rec := newTestScaleSets(t, f, cfg, gh, c)
+	s, r, _, rec := newTestScaleSets(t, f, gh, c)
 	current := int64(42)
 	s.resolve = func(ctx context.Context, sc *config.Scope) (int64, error) {
 		if sc.Key == "acme/app" {
@@ -210,7 +211,7 @@ func TestRecheckRebuildsAfterReinstall(t *testing.T) {
 		}
 		return r.installation(ctx, sc)
 	}
-	if _, err := s.JIT(t.Context(), ScaleSet{Scope: "solo/tool", Profile: "small", ID: 5}, "r"); err != nil {
+	if _, err := s.JIT(t.Context(), scope(t, cfg, "solo/tool"), ScaleSet{Scope: "solo/tool", Profile: "small", ID: 5}, "r"); err != nil {
 		t.Fatalf("JIT(solo/tool) = %v", err)
 	}
 
@@ -228,7 +229,7 @@ func TestRecheckRebuildsAfterReinstall(t *testing.T) {
 			cancel()
 		}
 	}
-	s.Listen(ctx, ScaleSet{Scope: "acme/app", Profile: "small", ID: 1}, h)
+	s.Listen(ctx, scope(t, cfg, "acme/app"), ScaleSet{Scope: "acme/app", Profile: "small", ID: 1}, "manade", h)
 
 	t.Run("mintsWithTheAppJWT", func(t *testing.T) {
 		calls := f.seen("/api/v3/app/installations/42/access_tokens")
@@ -260,8 +261,8 @@ func TestRecheckRebuildsAfterReinstall(t *testing.T) {
 		if n := len(f.seen("/api/v3/app/installations/77/access_tokens")); n != 1 {
 			t.Errorf("installation 77 mints = %d, want the one before Recheck", n)
 		}
-		if n := len(f.seen("/repos/solo/tool/installation")); n != 0 {
-			t.Errorf("solo/tool lookups = %d, want none: its installation_id is configured", n)
+		if n := len(f.seen("/repos/solo/tool/installation")); n != 1 {
+			t.Errorf("solo/tool lookups = %d, want the one proof of its configured installation_id and none at Recheck", n)
 		}
 	})
 }

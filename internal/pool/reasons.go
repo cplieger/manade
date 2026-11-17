@@ -1,6 +1,7 @@
 package pool
 
 import (
+	"errors"
 	"slices"
 	"time"
 
@@ -51,15 +52,17 @@ const (
 // state (hostapi.SectionState) or a profile's readiness reason
 // (hostapi.Reason) is passed through as its own text.
 const (
-	DetailEnsureFailed       = "ensure_failed"
-	DetailHeldByOtherPool    = "held_by_other_pool"
-	DetailPublic             = "public"
-	DetailVisibilityUnproved = "visibility_unproved"
-	DetailQueueReadPartial   = "queue_read_partial"
-	DetailPoolStopping       = "pool_stopping"
-	DetailAdopting           = "adopting"
-	DetailCapacityOverLimits = "capacity_over_limits"
-	DetailProfileRefused     = "profile_refused"
+	DetailEnsureFailed         = "ensure_failed"
+	DetailNotConnected         = "github_not_connected"
+	DetailEnterpriseNeedsToken = "enterprise_needs_token"
+	DetailHeldByOtherPool      = "held_by_other_pool"
+	DetailPublic               = "public"
+	DetailVisibilityUnproved   = "visibility_unproved"
+	DetailQueueReadPartial     = "queue_read_partial"
+	DetailPoolStopping         = "pool_stopping"
+	DetailAdopting             = "adopting"
+	DetailCapacityOverLimits   = "capacity_over_limits"
+	DetailProfileRefused       = "profile_refused"
 )
 
 // Waiting is one job waiting for a runner: an assignment GitHub made with
@@ -256,6 +259,8 @@ func (g *generation) unservedDetail(b *book) string {
 	switch {
 	case g.stopping:
 		return DetailPoolStopping
+	case !g.credentialed:
+		return DetailNotConnected
 	case s.scope.public:
 		return DetailPublic
 	case s.held:
@@ -280,10 +285,23 @@ func (g *generation) unensured() []Waiting {
 			for _, job := range sc.jobsOf(pr.Name) {
 				out = append(out, Waiting{
 					Scope: sc.cfg.Key, Profile: pr.Name, Created: job.Created, Name: job.Name, RunID: job.RunID,
-					Reason: JobScopeNotServed, Detail: DetailEnsureFailed,
+					Reason: JobScopeNotServed, Detail: ensureDetail(sc.ensureErr),
 				})
 			}
 		}
 	}
 	return out
+}
+
+// ensureDetail names why a scope's scale sets were not ensured: no
+// credential, a credential that cannot serve the scope's kind, or a
+// failed call.
+func ensureDetail(err error) string {
+	switch {
+	case errors.Is(err, errNoCredential):
+		return DetailNotConnected
+	case errors.Is(err, github.ErrEnterpriseNeedsToken):
+		return DetailEnterpriseNeedsToken
+	}
+	return DetailEnsureFailed
 }

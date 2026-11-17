@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"slices"
 	"sync"
@@ -38,56 +39,70 @@ type JIT struct {
 // a job.
 var ErrRunnerBusy = errors.New("github: the runner is running a job")
 
-// ScaleSets holds one actions/scaleset client per scope for Ensure, JIT and
-// RemoveRunner, built on first use for the scope's installation; each Listen
-// builds its own. Its methods are safe for concurrent use. Ensure, JIT and
-// RemoveRunner keep scaleset's retries, which wait out GitHub's Retry-After
-// up to 4 times; a wait that would pass ctx's deadline ends the call with
-// GitHub's refusal instead, so give each call one.
+// ScaleSets is one credential's scale set side: an actions/scaleset client
+// per scope for Ensure, JIT and RemoveRunner, made on the scope's first use
+// for its installation; each Listen builds its own. Every call names its
+// scope, so it serves every settings revision under that credential. Its
+// methods are safe for concurrent use. Ensure, JIT and RemoveRunner keep
+// scaleset's retries, which wait out GitHub's Retry-After up to 4 times; a
+// wait that would pass ctx's deadline ends the call with GitHub's refusal
+// instead, so give each call one.
 type ScaleSets struct {
 	rest *REST
 	key  *creds.AppKey
 	hc   *http.Client
 	now  func() time.Time
-	// resolve is REST.Installation, a test seam: a reinstall shows there
+	// resolve is REST.installation, a test seam: a reinstall shows there
 	// only after forgeapi's five-minute re-probe.
 	resolve func(context.Context, *config.Scope) (int64, error)
 	byKey   map[string]*scopeClient
-	cfg     *config.Config
 	gh      *config.GitHub
 	info    scaleset.SystemInfo
 	web     string
+	mu      sync.Mutex
 }
 
 // scopeClient is one scope's client. gen counts the clients built, so a
-// session opened on an older installation knows to reopen.
+// session opened on an older installation knows to reopen. scope is the
+// scope's settings as the last call named them.
 type scopeClient struct {
 	c            *scaleset.Client
-	scope        *config.Scope
+	scope        config.Scope
 	installation int64
 	gen          int
 	mu           sync.Mutex
 }
 
-// NewScaleSets builds the scale set side for cfg's scopes under gh's
-// credential over tr; version is manade's, sent in its user agent. It sends
-// nothing.
-func NewScaleSets(cfg *config.Config, gh *config.GitHub, tr http.RoundTripper, r *REST, version string) *ScaleSets {
-	return newScaleSets(cfg, gh, tr, r, version, "https://github.com")
+// NewScaleSets builds the scale set side under gh's credential over tr;
+// version is manade's, sent in its user agent. It sends nothing.
+func NewScaleSets(gh *config.GitHub, tr http.RoundTripper, r *REST, version string) *ScaleSets {
+	return newScaleSets(gh, tr, r, version, "https://github.com")
 }
 
-func newScaleSets(cfg *config.Config, gh *config.GitHub, tr http.RoundTripper, r *REST, version, web string) *ScaleSets {
-	s := &ScaleSets{
-		rest: r, key: gh.AppKey, now: time.Now, resolve: r.installation, byKey: map[string]*scopeClient{}, cfg: cfg, gh: gh, web: web,
+func newScaleSets(gh *config.GitHub, tr http.RoundTripper, r *REST, version, web string) *ScaleSets {
+	return &ScaleSets{
+		rest: r, key: gh.AppKey, now: time.Now, resolve: r.installation, byKey: map[string]*scopeClient{}, gh: gh, web: web,
 		// scaleset keeps its own retries above the client, and raises the
 		// timeout for its long poll.
 		hc:   &http.Client{Transport: tr, Timeout: 3 * requestTimeout},
 		info: scaleset.SystemInfo{System: "manade", Version: version, Subsystem: "pool"},
 	}
-	for i := range cfg.Scopes {
-		s.byKey[cfg.Scopes[i].Key] = &scopeClient{scope: &cfg.Scopes[i]}
+}
+
+// scope answers the client of sc's key, taking sc's settings: a changed
+// installation_id is resolved at the next call and rebuilds the client.
+func (s *ScaleSets) scope(sc *config.Scope) *scopeClient {
+	s.mu.Lock()
+	c := s.byKey[sc.Key]
+	if c == nil {
+		c = &scopeClient{}
+		s.byKey[sc.Key] = c
 	}
-	return s
+	s.mu.Unlock()
+	c.mu.Lock()
+	c.scope = *sc
+	c.mu.Unlock()
+	return c
 }
 
 func (sc *scopeClient) get() (c *scaleset.Client, installation int64, gen int) {
@@ -96,43 +111,51 @@ func (sc *scopeClient) get() (c *scaleset.Client, installation int64, gen int) {
 	return sc.c, sc.installation, sc.gen
 }
 
+func (sc *scopeClient) settings() config.Scope {
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	return sc.scope
+}
+
 // client answers sc's client, resolving the scope's installation the first
 // time.
 func (s *ScaleSets) client(ctx context.Context, sc *scopeClient) (*scaleset.Client, error) {
 	if c, _, _ := sc.get(); c != nil {
 		return c, nil
 	}
-	id, err := s.resolve(ctx, sc.scope)
+	scope := sc.settings()
+	id, err := s.resolve(ctx, &scope)
 	if err != nil {
 		return nil, err
 	}
-	return s.install(sc, id)
+	return s.install(sc, &scope, id)
 }
 
 // install builds sc's client for installation id unless its current one
 // already serves it.
-func (s *ScaleSets) install(sc *scopeClient, id int64) (*scaleset.Client, error) {
+func (s *ScaleSets) install(sc *scopeClient, scope *config.Scope, id int64) (*scaleset.Client, error) {
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
 	if sc.c != nil && sc.installation == id {
 		return sc.c, nil
 	}
-	c, err := s.build(sc.scope, id)
+	c, err := s.build(scope.Key, id)
 	if err != nil {
 		return nil, err
 	}
 	if sc.c != nil {
 		s.rest.log.Info("The App installation changed, so the scope's sessions reopen on the new one",
-			"scope", sc.scope.Key, "from", sc.installation, "to", id)
+			"scope", scope.Key, "from", sc.installation, "to", id)
 	}
 	sc.c, sc.installation = c, id
 	sc.gen++
 	return c, nil
 }
 
-// build makes a client for scope on installation id. It sends nothing.
-func (s *ScaleSets) build(scope *config.Scope, id int64) (*scaleset.Client, error) {
-	u := s.web + "/" + scope.Key
+// build makes a client for the scope with key on installation id. It
+// sends nothing.
+func (s *ScaleSets) build(key string, id int64) (*scaleset.Client, error) {
+	u := s.web + "/" + key
 	opts := []scaleset.HTTPOption{scaleset.WithHTTPClient(s.hc), scaleset.WithLogger(s.rest.log)}
 	var c *scaleset.Client
 	var err error
@@ -146,7 +169,7 @@ func (s *ScaleSets) build(scope *config.Scope, id int64) (*scaleset.Client, erro
 		}, scaleset.JWTProviderFunc(s.key.JWT), opts...)
 	}
 	if err != nil {
-		return nil, failed("scale set client for "+scope.Key, err)
+		return nil, failed("scale set client for "+key, err)
 	}
 	return c, nil
 }
@@ -156,32 +179,36 @@ func (s *ScaleSets) build(scope *config.Scope, id int64) (*scaleset.Client, erro
 // sessions reopen on the new installation from their next poll. A
 // configured installation_id is kept, and a PAT has no installation.
 func (s *ScaleSets) Recheck(ctx context.Context) error {
+	s.mu.Lock()
+	all := slices.Collect(maps.Values(s.byKey))
+	s.mu.Unlock()
 	var errs []error
-	for i := range s.cfg.Scopes {
-		sc := s.byKey[s.cfg.Scopes[i].Key]
+	for _, sc := range all {
 		if c, _, _ := sc.get(); c == nil {
 			continue
 		}
-		id, err := s.resolve(ctx, sc.scope)
+		scope := sc.settings()
+		id, err := s.resolve(ctx, &scope)
 		if err == nil {
-			_, err = s.install(sc, id)
+			_, err = s.install(sc, &scope, id)
 		}
 		errs = append(errs, err)
 	}
 	return errors.Join(errs...)
 }
 
-// Ensure finds or creates the scale set of each profile allowed in scope,
-// named for the profile with that name as its only label and runner updates
-// off, and updates one that differs. It never deletes one: the scale sets in
-// the scope's runner group the config does not name are logged and counted
-// as orphans. A failed call is counted as a scale set error.
-func (s *ScaleSets) Ensure(ctx context.Context, scope *config.Scope) ([]ScaleSet, error) {
-	c, err := s.client(ctx, s.byKey[scope.Key])
+// Ensure finds or creates the scale set of each profile of cfg that serves
+// scope, named for the profile with that name as its only label and runner
+// updates off, and updates one that differs. It never deletes one: the
+// scale sets in the scope's runner group cfg does not name are logged and
+// counted as orphans. A failed call is counted as a scale set error; an
+// enterprise scope under an App answers ErrEnterpriseNeedsToken.
+func (s *ScaleSets) Ensure(ctx context.Context, cfg *config.Config, scope *config.Scope) ([]ScaleSet, error) {
+	c, err := s.client(ctx, s.scope(scope))
 	if err != nil {
 		return nil, err
 	}
-	out, err := s.ensure(ctx, c, scope)
+	out, err := s.ensure(ctx, c, cfg, scope)
 	if err != nil {
 		s.rest.failure(ctx, OpScaleSet)
 		return nil, failed("scale sets of "+scope.Key, err)
@@ -189,7 +216,7 @@ func (s *ScaleSets) Ensure(ctx context.Context, scope *config.Scope) ([]ScaleSet
 	return out, nil
 }
 
-func (s *ScaleSets) ensure(ctx context.Context, c *scaleset.Client, scope *config.Scope) ([]ScaleSet, error) {
+func (s *ScaleSets) ensure(ctx context.Context, c *scaleset.Client, cfg *config.Config, scope *config.Scope) ([]ScaleSet, error) {
 	group := defaultGroupID
 	if scope.Kind != config.ScopeRepo {
 		g, err := c.GetRunnerGroupByName(ctx, scope.RunnerGroup)
@@ -203,8 +230,8 @@ func (s *ScaleSets) ensure(ctx context.Context, c *scaleset.Client, scope *confi
 		return nil, err
 	}
 	var out []ScaleSet
-	for i := range s.cfg.Profiles {
-		p := &s.cfg.Profiles[i]
+	for i := range cfg.Profiles {
+		p := &cfg.Profiles[i]
 		if !p.Serves(scope.Key) {
 			continue
 		}
@@ -237,9 +264,10 @@ func (s *ScaleSets) ensure(ctx context.Context, c *scaleset.Client, scope *confi
 	return out, nil
 }
 
-// JIT registers runner name in ss. A failure is counted as a jit error.
-func (s *ScaleSets) JIT(ctx context.Context, ss ScaleSet, name string) (JIT, error) {
-	c, err := s.client(ctx, s.byKey[ss.Scope])
+// JIT registers runner name in ss, a scale set of scope. A failure is
+// counted as a jit error.
+func (s *ScaleSets) JIT(ctx context.Context, scope *config.Scope, ss ScaleSet, name string) (JIT, error) {
+	c, err := s.client(ctx, s.scope(scope))
 	if err != nil {
 		return JIT{}, err
 	}
@@ -258,12 +286,7 @@ func (s *ScaleSets) JIT(ctx context.Context, ss ScaleSet, name string) (JIT, err
 // as removed. It answers ErrRunnerBusy while the runner holds a job, and any
 // other failure, counted as a scale set error, keeps the container.
 func (s *ScaleSets) RemoveRunner(ctx context.Context, scope *config.Scope, id int64) error {
-	sc := s.byKey[scope.Key]
-	if sc == nil {
-		// A scope the settings dropped, whose runner still deregisters.
-		sc = &scopeClient{scope: scope}
-	}
-	c, err := s.client(ctx, sc)
+	c, err := s.client(ctx, s.scope(scope))
 	if err != nil {
 		return err
 	}

@@ -626,7 +626,7 @@ func (g *generation) closeRecord(ctx context.Context, b *book, r *runner, reason
 // says holds a job is busy, and any other failure keeps both for the next
 // pass.
 func (g *generation) retire(ctx context.Context, a *action) {
-	switch err := g.d.GitHub.RemoveRunner(ctx, g.sets[a.b].scope.cfg, a.r.id); {
+	switch err := g.gh.ScaleSets.RemoveRunner(ctx, g.sets[a.b].scope.cfg, a.r.id); {
 	case errors.Is(err, github.ErrRunnerBusy):
 		g.mu.Lock()
 		a.r.state, a.r.closing = busy, ""

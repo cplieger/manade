@@ -46,7 +46,7 @@ func mints(t *testing.T, f *fakeGitHub, path string) []tokenRequest {
 func TestAppGrantPerScope(t *testing.T) {
 	f := newFake(t)
 	cfg, gh := load(t, true, appLayout)
-	r, _, _ := newTestREST(t, f, cfg, gh)
+	r, _, _ := newTestREST(t, f, gh)
 	f.app(42, "/repos/acme/app/installation", "/repos/acme/web/installation", "/orgs/acme/installation")
 	f.route("/repos/acme/web", jsonOK(`{"private":true}`))
 	f.route("/repos/acme/app", jsonOK(`{"private":true}`))
@@ -79,7 +79,7 @@ func TestAppGrantPerScope(t *testing.T) {
 func TestAppGoneRepositoryStopsOnlyItsScope(t *testing.T) {
 	f := newFake(t)
 	cfg, gh := load(t, true, appLayout)
-	r, _, _ := newTestREST(t, f, cfg, gh)
+	r, _, _ := newTestREST(t, f, gh)
 	f.app(42, "/repos/acme/app/installation", "/repos/acme/web/installation")
 	minted := f.routes[mint42]
 	f.route(mint42, func(w http.ResponseWriter, req *http.Request) {
@@ -104,32 +104,44 @@ func TestInstallation(t *testing.T) {
 	t.Run("resolvedPerScope", func(t *testing.T) {
 		f := newFake(t)
 		cfg, gh := load(t, true, appLayout)
-		r, _, _ := newTestREST(t, f, cfg, gh)
+		r, _, _ := newTestREST(t, f, gh)
 		f.app(42, "/repos/acme/app/installation", "/repos/acme/web/installation", "/orgs/acme/installation")
+		f.route("/repos/solo/tool/installation", jsonOK(`{"id":77}`))
 		for key, want := range map[string]int64{"acme/web": 42, "acme": 42, "solo/tool": 77} {
 			if id, err := r.installation(t.Context(), scope(t, cfg, key)); id != want || err != nil {
 				t.Errorf("Installation(%s) = %d, %v; want %d", key, id, err, want)
 			}
-		}
-		if len(f.seen("/repos/solo/tool/installation")) != 0 {
-			t.Error("a configured installation_id was looked up")
 		}
 	})
 	t.Run("configuredIDChecked", func(t *testing.T) {
 		for owner, fails := range map[int64]bool{77: false, 78: true} {
 			f := newFake(t)
 			cfg, gh := load(t, true, appLayout)
-			r, _, _ := newTestREST(t, f, cfg, gh)
+			r, _, _ := newTestREST(t, f, gh)
 			f.route("/repos/solo/tool/installation", jsonOK(fmt.Sprintf(`{"id":%d}`, owner)))
-			if err := r.CheckInstallations(t.Context()); (err != nil) != fails {
-				t.Errorf("CheckInstallations with the scope on %d = %v, want error %v", owner, err, fails)
+			if _, err := r.installation(t.Context(), scope(t, cfg, "solo/tool")); (err != nil) != fails {
+				t.Errorf("installation with the scope on %d = %v, want error %v", owner, err, fails)
 			}
+		}
+	})
+	t.Run("configuredIDProvedOnce", func(t *testing.T) {
+		f := newFake(t)
+		cfg, gh := load(t, true, appLayout)
+		r, _, _ := newTestREST(t, f, gh)
+		f.route("/repos/solo/tool/installation", jsonOK(`{"id":77}`))
+		for range 2 {
+			if id, err := r.installation(t.Context(), scope(t, cfg, "solo/tool")); id != 77 || err != nil {
+				t.Fatalf("installation(solo/tool) = %d, %v; want 77", id, err)
+			}
+		}
+		if n := len(f.seen("/repos/solo/tool/installation")); n != 1 {
+			t.Errorf("lookups = %d, want the configured ID proved once", n)
 		}
 	})
 	t.Run("lookupFails", func(t *testing.T) {
 		f := newFake(t)
 		cfg, gh := load(t, true, appLayout)
-		r, m, _ := newTestREST(t, f, cfg, gh)
+		r, m, _ := newTestREST(t, f, gh)
 		if _, err := r.installation(t.Context(), scope(t, cfg, "acme/app")); err == nil {
 			t.Error("Installation answered with no installation on GitHub")
 		}
@@ -140,8 +152,8 @@ func TestInstallation(t *testing.T) {
 	t.Run("patSendsNothing", func(t *testing.T) {
 		f := newFake(t)
 		cfg, gh := load(t, false, patLayout)
-		r, _, _ := newTestREST(t, f, cfg, gh)
-		if id, err := r.installation(t.Context(), scope(t, cfg, "acme/app")); id != 0 || err != nil || r.CheckInstallations(t.Context()) != nil {
+		r, _, _ := newTestREST(t, f, gh)
+		if id, err := r.installation(t.Context(), scope(t, cfg, "acme/app")); id != 0 || err != nil {
 			t.Errorf("Installation under a PAT = %d, %v; want 0", id, err)
 		}
 		if len(f.calls) != 0 {
@@ -153,14 +165,14 @@ func TestInstallation(t *testing.T) {
 func TestRefusedMintFundsNothing(t *testing.T) {
 	f := newFake(t)
 	cfg, gh := load(t, true, appLayout)
-	r, _, _ := newTestREST(t, f, cfg, gh)
+	r, _, _ := newTestREST(t, f, gh)
 	f.route("/repos/acme/app/installation", jsonOK(`{"id":42}`))
 	f.route(mint42, reply(http.StatusUnprocessableEntity, `{"message":"permission not granted"}`))
 	if ok, err := r.Private(t.Context(), scope(t, cfg, "acme/app")); ok || err == nil {
 		t.Errorf("Private = %v, %v; want a refused mint to prove nothing", ok, err)
 	}
-	s := NewSweep(cfg, r)
-	for _, q := range s.sweep(t.Context(), true) {
+	s := NewSweep(r)
+	for _, q := range s.sweep(t.Context(), cfg, true) {
 		if q.Complete {
 			t.Errorf("sweep read %s whole without a token", q.Scope)
 		}

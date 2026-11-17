@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/actions/scaleset"
+	"github.com/cplieger/manade/internal/config"
 )
 
 // Session timing, from what github.com was seen to do: a claim whose holder
@@ -102,28 +103,31 @@ const (
 // fail, zero while they answer. c is the loop's own client, built for the
 // scope's client generation gen.
 type listen struct {
-	last    time.Time
 	failing time.Time
-	s       *ScaleSets
-	log     *slog.Logger
+	last    time.Time
 	h       Handler
-	sc      *scopeClient
 	c       *scaleset.Client
+	log     *slog.Logger
+	sc      *scopeClient
+	s       *ScaleSets
 	sess    *scaleset.MessageSessionClient
+	owner   string
 	ss      ScaleSet
 	gen     int
 	id      int
 	prev    ended
 }
 
-// Listen serves ss's session until ctx ends, then closes it, and returns
-// once the close is done. Every failure is counted, logged and retried.
+// Listen serves the session of ss, a scale set of scope, under owner (the
+// pool name, which GitHub names the holder by) until ctx ends, then closes
+// it, and returns once the close is done. Every failure is counted, logged
+// and retried.
 // Before each poll, when more than 60 seconds have passed since the last
 // answered poll began, or the scope's client was rebuilt (Recheck), it
 // replaces the session: a holder whose claim lapsed still receives every
 // message beside its successor.
-func (s *ScaleSets) Listen(ctx context.Context, ss ScaleSet, h Handler) {
-	l := &listen{s: s, h: h, sc: s.byKey[ss.Scope], ss: ss, log: s.rest.log.With("scope", ss.Scope, "profile", ss.Profile)}
+func (s *ScaleSets) Listen(ctx context.Context, scope *config.Scope, ss ScaleSet, owner string, h Handler) {
+	l := &listen{s: s, h: h, sc: s.scope(scope), ss: ss, owner: owner, log: s.rest.log.With("scope", ss.Scope, "profile", ss.Profile)}
 	defer l.close(ctx)
 	for ctx.Err() == nil {
 		if l.sess == nil && !l.open(ctx) {
@@ -189,13 +193,13 @@ func (l *listen) create(ctx context.Context) (*scaleset.MessageSessionClient, er
 		return nil, err
 	}
 	if _, id, gen := l.sc.get(); l.c == nil || gen != l.gen {
-		c, err := l.s.build(l.sc.scope, id)
+		c, err := l.s.build(l.ss.Scope, id)
 		if err != nil {
 			return nil, err
 		}
 		l.c, l.gen = c, gen
 	}
-	sess, err := l.c.MessageSessionClient(ctx, l.ss.ID, l.s.cfg.PoolName)
+	sess, err := l.c.MessageSessionClient(ctx, l.ss.ID, l.owner)
 	if err != nil {
 		l.s.rest.failure(ctx, OpSession)
 	}

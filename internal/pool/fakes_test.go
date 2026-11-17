@@ -52,32 +52,27 @@ var errLink = errors.New("fake: the link is down")
 // fakeHost is a host's API over an in-memory record of its runners, each
 // entry standing for its record and its container alike.
 type fakeHost struct {
-	cfg  *config.Config
-	runs map[string]*hostapi.Runner
-	// probe answers each POST /v1/probe; nil proves the host.
-	probe func(ctx context.Context) (hostapi.ProbeReport, error)
-	// notReady holds, by profile name, a readiness other than ready, and
-	// reasons the reason the host gives for it.
-	notReady map[string]bool
-	reasons  map[string]hostapi.Reason
-	name     string
-	// section is the hash of the section the host runs, in state, "" for
-	// running it.
-	section string
-	state   hostapi.SectionState
-	deleted []string
-	inst    int
-	// hold, while set, holds every DELETE until it closes; held takes a
-	// value as each DELETE begins to wait.
-	hold, held chan struct{}
-	// timeouts is how many POSTs the host records and answers with a
-	// timeout; posts counts every POST. lost is how many DELETEs remove
-	// the runner and then lose their answer.
-	timeouts, posts, probes, lost int
-	mu                            sync.Mutex
-	// down is a connected host whose calls fail; disconnected, a host
-	// with no open connection.
-	down, disconnected, refuse, failStart bool
+	hold         chan struct{}
+	runs         map[string]*hostapi.Runner
+	probe        func(ctx context.Context) (hostapi.ProbeReport, error)
+	notReady     map[string]bool
+	reasons      map[string]hostapi.Reason
+	cfg          *config.Config
+	held         chan struct{}
+	name         string
+	section      string
+	state        hostapi.SectionState
+	deleted      []string
+	probes       int
+	timeouts     int
+	posts        int
+	inst         int
+	lost         int
+	mu           sync.Mutex
+	down         bool
+	disconnected bool
+	refuse       bool
+	failStart    bool
 }
 
 func newFakeHost(cfg *config.Config, name, section string) *fakeHost {
@@ -276,7 +271,7 @@ func newFakeGitHub(cfg *config.Config) *fakeGitHub {
 	return &fakeGitHub{cfg: cfg, regs: map[int64]bool{}, busy: map[int64]bool{}, public: map[string]bool{}}
 }
 
-func (g *fakeGitHub) Ensure(_ context.Context, sc *config.Scope) ([]github.ScaleSet, error) {
+func (g *fakeGitHub) Ensure(_ context.Context, _ *config.Config, sc *config.Scope) ([]github.ScaleSet, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.ensureFail {
@@ -291,9 +286,11 @@ func (g *fakeGitHub) Ensure(_ context.Context, sc *config.Scope) ([]github.Scale
 	return out, nil
 }
 
-func (*fakeGitHub) Listen(ctx context.Context, _ github.ScaleSet, _ github.Handler) { <-ctx.Done() }
+func (*fakeGitHub) Listen(ctx context.Context, _ *config.Scope, _ github.ScaleSet, _ string, _ github.Handler) {
+	<-ctx.Done()
+}
 
-func (g *fakeGitHub) JIT(context.Context, github.ScaleSet, string) (github.JIT, error) {
+func (g *fakeGitHub) JIT(context.Context, *config.Scope, github.ScaleSet, string) (github.JIT, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.jitFail {
@@ -477,12 +474,14 @@ func (f *fakeRecords) RecordScaleSets(_ context.Context, sets []github.ScaleSet,
 // moves, with a log the test can read. Its generations are installed in
 // line and run no loops, so each step runs where the test calls it.
 type rig struct {
-	t       testing.TB
-	now     time.Time
-	cfg     *config.Config
-	reg     *Registry
-	p       *generation
-	gh      *fakeGitHub
+	t   testing.TB
+	now time.Time
+	cfg *config.Config
+	reg *Registry
+	p   *generation
+	gh  *fakeGitHub
+	// side is the credential's GitHub side every revision names.
+	side    *GitHub
 	m       *fakeMetrics
 	log     *logBuf
 	links   *fakeLinks
@@ -498,7 +497,8 @@ func newRig(t testing.TB, cfg *config.Config) *rig { return buildRig(t, cfg, &lo
 func quietRig(t testing.TB, cfg *config.Config) *rig { return buildRig(t, cfg, &logBuf{discard: true}) }
 
 func buildRig(t testing.TB, cfg *config.Config, log *logBuf) *rig {
-	r := &rig{t: t, now: epoch, cfg: cfg, gh: newFakeGitHub(cfg), log: log, rev: 1, settler: &fakeSettler{}, records: &fakeRecords{sets: map[setKey]github.ScaleSet{}}}
+	gh := newFakeGitHub(cfg)
+	r := &rig{t: t, now: epoch, cfg: cfg, gh: gh, side: sideOf(gh), log: log, rev: 1, settler: &fakeSettler{}, records: &fakeRecords{sets: map[setKey]github.ScaleSet{}}}
 	for i := range cfg.Hosts {
 		r.hosts = append(r.hosts, newFakeHost(cfg, cfg.Hosts[i].Name, sectionHash(r.rev)))
 	}
@@ -507,12 +507,15 @@ func buildRig(t testing.TB, cfg *config.Config, log *logBuf) *rig {
 	return r
 }
 
+// sideOf is g as one credential's GitHub side.
+func sideOf(g *fakeGitHub) *GitHub { return &GitHub{ScaleSets: g, REST: g, Sweep: g} }
+
 // sectionHash is the hash of the section revision rev delivers.
 func sectionHash(rev uint64) string { return fmt.Sprintf("section-%d", rev) }
 
 // settings is the rig's current revision as the pool reads it.
 func (r *rig) settings() *Settings {
-	s := &Settings{Config: r.cfg, Revision: r.rev, Sections: map[string]string{}}
+	s := &Settings{Config: r.cfg, GitHub: r.side, Revision: r.rev, Sections: map[string]string{}}
 	for i := range r.cfg.Hosts {
 		s.Sections[r.cfg.Hosts[i].Name] = sectionHash(r.rev)
 	}
@@ -525,7 +528,7 @@ func (r *rig) settings() *Settings {
 func (r *rig) restart() {
 	r.m = newFakeMetrics()
 	r.reg = NewRegistry(r.settings(), &Deps{
-		GitHub: r.gh, REST: r.gh, Sweep: r.gh, Links: r.links, Metrics: r.m, Settle: r.settler, Records: r.records,
+		Links: r.links, Metrics: r.m, Settle: r.settler, Records: r.records,
 		Log: slog.New(slog.NewTextHandler(r.log, &slog.HandlerOptions{Level: slog.LevelDebug})),
 	})
 	r.reg.now = func() time.Time { return r.now }

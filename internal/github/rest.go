@@ -64,8 +64,10 @@ func NewTransport(proxy *url.URL) (*http.Transport, error) {
 	return t, nil
 }
 
-// REST holds each scope's token source and sends the REST reads. It is safe
-// for concurrent use; the queue sweep is its cache's only reader.
+// REST is one credential's REST side: it makes each scope's token source
+// on first use and sends the REST reads, every call naming its scope, so
+// it serves every settings revision under that credential. It is safe for
+// concurrent use; the queue sweep is its cache's only reader.
 type REST struct {
 	auth   *auth
 	plain  *http.Client
@@ -76,12 +78,11 @@ type REST struct {
 	api    string
 }
 
-// NewREST builds the REST side for cfg's scopes under gh's credential over
-// tr. It sends nothing: installations resolve on first use, or at
-// CheckInstallations.
-func NewREST(cfg *config.Config, gh *config.GitHub, tr http.RoundTripper, rec Recorder, log *slog.Logger) (*REST, error) {
+// NewREST builds the REST side under gh's credential over tr. It sends
+// nothing: installations resolve on first use.
+func NewREST(gh *config.GitHub, tr http.RoundTripper, rec Recorder, log *slog.Logger) *REST {
 	conn, opts := connection(gh, log)
-	return newREST(cfg, gh, tr, &conn, apiBase, rec, log, opts...)
+	return newREST(gh, tr, &conn, apiBase, rec, log, opts...)
 }
 
 // connection is forgeapi's github.com connection under gh. forgeapi refuses
@@ -99,11 +100,7 @@ func connection(gh *config.GitHub, log *slog.Logger) (forgeapi.Connection, []for
 	return conn, opts
 }
 
-func newREST(cfg *config.Config, gh *config.GitHub, tr http.RoundTripper, conn *forgeapi.Connection, api string, rec Recorder, log *slog.Logger, opts ...forgeapi.Option) (*REST, error) {
-	a, err := newAuth(cfg, gh, conn, opts)
-	if err != nil {
-		return nil, err
-	}
+func newREST(gh *config.GitHub, tr http.RoundTripper, conn *forgeapi.Connection, api string, rec Recorder, log *slog.Logger, opts ...forgeapi.Option) *REST {
 	// 401, 403 and 429 are never retried here: a 401 belongs to the token
 	// source, and the queue's rate-limit waits are longer than any request.
 	retry := httpclient.NewRetryRoundTripper(tr, httpclient.TransportConfig{CheckRetry: func(_ context.Context, resp *http.Response, err error) (bool, error) {
@@ -116,7 +113,7 @@ func newREST(cfg *config.Config, gh *config.GitHub, tr http.RoundTripper, conn *
 	client := func(rt http.RoundTripper) *http.Client {
 		return &http.Client{Transport: rt, Timeout: 3 * requestTimeout, CheckRedirect: httpclient.RefuseAllRedirects}
 	}
-	return &REST{auth: a, plain: client(retry), cached: client(cache), cache: cache, rec: rec, log: log, api: api}, nil
+	return &REST{auth: newAuth(gh, conn, opts), plain: client(retry), cached: client(cache), cache: cache, rec: rec, log: log, api: api}
 }
 
 // discarder is a token source told of a 401 (forgeapi.CredentialSource's
@@ -186,7 +183,11 @@ func (*REST) send(ctx context.Context, c *http.Client, token, u string) (answer,
 
 // getJSON reads u on the plain client into v; found is false on a 404.
 func (r *REST) getJSON(ctx context.Context, s *config.Scope, u string, v any) (h http.Header, found bool, err error) {
-	a, err := r.get(ctx, r.plain, r.auth.source(s), u)
+	src, err := r.auth.source(s)
+	if err != nil {
+		return nil, false, err
+	}
+	a, err := r.get(ctx, r.plain, src, u)
 	if err != nil {
 		return nil, false, err
 	}

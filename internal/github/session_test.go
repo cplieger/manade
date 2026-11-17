@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/cplieger/go/slogx/capture"
+	"github.com/cplieger/manade/internal/config"
 )
 
 const sessionLayout = `scopes:
@@ -26,6 +27,7 @@ var appSmallSet = ScaleSet{Scope: "acme/app", Profile: "small", ID: 1}
 // handler's stop runs.
 type listenFixture struct {
 	b     *broker
+	cfg   *config.Config
 	s     *ScaleSets
 	m     *recorder
 	rec   *capture.Recorder
@@ -42,8 +44,8 @@ func newListen(t *testing.T) *listenFixture {
 	b.set(1, fakeSet{name: "small", labels: []string{"small"}, group: 1, disableUpdate: true})
 	c := &clock{t: time.Date(2026, 11, 10, 8, 0, 0, 0, time.UTC)}
 	waits := clockSleep(t, c)
-	s, _, m, rec := newTestScaleSets(t, f, cfg, gh, c)
-	return &listenFixture{b: b, s: s, m: m, rec: rec, c: c, waits: waits, h: &handler{capacity: 1}}
+	s, _, m, rec := newTestScaleSets(t, f, gh, c)
+	return &listenFixture{b: b, cfg: cfg, s: s, m: m, rec: rec, c: c, waits: waits, h: &handler{capacity: 1}}
 }
 
 // run serves the scale set until the n-th answered poll, where at runs
@@ -63,7 +65,7 @@ func (lf *listenFixture) run(t *testing.T, n int, at func(n int)) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		lf.s.Listen(ctx, appSmallSet, lf.h)
+		lf.s.Listen(ctx, scope(t, lf.cfg, "acme/app"), appSmallSet, "manade", lf.h)
 	}()
 	select {
 	case <-done:
@@ -572,7 +574,7 @@ func TestListenCloseOutlastsNoJIT(t *testing.T) {
 		}
 		armed.Store(true)
 		go func() {
-			_, err := lf.s.JIT(t.Context(), appSmallSet, "manade-small-1")
+			_, err := lf.s.JIT(t.Context(), scope(t, lf.cfg, "acme/app"), appSmallSet, "manade-small-1")
 			jit <- err
 		}()
 		<-held
@@ -581,7 +583,7 @@ func TestListenCloseOutlastsNoJIT(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		lf.s.Listen(ctx, appSmallSet, lf.h)
+		lf.s.Listen(ctx, scope(t, lf.cfg, "acme/app"), appSmallSet, "manade", lf.h)
 	}()
 	select {
 	case <-done:

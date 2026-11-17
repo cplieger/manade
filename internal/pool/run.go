@@ -47,7 +47,7 @@ func (g *generation) run(ctx context.Context) {
 	g.wg.Go(func() { g.runVisibility(loops) })
 	g.wg.Go(func() { g.runStep(loops) })
 	g.wg.Go(func() { g.runEnsure(loops) })
-	g.wg.Go(func() { g.d.Sweep.Run(loops, g.cfg, g.hot, g.queued) })
+	g.wg.Go(func() { g.gh.Sweep.Run(loops, g.cfg, g.hot, g.queued) })
 }
 
 // stop ends the loops at their pass boundaries and waits for them; it
@@ -94,7 +94,8 @@ func (g *generation) shutdown(endSessions func()) {
 // opened, Listening while each such listener beat within listenerLease,
 // Reconciling while each host's reconcile loop waits on a call or beat
 // within ReconcileLease, and Stopping once the shutdown began. A scope
-// proven public has no listener and counts in neither. No host's own state
+// proven public, or any scope with no credential, has no listener and
+// counts in neither. No host's own state
 // counts: hosts are upstreams, which their own series report.
 type Health struct{ Started, Listening, Reconciling, Stopping bool }
 
@@ -108,7 +109,7 @@ func (g *generation) health() Health {
 	now := g.now()
 	h := Health{Started: !g.booting, Listening: true, Reconciling: true, Stopping: g.stopping}
 	for _, s := range g.sets {
-		if s.scope.public {
+		if s.scope.public || !g.credentialed {
 			continue
 		}
 		h.Started = h.Started && s.opened

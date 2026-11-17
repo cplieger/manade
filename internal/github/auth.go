@@ -2,8 +2,10 @@ package github
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/cplieger/forgeapi/v2"
 	"github.com/cplieger/forgeapi/v2/creds"
@@ -19,50 +21,74 @@ var (
 	orgGrant  = map[string]string{"metadata": read, "organization_self_hosted_runners": read}
 )
 
-// auth holds each scope's REST token source. Under a PAT every scope shares
-// one. Under an App, each repo scope has its own, whose grant names only its
-// repository: GitHub refuses a whole mint with a 422, which forgeapi holds
-// as terminal, when one named repository is gone from the installation. An
-// organization scope's grant names no repository.
-type auth struct {
-	byScope map[string]forgeapi.CredentialSource
-	// limit names the rate limit each scope's reads count against: the PAT's,
-	// or the account's one installation's, which all its sources share.
-	limit map[string]string
-	// lookup builds a source that resolves s's installation by its own
-	// selector, for checking a configured installation_id. Nil under a PAT.
-	lookup func(s *config.Scope) (*creds.AppSource, error)
-	scopes []config.Scope
+// ErrEnterpriseNeedsToken refuses an enterprise scope under a GitHub App:
+// only a classic token reaches an enterprise's runner groups (§9.2).
+var ErrEnterpriseNeedsToken = errors.New("github: an enterprise scope needs a classic token, and the credential is a GitHub App")
+
+// sourceKey names a scope's token source: its key and its configured
+// installation, since a changed installation_id needs a source of its own.
+type sourceKey struct {
+	key          string
+	installation int64
 }
 
-func newAuth(cfg *config.Config, gh *config.GitHub, conn *forgeapi.Connection, opts []forgeapi.Option) (*auth, error) {
-	a := &auth{byScope: map[string]forgeapi.CredentialSource{}, limit: map[string]string{}, scopes: cfg.Scopes}
-	if gh.AppKey == nil {
-		pat := patSource{gh.Token}
-		for i := range cfg.Scopes {
-			a.byScope[cfg.Scopes[i].Key] = pat
-		}
-		return a, nil
+// auth is one credential's token sources, made on a scope's first use.
+// Under a PAT every scope shares the token. Under an App, each repo scope
+// has its own, whose grant names only its repository: GitHub refuses a
+// whole mint with a 422, which forgeapi holds as terminal, when one named
+// repository is gone from the installation. An organization scope's grant
+// names no repository.
+type auth struct {
+	gh      *config.GitHub
+	byScope map[sourceKey]forgeapi.CredentialSource
+	// proven holds each configured installation_id GitHub answered for its
+	// scope's account.
+	proven map[sourceKey]bool
+	opts   []forgeapi.Option
+	conn   forgeapi.Connection
+	mu     sync.Mutex
+}
+
+func newAuth(gh *config.GitHub, conn *forgeapi.Connection, opts []forgeapi.Option) *auth {
+	return &auth{gh: gh, conn: *conn, opts: opts, byScope: map[sourceKey]forgeapi.CredentialSource{}, proven: map[sourceKey]bool{}}
+}
+
+// app reports whether the credential is a GitHub App.
+func (a *auth) app() bool { return a.gh.AppKey != nil }
+
+// source answers s's token source, made on first use.
+func (a *auth) source(s *config.Scope) (forgeapi.CredentialSource, error) {
+	if !a.app() {
+		return patSource{a.gh.Token}, nil
 	}
-	a.lookup = func(s *config.Scope) (*creds.AppSource, error) {
-		return creds.NewAppSource(*conn, gh.AppKey, creds.AppSourceConfig{Installation: selector(s), Grant: grant(s)}, opts...)
+	if s.Kind == config.ScopeEnterprise {
+		return nil, ErrEnterpriseNeedsToken
 	}
-	for i := range cfg.Scopes {
-		s := &cfg.Scopes[i]
-		a.limit[s.Key] = strings.ToLower(s.Owner)
-		// A configured ID names the account's one installation;
-		// CheckInstallations proves it.
-		in := selector(s)
-		if s.InstallationID != 0 {
-			in = creds.InstallationByID(s.InstallationID)
-		}
-		src, err := creds.NewAppSource(*conn, gh.AppKey, creds.AppSourceConfig{Installation: in, Grant: grant(s)}, opts...)
-		if err != nil {
-			return nil, fmt.Errorf("github: token source for %s: %w", s.Key, err)
-		}
-		a.byScope[s.Key] = src
+	k := sourceKey{s.Key, s.InstallationID}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if src, ok := a.byScope[k]; ok {
+		return src, nil
 	}
-	return a, nil
+	in := selector(s)
+	if s.InstallationID != 0 {
+		in = creds.InstallationByID(s.InstallationID)
+	}
+	src, err := creds.NewAppSource(a.conn, a.gh.AppKey, creds.AppSourceConfig{Installation: in, Grant: grant(s)}, a.opts...)
+	if err != nil {
+		return nil, fmt.Errorf("github: token source for %s: %w", s.Key, err)
+	}
+	a.byScope[k] = src
+	return src, nil
+}
+
+// limit names the rate limit s's reads count against: the PAT's, or the
+// account's one installation's, which all its sources share.
+func (a *auth) limit(s *config.Scope) string {
+	if !a.app() {
+		return ""
+	}
+	return strings.ToLower(s.Owner)
 }
 
 func selector(s *config.Scope) creds.Installation {
@@ -81,54 +107,66 @@ func grant(s *config.Scope) creds.AppGrant {
 	return creds.AppGrant{Permissions: orgGrant}
 }
 
-func (a *auth) source(s *config.Scope) forgeapi.CredentialSource { return a.byScope[s.Key] }
-
 // installation answers the App installation that serves s: its configured
-// installation_id, or its account's installation as GitHub answers now, so a
-// reinstall's new ID shows once the old one's tokens are refused. It answers
-// 0 under a PAT. A failure is counted as an installation error.
+// installation_id once GitHub answered it for s's account, or the account's
+// installation as GitHub answers now, so a reinstall's new ID shows once
+// the old one's tokens are refused. It answers 0 under a PAT. A failed
+// lookup is counted as an installation error.
 func (r *REST) installation(ctx context.Context, s *config.Scope) (int64, error) {
-	if s.InstallationID != 0 || r.auth.lookup == nil {
-		return s.InstallationID, nil
+	if !r.auth.app() {
+		return 0, nil
 	}
-	src, ok := r.auth.source(s).(*creds.AppSource)
+	if s.InstallationID != 0 {
+		return s.InstallationID, r.proveInstallation(ctx, s)
+	}
+	src, err := r.auth.source(s)
+	if err != nil {
+		return 0, err
+	}
+	app, ok := src.(*creds.AppSource)
 	if !ok {
 		return 0, fmt.Errorf("github: no App token source for %s", s.Key)
 	}
+	return r.resolve(ctx, s, app)
+}
+
+// proveInstallation checks once per source that s's configured
+// installation_id is the one GitHub answers for its account.
+func (r *REST) proveInstallation(ctx context.Context, s *config.Scope) error {
+	if s.Kind == config.ScopeEnterprise {
+		return ErrEnterpriseNeedsToken
+	}
+	k := sourceKey{s.Key, s.InstallationID}
+	r.auth.mu.Lock()
+	done := r.auth.proven[k]
+	r.auth.mu.Unlock()
+	if done {
+		return nil
+	}
+	src, err := creds.NewAppSource(r.auth.conn, r.auth.gh.AppKey, creds.AppSourceConfig{Installation: selector(s), Grant: grant(s)}, r.auth.opts...)
+	if err != nil {
+		return fmt.Errorf("github: installation lookup for %s: %w", s.Key, err)
+	}
+	id, err := r.resolve(ctx, s, src)
+	if err != nil {
+		return err
+	}
+	if id != s.InstallationID {
+		return fmt.Errorf("github: %s is served by installation %d, not the configured installation_id %d", s.Key, id, s.InstallationID)
+	}
+	r.auth.mu.Lock()
+	r.auth.proven[k] = true
+	r.auth.mu.Unlock()
+	return nil
+}
+
+func (r *REST) resolve(ctx context.Context, s *config.Scope, src *creds.AppSource) (int64, error) {
 	id, err := src.Resolve(ctx)
 	if err != nil {
 		r.failure(ctx, OpInstallation)
 		return 0, fmt.Errorf("github: installation for %s: %w", s.Key, err)
 	}
 	return id, nil
-}
-
-// CheckInstallations proves each configured installation_id owns its scope,
-// by looking the scope's installation up as GitHub answers it. It sends
-// nothing under a PAT or when no scope sets an ID.
-func (r *REST) CheckInstallations(ctx context.Context) error {
-	if r.auth.lookup == nil {
-		return nil
-	}
-	for i := range r.auth.scopes {
-		s := &r.auth.scopes[i]
-		if s.InstallationID == 0 {
-			continue
-		}
-		src, err := r.auth.lookup(s)
-		if err != nil {
-			return fmt.Errorf("github: installation lookup for %s: %w", s.Key, err)
-		}
-		id, err := src.Resolve(ctx)
-		if err != nil {
-			r.failure(ctx, OpInstallation)
-			return fmt.Errorf("github: installation for %s: %w", s.Key, err)
-		}
-		if id != s.InstallationID {
-			return fmt.Errorf("github: %s is served by installation %d, not the configured installation_id %d", s.Key, id, s.InstallationID)
-		}
-	}
-	return nil
 }
 
 // patSource answers a personal access token, which never rotates.
