@@ -185,7 +185,7 @@ func (h *HistoryTx) TrimJournal(before time.Time, keep int64) error {
 		return err
 	}
 	var ids []uint64
-	err = journal.Scan(h.tx.Read(), bolttable.Range{}, func(id uint64, e *Entry) (bool, error) {
+	err = journal.Scan(h.tx.Read(), bolttable.Range{}, func(id uint64, e *entry) (bool, error) {
 		if n <= keep && !e.At.Before(before) {
 			return false, nil
 		}

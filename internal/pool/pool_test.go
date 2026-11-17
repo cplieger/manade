@@ -292,7 +292,7 @@ func TestAPoolRemovalClosesWithItsReason(t *testing.T) {
 		r.now = r.now.Add(idleFor + time.Second)
 		r.reg.Opened(r.small().ss, github.Stats{})
 		r.pass()
-		if r.m.exits[ExitIdle] != 1 || r.m.exits[ExitFailed] != 0 {
+		if r.m.exits[exitIdle] != 1 || r.m.exits[ExitFailed] != 0 {
 			t.Errorf("exits = %v, want one idle and no failure", r.m.exits)
 		}
 		if len(r.hosts[0].running()) != 0 {
@@ -309,7 +309,7 @@ func TestAPoolRemovalClosesWithItsReason(t *testing.T) {
 		r.poll(b, github.Stats{Assigned: 1, Running: 1}, github.Event{Kind: github.Started, Runner: name, Name: "a", RunID: 1})
 		r.now = r.now.Add(3 * time.Hour)
 		r.pass()
-		if r.m.exits[ExitLifetime] != 1 {
+		if r.m.exits[exitLifetime] != 1 {
 			t.Errorf("exits = %v, want one lifetime", r.m.exits)
 		}
 	})

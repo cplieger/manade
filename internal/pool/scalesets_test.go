@@ -35,11 +35,11 @@ func TestAHeldScopeNamesItsHolder(t *testing.T) {
 	r.reg.Held(r.small().ss, true, "other-pool")
 	r.listed(app, "small", 1)
 	snap = r.reg.Snapshot()
-	if got := scopeStatus(t, &snap, app); got.Serving || got.Detail != DetailHeldByOtherPool ||
+	if got := scopeStatus(t, &snap, app); got.Serving || got.Detail != detailHeldByOtherPool ||
 		!slices.Equal(got.Held, []HeldSet{{Profile: "small", Owner: "other-pool"}}) {
 		t.Errorf("scope %+v, want not served, held by other-pool on small", got)
 	}
-	if w := waitingRun(t, &snap, 1); w.Reason != JobScopeNotServed || w.Detail != DetailHeldByOtherPool || w.HeldBy != "other-pool" {
+	if w := waitingRun(t, &snap, 1); w.Reason != jobScopeNotServed || w.Detail != detailHeldByOtherPool || w.HeldBy != "other-pool" {
 		t.Errorf("job %+v, want scope_not_served (held_by_other_pool) naming other-pool", w)
 	}
 	r.reg.Held(r.small().ss, false, "")
@@ -58,7 +58,7 @@ func TestAScopeRowReadsWhyItIsNotServed(t *testing.T) {
 		r.gh.set(func(g *fakeGitHub) { g.public[app] = true })
 		r.recheck()
 		snap := r.reg.Snapshot()
-		if got := scopeStatus(t, &snap, app); got.Serving || got.Detail != DetailPublic {
+		if got := scopeStatus(t, &snap, app); got.Serving || got.Detail != detailPublic {
 			t.Errorf("scope %+v, want not served, public", got)
 		}
 	})
@@ -68,7 +68,7 @@ func TestAScopeRowReadsWhyItIsNotServed(t *testing.T) {
 		r.side = nil
 		r.restart()
 		snap := r.reg.Snapshot()
-		if got := scopeStatus(t, &snap, app); got.Serving || got.Detail != DetailNotConnected {
+		if got := scopeStatus(t, &snap, app); got.Serving || got.Detail != detailNotConnected {
 			t.Errorf("scope %+v, want not served, github_not_connected", got)
 		}
 	})
@@ -78,7 +78,7 @@ func TestAScopeRowReadsWhyItIsNotServed(t *testing.T) {
 		r.gh.set(func(g *fakeGitHub) { g.ensureFail = true })
 		r.restart()
 		snap := r.reg.Snapshot()
-		if got := scopeStatus(t, &snap, app); got.Serving || got.Detail != DetailEnsureFailed {
+		if got := scopeStatus(t, &snap, app); got.Serving || got.Detail != detailEnsureFailed {
 			t.Errorf("scope %+v, want not served, ensure_failed", got)
 		}
 	})
@@ -100,10 +100,10 @@ func TestALostScaleSetIsEnsuredAgainUnderItsNewID(t *testing.T) {
 	// One job is the assignment the idle runner covers, 7 waits.
 	r.listed(app, "small", 7, 8)
 	snap := r.reg.Snapshot()
-	if w := waitingRun(t, &snap, 7); w.Reason != JobScopeNotServed || w.Detail != DetailScaleSetLost {
+	if w := waitingRun(t, &snap, 7); w.Reason != jobScopeNotServed || w.Detail != detailScaleSetLost {
 		t.Errorf("job %+v while the ensure is due, want scope_not_served (scale_set_lost)", w)
 	}
-	if got := scopeStatus(t, &snap, app); got.Serving || got.Detail != DetailScaleSetLost {
+	if got := scopeStatus(t, &snap, app); got.Serving || got.Detail != detailScaleSetLost {
 		t.Errorf("scope %+v, want not served, scale_set_lost", got)
 	}
 	if _, ok := r.p.servedSets()[setKey{app, "small"}]; ok {
@@ -111,7 +111,7 @@ func TestALostScaleSetIsEnsuredAgainUnderItsNewID(t *testing.T) {
 	}
 	r.pass()
 	snap = r.reg.Snapshot()
-	if w := waitingRun(t, &snap, 7); w.Detail != DetailEnsureFailed {
+	if w := waitingRun(t, &snap, 7); w.Detail != detailEnsureFailed {
 		t.Errorf("job %+v once the ensure failed, want ensure_failed", w)
 	}
 	r.gh.set(func(g *fakeGitHub) { g.ensureFail = false })

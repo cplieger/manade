@@ -177,7 +177,7 @@ func (l *listen) open(ctx context.Context) bool {
 			return false
 		}
 		l.refused(err, &o)
-		if l.pause(ctx, err) != nil {
+		if pause(ctx, err) != nil {
 			return false
 		}
 	}
@@ -217,7 +217,7 @@ func (l *listen) create(ctx context.Context) (*scaleset.MessageSessionClient, er
 	}
 	sess, err := l.c.MessageSessionClient(ctx, l.ss.ID, l.owner)
 	if err != nil {
-		l.s.rest.failure(ctx, OpSession)
+		l.s.rest.failure(ctx, opSession)
 	}
 	return sess, err
 }
@@ -342,14 +342,14 @@ func (l *listen) pollFailed(ctx context.Context, err error, late bool) {
 		l.prev = l.close(ctx)
 		return
 	}
-	_ = l.pause(ctx, err)
+	_ = pause(ctx, err)
 }
 
 // pause waits after a refused create or poll: a rate limit's Retry-After,
 // at least a minute and at most maxHold
 // (https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api);
 // anything else 5 seconds. It fails only when ctx ends.
-func (l *listen) pause(ctx context.Context, err error) error {
+func pause(ctx context.Context, err error) error {
 	var rl *scaleset.RateLimitError
 	if !errors.As(err, &rl) {
 		return sleep(ctx, retryEvery)
@@ -389,7 +389,7 @@ func (l *listen) close(ctx context.Context) ended {
 		l.log.Warn("The scale set's session had already lapsed on GitHub, so it counts as closed")
 		return closed
 	}
-	l.s.rest.rec.GitHubError(OpSession)
+	l.s.rest.rec.GitHubError(opSession)
 	l.log.Warn("Closing the scale set's session failed, so a conflict counts as its own claim until that lapses", "error", failed("close", err))
 	return unclosed
 }

@@ -25,12 +25,12 @@ func TestALostDeleteAnswerClosesTheRecordWithinOnePass(t *testing.T) {
 		start, newSupervisor, restartAfter bool
 	}{
 		{name: "exited", want: ExitCompleted, end: exited},
-		{name: "idle", want: ExitIdle, end: idle},
+		{name: "idle", want: exitIdle, end: idle},
 		{name: "failedStart", start: true},
 		{name: "exitedAtARestart", want: ExitCompleted, end: func(r *rig, _ string) { r.hosts[0].restart(0) }},
 		{name: "failedStartListedByANewSupervisor", start: true, newSupervisor: true},
 		{name: "exitedThenARestart", want: ExitCompleted, end: exited, restartAfter: true},
-		{name: "idleThenARestart", want: ExitIdle, end: idle, restartAfter: true},
+		{name: "idleThenARestart", want: exitIdle, end: idle, restartAfter: true},
 		{name: "failedStartThenARestart", start: true, restartAfter: true},
 	}
 	for _, tc := range cases {
@@ -103,7 +103,7 @@ func TestAnExitTheHostRemovedForADeleteClosesAsRemoved(t *testing.T) {
 		t.Helper()
 		r.m.mu.Lock()
 		defer r.m.mu.Unlock()
-		if r.m.exits[ExitRemoved] != 1 || r.m.exits[ExitFailed] != 0 {
+		if r.m.exits[exitRemoved] != 1 || r.m.exits[ExitFailed] != 0 {
 			t.Errorf("exits = %v, want one removed and no failure", r.m.exits)
 		}
 	}
@@ -179,7 +179,7 @@ func TestASlowHostHoldsBackNoOtherHostsExits(t *testing.T) {
 		r.p.passHost(context.Background(), 0)
 	}()
 	<-held
-	r.now = r.now.Add(2 * ReconcileLease)
+	r.now = r.now.Add(2 * reconcileLease)
 	r.p.passHost(context.Background(), 1)
 	if _, ok := r.record(b, fast[0]); ok {
 		t.Error("fast's exit kept its slot while slow's DELETE was in flight")
@@ -203,7 +203,7 @@ func TestAHostLoopPastItsLeaseIsNotReconciling(t *testing.T) {
 	if !r.reg.Health().Reconciling {
 		t.Fatalf("health %+v right after a pass, want Reconciling", r.reg.Health())
 	}
-	r.now = r.now.Add(ReconcileLease + time.Second)
+	r.now = r.now.Add(reconcileLease + time.Second)
 	if h := r.reg.Health(); h.Reconciling {
 		t.Errorf("health %+v with no beat for longer than the lease, want not Reconciling", h)
 	}
@@ -236,14 +236,14 @@ func TestAPassOfEveryHostRenewsEachHostsLease(t *testing.T) {
 	// pass's only one.
 	<-held
 	<-r.p.kick
-	r.now = r.now.Add(2 * ReconcileLease)
+	r.now = r.now.Add(2 * reconcileLease)
 	close(hold)
 	<-done
 	if h := r.reg.Health(); !h.Reconciling {
 		t.Errorf("health %+v right after a pass of every host, want Reconciling", h)
 	}
 	for _, h := range r.reg.Snapshot().Hosts {
-		if !h.Reconciled.Equal(r.now) || !h.ReconcileDue.Equal(r.now.Add(ReconcileLease)) {
+		if !h.Reconciled.Equal(r.now) || !h.ReconcileDue.Equal(r.now.Add(reconcileLease)) {
 			t.Errorf("host %s reconciled %v due %v, want the pass's end and its lease after it", h.Host, h.Reconciled, h.ReconcileDue)
 		}
 	}

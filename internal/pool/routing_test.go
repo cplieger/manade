@@ -56,7 +56,7 @@ func TestAServedScopeRoutesToItsDefaultProfile(t *testing.T) {
 		t.Errorf("variable writes %q, want each scope's set to small", got)
 	}
 	snap := r.reg.Snapshot()
-	if got, want := routeOf(t, &snap, app), (RouteStatus{Scope: app, Variable: runnerV, Value: "small", Found: true, State: RouteSet}); got != want {
+	if got, want := routeOf(t, &snap, app), (RouteStatus{Scope: app, Variable: runnerV, Value: "small", Found: true, State: routeSet}); got != want {
 		t.Errorf("route %+v, want %+v", got, want)
 	}
 	if got := r.records.routes[app]; got != (Route{Scope: app, Variable: runnerV, Value: "small"}) {
@@ -84,7 +84,7 @@ func TestTurningARowOffDeletesTheVariableFirst(t *testing.T) {
 		t.Error("the stopping scope's session closed, want it serving its assigned job")
 	}
 	snap := r.reg.Snapshot()
-	if got := routeOf(t, &snap, app); got.State != RouteSet || got.Found {
+	if got := routeOf(t, &snap, app); got.State != routeSet || got.Found {
 		t.Errorf("route %+v, want the variable gone", got)
 	}
 }
@@ -110,7 +110,7 @@ func TestAStopHoldsUntilItsVariableIsDeleted(t *testing.T) {
 				t.Fatalf("settled %+v with the variable still routing jobs", calls)
 			}
 			snap := r.reg.Snapshot()
-			if want := map[string]RouteState{"failing": RouteFailed, "forbidden": RouteForbidden}[name]; routeOf(t, &snap, app).State != want {
+			if want := map[string]RouteState{"failing": routeFailed, "forbidden": routeForbidden}[name]; routeOf(t, &snap, app).State != want {
 				t.Errorf("route %+v, want %s", routeOf(t, &snap, app), want)
 			}
 			r.gh.set(func(g *fakeGitHub) { g.varErr = nil })
@@ -145,10 +145,10 @@ func TestAHandSetVariableIsLeftAlone(t *testing.T) {
 		t.Errorf("variable writes %q, want none over hand-set values", got)
 	}
 	snap := r.reg.Snapshot()
-	if got := routeOf(t, &snap, app); got.State != RouteHandSet || got.Value != "large" {
+	if got := routeOf(t, &snap, app); got.State != routeHandSet || got.Value != "large" {
 		t.Errorf("app route %+v, want hand_set large", got)
 	}
-	if got := routeOf(t, &snap, web); got.State != RouteNamesNoProfile || got.Value != "huge" {
+	if got := routeOf(t, &snap, web); got.State != routeNamesNoProfile || got.Value != "huge" {
 		t.Errorf("web route %+v, want names_no_profile huge", got)
 	}
 	r.commit(func(cfg *config.Config) { cfg.Scopes[1].DefaultProfile = "large" })
@@ -177,7 +177,7 @@ func TestRetiringADefaultRewritesTheVariableBeforeTheStop(t *testing.T) {
 		t.Errorf("web's hand-set variable = %q, want large left alone", v)
 	}
 	snap := r.reg.Snapshot()
-	if got := routeOf(t, &snap, web); got.State != RouteNamesNoProfile {
+	if got := routeOf(t, &snap, web); got.State != routeNamesNoProfile {
 		t.Errorf("web route %+v, want names_no_profile: large is leaving it", got)
 	}
 }

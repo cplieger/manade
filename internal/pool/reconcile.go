@@ -376,7 +376,7 @@ func unlisted(b *book, r *runner, inst string, begin uint64) *action {
 	case r.answered == 0 || r.closing == "" && !r.failed && inst != r.instance:
 		return &action{kind: actGone, b: b, r: r, reason: gone(r)}
 	}
-	return &action{kind: actDropped, b: b, r: r, reason: cmp.Or(r.closing, ExitRemoved)}
+	return &action{kind: actDropped, b: b, r: r, reason: cmp.Or(r.closing, exitRemoved)}
 }
 
 // planListed decides what a pass does to runner lr host i lists; g.mu is
@@ -452,11 +452,11 @@ func (g *generation) judgeRunning(b *book, r *runner, spare bool) *action {
 	}
 	pr, now := &g.cfg.Profiles[b.profile], g.now()
 	switch {
-	case r.closing == ExitLifetime || now.Sub(r.created) > pr.MaxLifetime:
+	case r.closing == exitLifetime || now.Sub(r.created) > pr.MaxLifetime:
 		return &action{kind: actExpire, b: b, r: r}
 	case r.state == busy:
 		return nil
-	case r.closing == ExitIdle || spare || r.stale || g.stopping || g.sets[b].scope.public || !g.hosts[r.host].cfg.Accepting ||
+	case r.closing == exitIdle || spare || r.stale || g.stopping || g.sets[b].scope.public || !g.hosts[r.host].cfg.Accepting ||
 		now.Sub(r.created) > pr.IdleTimeout:
 		return &action{kind: actRetire, b: b, r: r}
 	}
@@ -489,7 +489,7 @@ func exitReason(r *runner, lr *hostapi.Runner, inst string) ExitReason {
 	case inst != r.instance && r.state == busy && !r.completed && (lr.ExitCode == nil || *lr.ExitCode != stopExitCode):
 		return ExitLost
 	case lr.RemovedBy != "" || lr.ExitCode == nil:
-		return ExitRemoved
+		return exitRemoved
 	case *lr.ExitCode != 0:
 		return ExitFailed
 	}
@@ -503,7 +503,7 @@ func recordlessExit(lr *hostapi.Runner) ExitReason {
 	case lr.OOMKilled:
 		return ExitOOM
 	case lr.RemovedBy != "" || lr.ExitCode == nil:
-		return ExitRemoved
+		return exitRemoved
 	case *lr.ExitCode == crashExitCode:
 		return ExitLost
 	case *lr.ExitCode != 0:
@@ -557,7 +557,7 @@ func (g *generation) closeExited(ctx context.Context, a *action) {
 	if !ok {
 		return
 	}
-	g.closeRecord(ctx, a.b, a.r, a.reason, a.reason != ExitIdle, &ev)
+	g.closeRecord(ctx, a.b, a.r, a.reason, a.reason != exitIdle, &ev)
 	code := -1
 	if a.lr.ExitCode != nil {
 		code = *a.lr.ExitCode
@@ -625,7 +625,7 @@ func (g *generation) closeDropped(ctx context.Context, a *action) {
 	}
 	g.mu.Unlock()
 	if !failed {
-		g.closeRecord(ctx, a.b, a.r, a.reason, a.reason != ExitIdle, nil)
+		g.closeRecord(ctx, a.b, a.r, a.reason, a.reason != exitIdle, nil)
 	}
 	g.log.Info("A host no longer lists a runner, so its record is closed", "host", g.hosts[a.r.host].cfg.Name,
 		"scope", a.b.ss.Scope, "profile", a.b.ss.Profile, "runner", a.r.name, "reason", string(a.reason))
@@ -669,31 +669,31 @@ func (g *generation) retire(ctx context.Context, a *action) {
 		return
 	}
 	g.mu.Lock()
-	a.r.closing = ExitIdle
+	a.r.closing = exitIdle
 	g.mu.Unlock()
 	if !g.remove(ctx, a.r.host, a.r.name) {
 		return
 	}
-	g.closeRecord(ctx, a.b, a.r, ExitIdle, false, nil)
+	g.closeRecord(ctx, a.b, a.r, exitIdle, false, nil)
 	g.log.Info("Removed an idle runner", "scope", a.b.ss.Scope, "profile", a.b.ss.Profile, "runner", a.r.name)
 }
 
 // expire removes a runner past its profile's max_lifetime.
 func (g *generation) expire(ctx context.Context, a *action) {
 	g.mu.Lock()
-	a.r.closing = ExitLifetime
+	a.r.closing = exitLifetime
 	g.mu.Unlock()
 	if !g.remove(ctx, a.r.host, a.r.name) {
 		return
 	}
-	g.closeRecord(ctx, a.b, a.r, ExitLifetime, true, nil)
+	g.closeRecord(ctx, a.b, a.r, exitLifetime, true, nil)
 	g.log.Warn("A runner passed its profile's max_lifetime, so it was removed", "scope", a.b.ss.Scope, "profile", a.b.ss.Profile, "runner", a.r.name)
 }
 
 // exited hands a runner's end to the run history; an idle runner held no
 // job.
 func (g *generation) exited(ctx context.Context, host, name string, reason ExitReason, ev *evidence) {
-	if reason == ExitIdle {
+	if reason == exitIdle {
 		return
 	}
 	x := &RunnerExit{At: g.now(), Host: host, Runner: name, Reason: reason}

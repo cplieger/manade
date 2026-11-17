@@ -211,7 +211,7 @@ func (s *ScaleSets) Ensure(ctx context.Context, cfg *config.Config, scope *confi
 	}
 	out, err := s.ensure(ctx, c, cfg, scope)
 	if err != nil {
-		s.rest.failure(ctx, OpScaleSet)
+		s.rest.failure(ctx, opScaleSet)
 		return nil, failed("scale sets of "+scope.Key, err)
 	}
 	return out, nil
@@ -277,7 +277,7 @@ func (s *ScaleSets) Exists(ctx context.Context, scope *config.Scope, ss ScaleSet
 	case errors.Is(err, scaleset.NotFoundError):
 		return false, nil
 	case err != nil:
-		s.rest.failure(ctx, OpScaleSet)
+		s.rest.failure(ctx, opScaleSet)
 		return false, failed("scale set "+strconv.Itoa(ss.ID)+" of "+ss.Scope, err)
 	}
 	return got != nil && got.Name == ss.Profile, nil
@@ -295,7 +295,7 @@ func (s *ScaleSets) JIT(ctx context.Context, scope *config.Scope, ss ScaleSet, n
 		err = errors.New("the answer carries no runner or config")
 	}
 	if err != nil {
-		s.rest.failure(ctx, OpJIT)
+		s.rest.failure(ctx, opJIT)
 		return JIT{}, failed("JIT config in "+ss.Scope, err)
 	}
 	return JIT{Config: j.EncodedJITConfig, RunnerID: int64(j.Runner.ID)}, nil
@@ -315,7 +315,7 @@ func (s *ScaleSets) RemoveRunner(ctx context.Context, scope *config.Scope, id in
 	case errors.Is(err, scaleset.JobStillRunningError):
 		return ErrRunnerBusy
 	default:
-		s.rest.failure(ctx, OpScaleSet)
+		s.rest.failure(ctx, opScaleSet)
 		return failed("removing a runner in "+scope.Key, err)
 	}
 }

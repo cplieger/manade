@@ -74,8 +74,8 @@ func TestDroppingAScaleSetRecordJournalsIt(t *testing.T) {
 		t.Fatalf("journal = %+v, want one row for the one drop", rows)
 	}
 	e := rows[0]
-	if !e.At.Equal(at.Add(time.Minute)) || e.Actor != (Actor{Kind: ActorPool}) || e.Action != ActionScaleSetRecordDropped ||
-		e.Subject != "ACME/App" || e.Outcome != OutcomeDone || !maps.Equal(e.Facts, map[string]string{"profile": "small", "scale_set_id": "1"}) {
+	if !e.At.Equal(at.Add(time.Minute)) || e.Actor != (actor{Kind: actorPool}) || e.Action != actionScaleSetRecordDropped ||
+		e.Subject != "ACME/App" || e.Outcome != outcomeDone || !maps.Equal(e.Facts, map[string]string{"profile": "small", "scale_set_id": "1"}) {
 		t.Errorf("journal row %+v, want the pool's drop of acme/app small, scale set 1", e)
 	}
 }

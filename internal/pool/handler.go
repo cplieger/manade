@@ -148,17 +148,17 @@ func (g *generation) scopeDetail(sc *scope) string {
 	}
 	switch {
 	case g.stopping:
-		return DetailPoolStopping
+		return detailPoolStopping
 	case !g.credentialed:
-		return DetailNotConnected
+		return detailNotConnected
 	case sc.ensureErr != nil:
 		return ensureDetail(sc.ensureErr)
 	case sc.public:
-		return DetailPublic
+		return detailPublic
 	case anySet(func(s *set) bool { return s.lost }):
-		return DetailScaleSetLost
+		return detailScaleSetLost
 	case anySet(func(s *set) bool { return s.held }):
-		return DetailHeldByOtherPool
+		return detailHeldByOtherPool
 	case !sc.private():
 		return DetailVisibilityUnproved
 	}
@@ -204,7 +204,7 @@ func jobResult(r string) JobResult {
 	case "failed":
 		return JobFailed
 	case "canceled":
-		return JobCanceled
+		return jobCanceled
 	}
-	return JobOther
+	return jobOther
 }

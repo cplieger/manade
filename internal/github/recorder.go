@@ -14,18 +14,18 @@ type Op string
 
 // The calls a failure is counted against.
 const (
-	OpSession      Op = "session"
+	opSession      Op = "session"
 	OpPoll         Op = "poll"
-	OpJIT          Op = "jit"
-	OpScaleSet     Op = "scaleset"
-	OpVisibility   Op = "visibility"
-	OpInstallation Op = "installation"
-	OpQueue        Op = "queue"
-	OpVariable     Op = "variable"
+	opJIT          Op = "jit"
+	opScaleSet     Op = "scaleset"
+	opVisibility   Op = "visibility"
+	opInstallation Op = "installation"
+	opQueue        Op = "queue"
+	opVariable     Op = "variable"
 )
 
 // Ops is every Op.
-var Ops = []Op{OpSession, OpPoll, OpJIT, OpScaleSet, OpVisibility, OpInstallation, OpQueue, OpVariable}
+var Ops = []Op{opSession, OpPoll, opJIT, opScaleSet, opVisibility, opInstallation, opQueue, opVariable}
 
 // ReadResult is one queued-jobs read's outcome. ReadUnchanged is a 304,
 // which costs no primary rate limit.
@@ -33,10 +33,10 @@ type ReadResult string
 
 // The read outcomes.
 const (
-	ReadChanged   ReadResult = "changed"
+	readChanged   ReadResult = "changed"
 	ReadUnchanged ReadResult = "unchanged"
-	ReadError     ReadResult = "error"
+	readError     ReadResult = "error"
 )
 
 // ReadResults is every ReadResult.
-var ReadResults = []ReadResult{ReadChanged, ReadUnchanged, ReadError}
+var ReadResults = []ReadResult{readChanged, ReadUnchanged, readError}

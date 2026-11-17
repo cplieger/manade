@@ -75,32 +75,32 @@ func TestEachHostReasonAndTheJobReasonItGives(t *testing.T) {
 		detail string
 		job    JobReason
 	}{
-		{name: "tooSmall", host: HostTooSmall, job: JobTooLarge, set: func(_ *testing.T, r *rig) {
+		{name: "tooSmall", host: hostTooSmall, job: jobTooLarge, set: func(_ *testing.T, r *rig) {
 			cfg := cloneConfig(r.cfg)
 			cfg.Profiles[0].MilliCPUs = 16000
 			r.apply(cfg)
 		}},
-		{name: "disconnected", host: HostDisconnected, job: JobNoHostServing, set: func(_ *testing.T, r *rig) {
+		{name: "disconnected", host: hostDisconnected, job: JobNoHostServing, set: func(_ *testing.T, r *rig) {
 			r.hosts[0].set(func(f *fakeHost) { f.disconnected = true })
 		}},
-		{name: "draining", host: HostDraining, job: JobNoHostServing, set: func(_ *testing.T, r *rig) {
+		{name: "draining", host: hostDraining, job: JobNoHostServing, set: func(_ *testing.T, r *rig) {
 			cfg := cloneConfig(r.cfg)
 			cfg.Hosts[0].Accepting = false
 			r.apply(cfg)
 		}},
-		{name: "olderSection", host: HostSettingsNotApplied, detail: "waiting_for_section", job: JobHostNotReady, set: func(_ *testing.T, r *rig) {
+		{name: "olderSection", host: hostSettingsNotApplied, detail: "waiting_for_section", job: jobHostNotReady, set: func(_ *testing.T, r *rig) {
 			r.apply(cloneConfig(r.cfg), "default")
 		}},
-		{name: "pendingSection", host: HostSettingsNotApplied, detail: "restart_pending", job: JobHostNotReady, set: func(_ *testing.T, r *rig) {
+		{name: "pendingSection", host: hostSettingsNotApplied, detail: "restart_pending", job: jobHostNotReady, set: func(_ *testing.T, r *rig) {
 			r.hosts[0].set(func(f *fakeHost) { f.state = hostapi.SectionRestartPending })
 		}},
-		{name: "unprovedByAFailure", host: HostUnproved, job: JobNoHostServing, set: func(_ *testing.T, r *rig) {
+		{name: "unprovedByAFailure", host: hostUnproved, job: JobNoHostServing, set: func(_ *testing.T, r *rig) {
 			r.hosts[0].set(func(f *fakeHost) {
 				f.probe = func(context.Context) (hostapi.ProbeReport, error) { return hostapi.ProbeReport{Unproven: "dns"}, nil }
 			})
 			r.hosts[0].restart(stopExitCode)
 		}},
-		{name: "unprovedPastTheInterval", host: HostUnproved, job: JobNoHostServing, set: func(_ *testing.T, r *rig) {
+		{name: "unprovedPastTheInterval", host: hostUnproved, job: JobNoHostServing, set: func(_ *testing.T, r *rig) {
 			r.p.mu.Lock()
 			r.p.hosts[0].provedAt = r.now.Add(-reproveEvery - time.Second)
 			r.p.mu.Unlock()
@@ -110,15 +110,15 @@ func TestEachHostReasonAndTheJobReasonItGives(t *testing.T) {
 				}
 			})
 		}},
-		{name: "dataFull", host: HostNotReady, detail: "data_full", job: JobHostNotReady, set: func(_ *testing.T, r *rig) {
+		{name: "dataFull", host: hostNotReady, detail: "data_full", job: jobHostNotReady, set: func(_ *testing.T, r *rig) {
 			r.hosts[0].set(func(f *fakeHost) { f.notReady["small"], f.reasons["small"] = true, hostapi.ReasonDataFull })
 		}},
-		{name: "capacityOverLimits", host: HostNotReady, detail: "capacity_over_limits", job: JobHostNotReady, set: func(_ *testing.T, r *rig) {
+		{name: "capacityOverLimits", host: hostNotReady, detail: "capacity_over_limits", job: jobHostNotReady, set: func(_ *testing.T, r *rig) {
 			cfg := cloneConfig(r.cfg)
 			cfg.Hosts[0].Capacity.Memory = 1 << 50
 			r.apply(cfg)
 		}},
-		{name: "imagePulling", host: HostImagePulling, job: JobImagePulling, set: func(_ *testing.T, r *rig) {
+		{name: "imagePulling", host: hostImagePulling, job: jobImagePulling, set: func(_ *testing.T, r *rig) {
 			r.hosts[0].set(func(f *fakeHost) { f.notReady["small"], f.reasons["small"] = true, hostapi.ReasonPulling })
 		}},
 	} {
@@ -150,7 +150,7 @@ func TestAHostWhoseProbeRunsReadsProving(t *testing.T) {
 	})
 	r.hosts[0].restart(stopExitCode)
 	r.pass()
-	if hw := hostWaits(&during)["default"]; during.Reason != JobProving || hw.Reason != HostProving {
+	if hw := hostWaits(&during)["default"]; during.Reason != jobProving || hw.Reason != hostProving {
 		t.Errorf("during the probe: job %q, host %q; want proving for both", during.Reason, hw.Reason)
 	}
 	t.Run("aReproofOfAFailedHashIsNotProving", func(t *testing.T) {
@@ -170,7 +170,7 @@ func TestAHostWhoseProbeRunsReadsProving(t *testing.T) {
 		wake(r.p.hosts[0].want)
 		r.p.mu.Unlock()
 		r.prove()
-		if hw := hostWaits(&during)["default"]; hw.Reason != HostUnproved {
+		if hw := hostWaits(&during)["default"]; hw.Reason != hostUnproved {
 			t.Errorf("host %q during a re-probe of a failed hash, want unproved", hw.Reason)
 		}
 	})
@@ -217,7 +217,7 @@ func TestEachJobReason(t *testing.T) {
 	t.Run("awaitingAssignment", func(t *testing.T) {
 		t.Parallel()
 		r := quietRig(t, oneHost())
-		if w := reasonOf(t, r); w.Reason != JobAwaitingAssignment || w.Hosts != nil {
+		if w := reasonOf(t, r); w.Reason != jobAwaitingAssignment || w.Hosts != nil {
 			t.Errorf("job %+v, want awaiting assignment with no host reasons", w)
 		}
 	})
@@ -233,7 +233,7 @@ func TestEachJobReason(t *testing.T) {
 		}
 		r.listed(app, "small", 1)
 		snap := r.reg.Snapshot()
-		if w := waitingRun(t, &snap, 1); w.Reason != JobUnassignable {
+		if w := waitingRun(t, &snap, 1); w.Reason != jobUnassignable {
 			t.Errorf("job %q after two funded polls GitHub filled nothing for, want unassignable", w.Reason)
 		}
 	})
@@ -241,7 +241,7 @@ func TestEachJobReason(t *testing.T) {
 		t.Parallel()
 		r := quietRig(t, oneHost())
 		r.reg.Held(r.small().ss, true, "other-pool")
-		if w := reasonOf(t, r); w.Reason != JobScopeNotServed || w.Detail != DetailHeldByOtherPool {
+		if w := reasonOf(t, r); w.Reason != jobScopeNotServed || w.Detail != detailHeldByOtherPool {
 			t.Errorf("job %q (%q), want scope_not_served (held_by_other_pool)", w.Reason, w.Detail)
 		}
 	})
@@ -254,7 +254,7 @@ func TestEachJobReason(t *testing.T) {
 		r.apply(cfg)
 		r.listed("acme/web", "small", 1)
 		snap := r.reg.Snapshot()
-		if w := waitingRun(t, &snap, 1); w.Reason != JobScopeNotServed || w.Detail != DetailEnsureFailed || w.Scope != "acme/web" {
+		if w := waitingRun(t, &snap, 1); w.Reason != jobScopeNotServed || w.Detail != detailEnsureFailed || w.Scope != "acme/web" {
 			t.Errorf("job %+v, want scope_not_served (ensure_failed) on acme/web", w)
 		}
 	})
@@ -275,7 +275,7 @@ func TestEachJobReason(t *testing.T) {
 		r := quietRig(t, cfg)
 		r.busy(r.small())
 		w := reasonOf(t, r)
-		if hw := hostWaits(&w)["default"]; w.Reason != JobWaitingForSlot || hw.Reason != HostFull || hw.Runners != 1 {
+		if hw := hostWaits(&w)["default"]; w.Reason != JobWaitingForSlot || hw.Reason != hostFull || hw.Runners != 1 {
 			t.Errorf("job %q, host %+v; want waiting_for_slot beside a full host with its 1 runner", w.Reason, hw)
 		}
 	})
@@ -293,11 +293,11 @@ func TestEachJobReason(t *testing.T) {
 			{Created: r.now, Name: "job", Profile: "small", RunID: 2},
 		}}})
 		snap := r.reg.Snapshot()
-		if first := waitingRun(t, &snap, 1); first.Reason != JobAwaitingAssignment {
+		if first := waitingRun(t, &snap, 1); first.Reason != jobAwaitingAssignment {
 			t.Errorf("the small job the idle runner covers reads %q, want awaiting_assignment", first.Reason)
 		}
 		w := waitingRun(t, &snap, 2)
-		if hw := hostWaits(&w)["default"]; w.Reason != JobHeldForOlder || hw.Reason != HostHeld {
+		if hw := hostWaits(&w)["default"]; w.Reason != jobHeldForOlder || hw.Reason != hostHeld {
 			t.Errorf("small job %q, host %q; want held_for_older behind the large job's reserve", w.Reason, hw.Reason)
 		}
 		if big := waitingRun(t, &snap, 7); big.Reason != JobWaitingForSlot {
@@ -319,8 +319,8 @@ func TestAMixedHostJobReadsTheNearestHost(t *testing.T) {
 	r.busy(r.small())
 	w := reasonOf(t, r)
 	got := hostWaits(&w)
-	if w.Reason != JobWaitingForSlot || got["a"].Reason != HostFull || got["b"].Reason != HostDisconnected ||
-		got["c"].Reason != HostNotReady || got["c"].Detail != "data_full" {
+	if w.Reason != JobWaitingForSlot || got["a"].Reason != hostFull || got["b"].Reason != hostDisconnected ||
+		got["c"].Reason != hostNotReady || got["c"].Detail != "data_full" {
 		t.Errorf("job %q, hosts %+v; want waiting_for_slot with a full, b disconnected, c not_ready (data_full)", w.Reason, got)
 	}
 }

@@ -126,7 +126,7 @@ func TestTrimJournal(t *testing.T) {
 			defer mustClose(t, s)
 			if err := s.live.Update(t.Context(), func(tx *bolttable.Tx) error {
 				for i, subject := range []string{"a", "b", "c", "d"} {
-					if err := write(tx, &Entry{At: t0.Add(time.Duration(i) * time.Hour), Subject: subject, Action: ActionScaleSetRecordDropped}); err != nil {
+					if err := write(tx, &entry{At: t0.Add(time.Duration(i) * time.Hour), Subject: subject, Action: actionScaleSetRecordDropped}); err != nil {
 						return err
 					}
 				}

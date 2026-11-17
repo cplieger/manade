@@ -50,8 +50,8 @@ func (s *Store) DropScaleSet(ctx context.Context, ss ScaleSet, at time.Time) err
 		if _, err := scaleSets.Delete(tx, key); err != nil {
 			return err
 		}
-		return write(tx, &Entry{
-			At: at, Actor: Actor{Kind: ActorPool}, Action: ActionScaleSetRecordDropped, Subject: ss.Scope, Outcome: OutcomeDone,
+		return write(tx, &entry{
+			At: at, Actor: actor{Kind: actorPool}, Action: actionScaleSetRecordDropped, Subject: ss.Scope, Outcome: outcomeDone,
 			Facts: map[string]string{"profile": ss.Profile, "scale_set_id": strconv.Itoa(ss.ID)},
 		})
 	})

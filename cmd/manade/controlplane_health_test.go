@@ -123,7 +123,7 @@ func TestControlPlaneHealthInTheStoresOutage(t *testing.T) {
 			if code, reasons := healthz(t, &h); code != http.StatusServiceUnavailable || !slices.Equal(reasons, []string{tc.want}) {
 				t.Errorf("/healthz = %d %q, want 503 with only %q", code, reasons, tc.want)
 			}
-			h.BeginDrain()
+			h.beginDrain()
 			if _, reasons := healthz(t, &h); !slices.Equal(reasons, []string{reasonDraining, tc.want}) {
 				t.Errorf("reasons through the drain = %q, want draining and %q", reasons, tc.want)
 			}
@@ -134,8 +134,8 @@ func TestControlPlaneHealthInTheStoresOutage(t *testing.T) {
 func TestControlPlaneHealthDrains(t *testing.T) {
 	var h cpHealth
 	h.ready(healthyParts())
-	h.BeginDrain()
+	h.beginDrain()
 	if code, reasons := healthz(t, &h); code != http.StatusServiceUnavailable || !slices.Equal(reasons, []string{reasonDraining}) {
-		t.Errorf("/healthz after BeginDrain = %d %q, want 503 draining", code, reasons)
+		t.Errorf("/healthz after beginDrain = %d %q, want 503 draining", code, reasons)
 	}
 }

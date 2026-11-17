@@ -42,7 +42,7 @@ func TestAnAssignmentCarriesTheLongestWaitReason(t *testing.T) {
 		want          JobReason
 	}{
 		{name: "theEarlierReason", down: 10 * time.Minute, serving: time.Minute, want: JobNoHostServing},
-		{name: "theLaterReason", down: time.Minute, serving: 10 * time.Minute, want: JobAwaitingAssignment},
+		{name: "theLaterReason", down: time.Minute, serving: 10 * time.Minute, want: jobAwaitingAssignment},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -83,7 +83,7 @@ func TestOnlyAWatchedAssignmentCarriesAReason(t *testing.T) {
 		r.now = r.now.Add(time.Minute)
 		r.assigned(r.small(), 1, 11)
 		r.poll(r.small(), github.Stats{Assigned: 1, Running: 1}, github.Event{Kind: github.Started, Name: "job", RunID: 1, RequestID: 11, Runner: "x"})
-		if got := r.runs.waitedOf(t, 11); got != JobAwaitingAssignment {
+		if got := r.runs.waitedOf(t, 11); got != jobAwaitingAssignment {
 			t.Errorf("the assignment waited under %q, want awaiting_assignment", got)
 		}
 		r.runs.mu.Lock()
@@ -122,7 +122,7 @@ func TestAReassignedJobAddsItsSecondWait(t *testing.T) {
 		serving, assigned, second time.Duration
 		want                      JobReason
 	}{
-		{name: "bothWaitsCount", serving: 3 * time.Minute, second: 2 * time.Minute, want: JobAwaitingAssignment},
+		{name: "bothWaitsCount", serving: 3 * time.Minute, second: 2 * time.Minute, want: jobAwaitingAssignment},
 		{name: "theAssignedTimeIsNoWait", serving: time.Minute, assigned: 5 * time.Minute, second: 2 * time.Minute, want: JobNoHostServing},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -162,7 +162,7 @@ func TestAWaitStartsAtTheReadThatListsIt(t *testing.T) {
 	r.now = r.now.Add(3 * time.Minute)
 	r.disconnect(false)
 	r.assigned(r.small(), 1, 11)
-	if got := r.runs.waitedOf(t, 11); got != JobAwaitingAssignment {
+	if got := r.runs.waitedOf(t, 11); got != jobAwaitingAssignment {
 		t.Errorf("waited under %q, want the 10 minutes of awaiting_assignment from its read", got)
 	}
 }
@@ -181,7 +181,7 @@ func TestAJobNoLongerListedIsForgotten(t *testing.T) {
 	r.listed(app, "small", 1)
 	r.now = r.now.Add(time.Minute)
 	r.assigned(r.small(), 1, 11)
-	if got := r.runs.waitedOf(t, 11); got != JobAwaitingAssignment {
+	if got := r.runs.waitedOf(t, 11); got != jobAwaitingAssignment {
 		t.Errorf("waited under %q, want only the second listing's awaiting_assignment", got)
 	}
 }

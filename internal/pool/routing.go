@@ -32,21 +32,21 @@ type RouteState string
 
 // The route states; the client words each.
 const (
-	// RoutePending: not read since the generation began.
-	RoutePending RouteState = "pending"
-	// RouteSet: GitHub holds what the settings route to, the variable
+	// routePending: not read since the generation began.
+	routePending RouteState = "pending"
+	// routeSet: GitHub holds what the settings route to, the variable
 	// absent for a scope that is stopping or public.
-	RouteSet RouteState = "set"
-	// RouteHandSet: a value the pool did not write, left alone.
-	RouteHandSet RouteState = "hand_set"
-	// RouteNamesNoProfile: a hand-set value naming no profile the scope
+	routeSet RouteState = "set"
+	// routeHandSet: a value the pool did not write, left alone.
+	routeHandSet RouteState = "hand_set"
+	// routeNamesNoProfile: a hand-set value naming no profile the scope
 	// may use, whose jobs no runner takes.
-	RouteNamesNoProfile RouteState = "names_no_profile"
-	// RouteForbidden: the credential may not write variables, so the user
+	routeNamesNoProfile RouteState = "names_no_profile"
+	// routeForbidden: the credential may not write variables, so the user
 	// sets it by hand.
-	RouteForbidden RouteState = "forbidden"
-	// RouteFailed: the last read or write failed, retried every minute.
-	RouteFailed RouteState = "failed"
+	routeForbidden RouteState = "forbidden"
+	// routeFailed: the last read or write failed, retried every minute.
+	routeFailed RouteState = "failed"
 )
 
 // RouteStatus is a scope's routing variable in the snapshot: its name, the
@@ -116,7 +116,7 @@ func (g *generation) routesDue(all bool, now time.Time) []routeJob {
 // the user made to the row. A renamed variable is deleted under its old
 // name where it still holds the pool's last value.
 func (g *generation) route(ctx context.Context, scope *config.Scope, want Route, prev *Route) (RouteStatus, error) {
-	st := RouteStatus{Scope: want.Scope, Variable: want.Variable, State: RouteSet}
+	st := RouteStatus{Scope: want.Scope, Variable: want.Variable, State: routeSet}
 	cur, found, err := g.gh.REST.Variable(ctx, scope, want.Variable)
 	if err != nil {
 		return st, err
@@ -124,9 +124,9 @@ func (g *generation) route(ctx context.Context, scope *config.Scope, want Route,
 	st.Value, st.Found = cur, found
 	holds := found && cur == want.Value || !found && want.Value == ""
 	if !holds && prev != nil && *prev == want {
-		st.State = RouteHandSet
+		st.State = routeHandSet
 		if found && !g.usableBy(scope.Key, cur) {
-			st.State = RouteNamesNoProfile
+			st.State = routeNamesNoProfile
 		}
 		return st, nil
 	}
@@ -184,9 +184,9 @@ func (g *generation) routed(sc *scope, st *RouteStatus, err error, at time.Time)
 	before := sc.route.State
 	switch {
 	case errors.Is(err, github.ErrVariablesForbidden):
-		st.State = RouteForbidden
+		st.State = routeForbidden
 	case err != nil:
-		st.State = RouteFailed
+		st.State = routeFailed
 	case sc.routed.IsZero():
 		sc.routed = at
 	}
@@ -195,15 +195,15 @@ func (g *generation) routed(sc *scope, st *RouteStatus, err error, at time.Time)
 		return
 	}
 	switch st.State {
-	case RouteForbidden:
+	case routeForbidden:
 		g.log.Warn("The credential may not write the scope's runner variable, so set it by hand", "scope", sc.cfg.Key, "variable", st.Variable, "error", err)
-	case RouteFailed:
+	case routeFailed:
 		g.log.Warn("Writing the scope's runner variable failed, so it is retried every minute", "scope", sc.cfg.Key, "variable", st.Variable, "error", err)
-	case RouteHandSet:
+	case routeHandSet:
 		g.log.Info("The scope's runner variable was set by hand, so the pool leaves it alone", "scope", sc.cfg.Key, "variable", st.Variable)
-	case RouteNamesNoProfile:
+	case routeNamesNoProfile:
 		g.log.Warn("The scope's runner variable was set by hand to no profile it may use, so its jobs get no runner", "scope", sc.cfg.Key, "variable", st.Variable)
-	case RouteSet, RoutePending:
+	case routeSet, routePending:
 	}
 }
 
@@ -250,7 +250,7 @@ func (g *generation) routeStatuses() []RouteStatus {
 		}
 		st := sc.route
 		if st.State == "" {
-			st = RouteStatus{Scope: sc.cfg.Key, Variable: g.cfg.RunnerVariable, State: RoutePending}
+			st = RouteStatus{Scope: sc.cfg.Key, Variable: g.cfg.RunnerVariable, State: routePending}
 		}
 		out = append(out, st)
 	}

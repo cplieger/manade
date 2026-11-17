@@ -24,8 +24,8 @@ type HostHistory interface {
 // HostReason that stands for the whole host.
 type HostState string
 
-// HostReady is a host that serves.
-const HostReady HostState = "ready"
+// hostReady is a host that serves.
+const hostReady HostState = "ready"
 
 // DetailHostRemoved is the gap of a host the settings no longer hold.
 const DetailHostRemoved = "removed"
@@ -34,17 +34,17 @@ const DetailHostRemoved = "removed"
 func stateOf(h *host, now time.Time) (state HostState, detail string) {
 	switch {
 	case h.serving(now):
-		return HostReady, ""
+		return hostReady, ""
 	case !h.reachable || !h.cfg.Accepting || !h.current || h.proof(now) != proofHeld:
 		r, d := unserved(h, now)
-		if r == HostUnproved {
+		if r == hostUnproved {
 			d = h.failure
 		}
 		return HostState(r), d
 	case !h.settled:
-		return HostState(HostNotReady), DetailAdopting
+		return HostState(hostNotReady), detailAdopting
 	}
-	return HostState(HostNotReady), DetailCapacityOverLimits
+	return HostState(hostNotReady), detailCapacityOverLimits
 }
 
 // noteState hands the history host i's state when it changed since the

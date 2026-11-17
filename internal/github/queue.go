@@ -342,12 +342,12 @@ func (s *Sweep) pages(ctx context.Context, sc *config.Scope, path string, most i
 			}
 		}
 		if derr := each(a.body); derr != nil {
-			s.rest.rec.GitHubError(OpQueue)
+			s.rest.rec.GitHubError(opQueue)
 			return fmt.Errorf("github: decoding a queue page: %w", derr)
 		}
 		switch u, err = nextPage(s.rest.api, a.header); {
 		case err != nil:
-			s.rest.rec.GitHubError(OpQueue)
+			s.rest.rec.GitHubError(opQueue)
 			return err
 		case u == "":
 			return nil
@@ -377,8 +377,8 @@ func (s *Sweep) read(ctx context.Context, sc *config.Scope, u string) (answer, e
 		err = a.err()
 	}
 	if err != nil {
-		if s.rest.failure(ctx, OpQueue) {
-			s.rest.rec.QueueRead(ReadError)
+		if s.rest.failure(ctx, opQueue) {
+			s.rest.rec.QueueRead(readError)
 		}
 		return a, err
 	}
@@ -389,7 +389,7 @@ func (s *Sweep) read(ctx context.Context, sc *config.Scope, u string) (answer, e
 	if s.rest.cache.State().Hits > hits {
 		s.rest.rec.QueueRead(ReadUnchanged)
 	} else {
-		s.rest.rec.QueueRead(ReadChanged)
+		s.rest.rec.QueueRead(readChanged)
 		q.billed++
 	}
 	return a, nil

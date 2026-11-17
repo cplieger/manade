@@ -183,7 +183,7 @@ func (r *REST) proveInstallation(ctx context.Context, s *config.Scope) error {
 func (r *REST) resolve(ctx context.Context, s *config.Scope, src *creds.AppSource) (int64, error) {
 	id, err := src.Resolve(ctx)
 	if err != nil {
-		r.failure(ctx, OpInstallation)
+		r.failure(ctx, opInstallation)
 		return 0, fmt.Errorf("github: installation for %s: %w", s.Key, err)
 	}
 	return id, nil

@@ -270,7 +270,7 @@ func (r *REST) failure(ctx context.Context, op Op) bool {
 func (r *REST) Private(ctx context.Context, s *config.Scope) (bool, error) {
 	ok, err := r.private(ctx, s)
 	if err != nil {
-		r.failure(ctx, OpVisibility)
+		r.failure(ctx, opVisibility)
 	}
 	return ok, err
 }
@@ -350,7 +350,7 @@ func (r *REST) Runner(ctx context.Context, s *config.Scope, id int64) (Runner, b
 		}
 	}
 	if err != nil {
-		r.failure(ctx, OpScaleSet)
+		r.failure(ctx, opScaleSet)
 		return Runner{}, false, err
 	}
 	return Runner{Busy: w.Busy != nil && *w.Busy}, found, nil

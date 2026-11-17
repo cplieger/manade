@@ -47,7 +47,7 @@ func TestSnapshot(t *testing.T) {
 		for _, w := range snap.Waiting {
 			got = append(got, w.Reason)
 		}
-		if want := []JobReason{JobStarting, JobAwaitingAssignment}; !slices.Equal(got, want) {
+		if want := []JobReason{JobStarting, jobAwaitingAssignment}; !slices.Equal(got, want) {
 			t.Errorf("reasons %v, want the assignment starting and the job funded", got)
 		}
 	})

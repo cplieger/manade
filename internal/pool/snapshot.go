@@ -156,13 +156,13 @@ func (g *generation) hostView(i int, now time.Time) HostView {
 	h, hb := g.hosts[i], &g.l.hosts[i]
 	_, connected := g.d.Links.Host(h.cfg.Name)
 	v := HostView{
-		Host: h.cfg.Name, Seen: h.st, Probe: h.report, Reconciled: h.passed, ReconcileDue: h.beat.Add(ReconcileLease),
+		Host: h.cfg.Name, Seen: h.st, Probe: h.report, Reconciled: h.passed, ReconcileDue: h.beat.Add(reconcileLease),
 		ImageRefresh: h.cfg.ImageRefresh, Connected: connected, Serving: h.serving(now), Accepting: h.cfg.Accepting,
 		EgressOpen: h.cfg.Egress.Open, ProbeFailed: h.fprint != "" && h.failed == h.fprint,
 	}
 	switch {
 	case h.waiting:
-		v.ReconcileDue = now.Add(ReconcileLease)
+		v.ReconcileDue = now.Add(reconcileLease)
 	case h.beat.IsZero():
 		v.ReconcileDue = time.Time{}
 	}

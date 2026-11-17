@@ -36,7 +36,7 @@ func TestASnapshotCarriesWhatTheReadSeriesRead(t *testing.T) {
 		if !slices.Equal(h.Profiles, []string{"small"}) || h.ImageRefresh != r.cfg.Hosts[0].ImageRefresh {
 			t.Errorf("profiles %v refresh %v, want small and the host's images.refresh", h.Profiles, h.ImageRefresh)
 		}
-		if !h.Reconciled.Equal(r.now) || !h.ReconcileDue.Equal(r.now.Add(ReconcileLease)) {
+		if !h.Reconciled.Equal(r.now) || !h.ReconcileDue.Equal(r.now.Add(reconcileLease)) {
 			t.Errorf("reconciled %v due %v, want the pass's end and its lease after it", h.Reconciled, h.ReconcileDue)
 		}
 	})
@@ -118,11 +118,11 @@ func TestAReconcileLeaseLeavesOutTheCallsItWaitsOn(t *testing.T) {
 	t.Parallel()
 	r := newRig(t, oneHost())
 	r.pass()
-	r.now = r.now.Add(2 * ReconcileLease)
+	r.now = r.now.Add(2 * reconcileLease)
 	r.p.mu.Lock()
 	r.p.hosts[0].waiting = true
 	r.p.mu.Unlock()
-	if h := r.view("default"); !h.ReconcileDue.Equal(r.now.Add(ReconcileLease)) {
+	if h := r.view("default"); !h.ReconcileDue.Equal(r.now.Add(reconcileLease)) {
 		t.Errorf("due %v while the loop waits on a call, want a lease from now", h.ReconcileDue)
 	}
 }
@@ -153,7 +153,7 @@ func TestAGenerationsSettingsAreHandedOverBeforeItBoots(t *testing.T) {
 	r.m.mu.Unlock()
 	at := slices.Index(events, "generation 2")
 	exit := slices.IndexFunc(events, func(e string) bool {
-		return e == "exit large "+string(ExitRemoved) || e == "exit large "+string(ExitIdle)
+		return e == "exit large "+string(exitRemoved) || e == "exit large "+string(exitIdle)
 	})
 	if at < 0 || exit < 0 || exit < at {
 		t.Errorf("events %v, want generation 2 before its boot retires large's idle runner", events)
@@ -188,7 +188,7 @@ func TestAHostsPassStampsItsReconcile(t *testing.T) {
 	r := newRig(t, oneHost())
 	r.now = r.now.Add(time.Minute)
 	r.p.passHost(t.Context(), 0)
-	if h := r.view("default"); !h.Reconciled.Equal(r.now) || !h.ReconcileDue.Equal(r.now.Add(ReconcileLease)) {
+	if h := r.view("default"); !h.Reconciled.Equal(r.now) || !h.ReconcileDue.Equal(r.now.Add(reconcileLease)) {
 		t.Errorf("reconciled %v due %v, want the host's pass at %v and its lease after it", h.Reconciled, h.ReconcileDue, r.now)
 	}
 }

@@ -116,6 +116,12 @@
       "reason": "staging: the settings store's applier, which hands the pool each committed revision, reads it; delete this entry when it does"
     },
     {
+      "code": "DS1501",
+      "symbol": "go://github.com/cplieger/manade/internal/pool#Registry.Apply",
+      "path": "internal/pool/registry.go",
+      "reason": "staging: the settings store's applier, which hands the pool each committed revision, reads it; delete this entry when it does"
+    },
+    {
       "code": "DS1301",
       "symbol": "go://github.com/cplieger/manade/internal/pool#RouteStatus.Scope",
       "path": "internal/pool/routing.go",
@@ -201,6 +207,12 @@
     },
     {
       "code": "DS1102",
+      "symbol": "go://github.com/cplieger/manade/internal/store#HistoryTx.Runs",
+      "path": "internal/store/history.go",
+      "reason": "staging: the API's run history (GET /api/runs) reads it; delete this entry when it does"
+    },
+    {
+      "code": "DS1501",
       "symbol": "go://github.com/cplieger/manade/internal/store#HistoryTx.Runs",
       "path": "internal/store/history.go",
       "reason": "staging: the API's run history (GET /api/runs) reads it; delete this entry when it does"

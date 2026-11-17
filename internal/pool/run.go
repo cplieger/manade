@@ -5,11 +5,11 @@ import (
 	"time"
 )
 
-// ReconcileLease is how long a host's reconcile loop may go between beats
+// reconcileLease is how long a host's reconcile loop may go between beats
 // before it reads as wedged, and passLease how long the pass loop may go
 // between passes: six reconciler intervals each.
 const (
-	ReconcileLease = 6 * reconcileEvery
+	reconcileLease = 6 * reconcileEvery
 	passLease      = 6 * reconcileEvery
 )
 
@@ -96,7 +96,7 @@ func (g *generation) shutdown(endSessions func()) {
 // Booted holds once the first generation's boot pass has run; Passing
 // while the current generation's pass loop ended a pass within passLease;
 // Reconciling while each connected host's reconcile loop waits on a call
-// or beat within ReconcileLease; Applied while no settings revision has
+// or beat within reconcileLease; Applied while no settings revision has
 // taken longer than applyLease to apply. GitHub and the hosts are
 // upstreams, so no session, poll or host state counts.
 type Health struct{ Booted, Passing, Reconciling, Applied bool }
@@ -109,7 +109,7 @@ func (g *generation) health(now time.Time) Health {
 	h := Health{Booted: !g.booting, Passing: now.Sub(g.stepped) <= passLease, Reconciling: true}
 	for _, ho := range g.hosts {
 		if _, connected := g.d.Links.Host(ho.cfg.Name); connected {
-			h.Reconciling = h.Reconciling && (ho.waiting || now.Sub(ho.beat) <= ReconcileLease)
+			h.Reconciling = h.Reconciling && (ho.waiting || now.Sub(ho.beat) <= reconcileLease)
 		}
 	}
 	return h

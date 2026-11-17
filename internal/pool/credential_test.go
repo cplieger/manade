@@ -21,7 +21,7 @@ func TestNoCredentialBootsAndACredentialServes(t *testing.T) {
 	r.restart()
 	r.listed(app, "small", 1)
 	snap := r.reg.Snapshot()
-	if w := waitingRun(t, &snap, 1); w.Reason != JobScopeNotServed || w.Detail != DetailNotConnected {
+	if w := waitingRun(t, &snap, 1); w.Reason != jobScopeNotServed || w.Detail != detailNotConnected {
 		t.Errorf("job %+v, want scope_not_served (github_not_connected)", w)
 	}
 	if h := r.reg.Health(); !h.Booted {
@@ -40,7 +40,7 @@ func TestNoCredentialBootsAndACredentialServes(t *testing.T) {
 	}
 	r.listed(app, "small", 1)
 	snap = r.reg.Snapshot()
-	if w := waitingRun(t, &snap, 1); w.Reason == JobScopeNotServed {
+	if w := waitingRun(t, &snap, 1); w.Reason == jobScopeNotServed {
 		t.Errorf("job %+v, want it served under the credential", w)
 	}
 }
@@ -65,7 +65,7 @@ func TestEnterpriseScopeUnderAnAppIsNotServed(t *testing.T) {
 	r.p.mu.Lock()
 	detail := ensureDetail(r.p.scopes["enterprises/big"].ensureErr)
 	r.p.mu.Unlock()
-	if detail != DetailEnterpriseNeedsToken {
+	if detail != detailEnterpriseNeedsToken {
 		t.Errorf("enterprise scope detail = %q, want enterprise_needs_token", detail)
 	}
 	if r.small() == nil {

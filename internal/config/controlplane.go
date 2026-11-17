@@ -15,10 +15,10 @@ import (
 	"github.com/cplieger/go/slogx"
 )
 
-// DefaultOpsAddr is OPS_LISTEN_ADDR's default, the port after the product's
+// defaultOpsAddr is OPS_LISTEN_ADDR's default, the port after the product's
 // 7463 and the hosts' 7464 that the fleet's port table, IANA and
 // Prometheus's default port allocations all leave free.
-const DefaultOpsAddr = ":7465"
+const defaultOpsAddr = ":7465"
 
 // ControlPlane is the control plane's environment.
 type ControlPlane struct {
@@ -53,7 +53,7 @@ func (g *GitHub) Set() bool { return g.AppKey != nil || g.Token.Reveal() != "" }
 func LoadControlPlane() (*ControlPlane, error) {
 	cp := &ControlPlane{
 		DataDir: cmp.Or(envx.String("DATA_DIR"), "/data"),
-		OpsAddr: httpserver.OpsAddr(envx.String("OPS_LISTEN_ADDR"), DefaultOpsAddr),
+		OpsAddr: httpserver.OpsAddr(envx.String("OPS_LISTEN_ADDR"), defaultOpsAddr),
 	}
 	var ok bool
 	cp.LogLevel, ok = slogx.ParseLevel(envx.String("LOG_LEVEL"), slog.LevelInfo)

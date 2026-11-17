@@ -51,7 +51,7 @@ func TestADrainedHostTakesNoNewJobUntilResumed(t *testing.T) {
 		r.assign(r.small(), 2, 1)
 		r.pass()
 		w := r.reg.Snapshot().Waiting
-		if len(w) != 1 || w[0].Reason != JobNoHostServing || w[0].Hosts[0].Reason != HostDraining {
+		if len(w) != 1 || w[0].Reason != JobNoHostServing || w[0].Hosts[0].Reason != hostDraining {
 			t.Errorf("waiting %+v, want the assignment held by the drain", w)
 		}
 	})

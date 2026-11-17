@@ -35,8 +35,8 @@ type tables struct {
 	meta             *bolttable.Table[[]byte, json.RawMessage]
 	scaleSets        *bolttable.Table[[]byte, ScaleSet]
 	routes           *bolttable.Table[[]byte, Route]
-	journal          *bolttable.Table[uint64, Entry]
-	journalCount     *bolttable.Counter[uint64, Entry]
+	journal          *bolttable.Table[uint64, entry]
+	journalCount     *bolttable.Counter[uint64, entry]
 	runs             *bolttable.Table[uint64, Run]
 	runsByRunner     *bolttable.Index[uint64, Run]
 	runsOpen         *bolttable.Index[uint64, Run]
@@ -76,8 +76,8 @@ func declare(s *bolttable.Schema) (*bolttable.Schema, *tables) {
 	t.routes = bolttable.Must(bolttable.Define(gh, prefixRoutes, "routes",
 		bolttable.BytesKey{}, bolttable.JSON[Route](1), bolttable.TableOptions{}))
 	t.journal = bolttable.Must(bolttable.Define(bolttable.Must(s.Namespace("journal")), prefixJournal, "journal",
-		bolttable.Uint64Key{}, bolttable.JSON[Entry](1), bolttable.TableOptions{}))
-	t.journalCount = bolttable.Must(bolttable.DefineCounter(t.journal, "journal_rows", 1, func(uint64, *Entry) int64 { return 1 }))
+		bolttable.Uint64Key{}, bolttable.JSON[entry](1), bolttable.TableOptions{}))
+	t.journalCount = bolttable.Must(bolttable.DefineCounter(t.journal, "journal_rows", 1, func(uint64, *entry) int64 { return 1 }))
 	hist := bolttable.Must(s.Namespace("history"))
 	t.runs = bolttable.Must(bolttable.Define(hist, prefixRuns, "runs",
 		bolttable.Uint64Key{}, bolttable.JSON[Run](1), bolttable.TableOptions{}))

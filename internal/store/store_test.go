@@ -122,11 +122,11 @@ func readRaw(t *testing.T, s *Store, key string) (json.RawMessage, bool) {
 }
 
 // journalRows answers every journal row in key order.
-func journalRows(t *testing.T, s *Store) []Entry {
+func journalRows(t *testing.T, s *Store) []entry {
 	t.Helper()
-	var out []Entry
+	var out []entry
 	err := s.live.View(t.Context(), func(r *bolttable.ReadTx) error {
-		return journal.Scan(r, bolttable.Range{}, func(_ uint64, e *Entry) (bool, error) {
+		return journal.Scan(r, bolttable.Range{}, func(_ uint64, e *entry) (bool, error) {
 			out = append(out, *e)
 			return true, nil
 		})

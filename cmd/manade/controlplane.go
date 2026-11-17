@@ -139,7 +139,7 @@ func serveOpen(ctx context.Context, r *cpRun, st *store.Store, path string) int 
 		"file", path, "class", class, "error", err, "ops", r.ops.String())
 	r.health.outage(httpserver.OutageClass(class))
 	<-ctx.Done()
-	r.health.BeginDrain()
+	r.health.beginDrain()
 	drainHook()
 	return 0
 }
@@ -194,7 +194,7 @@ func serveStore(ctx context.Context, r *cpRun, st *store.Store) int {
 	r.log.Info("The control plane is running", "version", version, "ops", r.ops.String(), "hosts_socket", hostsSocket,
 		"github", gh != nil)
 	<-poolCtx.Done()
-	r.health.BeginDrain()
+	r.health.beginDrain()
 	drainHook()
 	<-poolDone
 	stopAfter()

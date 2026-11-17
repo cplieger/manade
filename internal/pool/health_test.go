@@ -60,7 +60,7 @@ func TestHealthReconcilingCountsOnlyConnectedHosts(t *testing.T) {
 		[]profileSpec{{name: "small", hosts: []string{"default", "nas"}, cpus: 2, mem: 4}}, app)
 	r := newRig(t, cfg)
 	r.pass()
-	r.now = r.now.Add(ReconcileLease + time.Second)
+	r.now = r.now.Add(reconcileLease + time.Second)
 	r.p.passHost(t.Context(), 0)
 	if h := r.reg.Health(); h.Reconciling {
 		t.Errorf("health %+v with nas connected past its lease, want not Reconciling", h)

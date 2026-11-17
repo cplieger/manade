@@ -43,7 +43,7 @@ func (r *REST) Variable(ctx context.Context, s *config.Scope, name string) (valu
 		}
 	}
 	if err != nil {
-		r.failure(ctx, OpVariable)
+		r.failure(ctx, opVariable)
 		return "", false, r.forbidden(err)
 	}
 	return *v.Value, true, nil
@@ -69,7 +69,7 @@ func (r *REST) SetVariable(ctx context.Context, s *config.Scope, name, value str
 		err = refusal(&a)
 	}
 	if err != nil {
-		r.failure(ctx, OpVariable)
+		r.failure(ctx, opVariable)
 		return r.forbidden(err)
 	}
 	return nil
@@ -83,7 +83,7 @@ func (r *REST) DeleteVariable(ctx context.Context, s *config.Scope, name string)
 		err = refusal(&a)
 	}
 	if err != nil {
-		r.failure(ctx, OpVariable)
+		r.failure(ctx, opVariable)
 		return r.forbidden(err)
 	}
 	return nil

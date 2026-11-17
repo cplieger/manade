@@ -18,15 +18,15 @@ const (
 	// ExitLost is a runner whose container ended while it held a job, with
 	// no JobCompleted.
 	ExitLost ExitReason = "lost"
-	// ExitRemoved is a container removed by its host or by someone else,
+	// exitRemoved is a container removed by its host or by someone else,
 	// never counted as the runner's own error.
-	ExitRemoved  ExitReason = "removed"
-	ExitIdle     ExitReason = "idle"
-	ExitLifetime ExitReason = "lifetime"
+	exitRemoved  ExitReason = "removed"
+	exitIdle     ExitReason = "idle"
+	exitLifetime ExitReason = "lifetime"
 )
 
 // ExitReasons is every ExitReason.
-var ExitReasons = []ExitReason{ExitCompleted, ExitFailed, ExitOOM, ExitLost, ExitRemoved, ExitIdle, ExitLifetime}
+var ExitReasons = []ExitReason{ExitCompleted, ExitFailed, ExitOOM, ExitLost, exitRemoved, exitIdle, exitLifetime}
 
 // JobResult is a JobCompleted's result.
 type JobResult string
@@ -35,12 +35,12 @@ type JobResult string
 const (
 	JobSucceeded JobResult = "succeeded"
 	JobFailed    JobResult = "failed"
-	JobCanceled  JobResult = "canceled"
-	JobOther     JobResult = "other"
+	jobCanceled  JobResult = "canceled"
+	jobOther     JobResult = "other"
 )
 
 // JobResults is every JobResult.
-var JobResults = []JobResult{JobSucceeded, JobFailed, JobCanceled, JobOther}
+var JobResults = []JobResult{JobSucceeded, JobFailed, jobCanceled, jobOther}
 
 // Recorder takes the pool's events, the measurements a snapshot cannot
 // read later; host, scope and profile are the settings' names. Its methods

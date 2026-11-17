@@ -18,7 +18,7 @@ type cpParts struct {
 
 // cpHealth is the control plane's /healthz: one check per loop,
 // each with its fixed reason. It reads starting until the store opens and
-// the first generation boots, and draining from BeginDrain on; until the
+// the first generation boots, and draining from beginDrain on; until the
 // parts are set, every other check passes, so the starting reason stands
 // alone.
 type cpHealth struct {
@@ -47,9 +47,9 @@ var outageReasons = []struct {
 	{httpserver.OutageUnreadable, "the store cannot open: its file cannot be read"},
 }
 
-// BeginDrain makes /healthz answer 503 for good; call it when the
+// beginDrain makes /healthz answer 503 for good; call it when the
 // shutdown begins.
-func (h *cpHealth) BeginDrain() { h.draining.Store(true) }
+func (h *cpHealth) beginDrain() { h.draining.Store(true) }
 
 // handler answers /healthz.
 func (h *cpHealth) handler() http.Handler { return health.CheckHandler(h.checks()...) }

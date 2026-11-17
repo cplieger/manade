@@ -15,16 +15,16 @@ type HostReason string
 
 // The host reasons, in the order the first that holds is taken.
 const (
-	HostTooSmall           HostReason = "too_small"
-	HostDisconnected       HostReason = "disconnected"
-	HostDraining           HostReason = "draining"
-	HostSettingsNotApplied HostReason = "settings_not_applied"
-	HostProving            HostReason = "proving"
-	HostUnproved           HostReason = "unproved"
-	HostNotReady           HostReason = "not_ready"
-	HostImagePulling       HostReason = "image_pulling"
-	HostHeld               HostReason = "held"
-	HostFull               HostReason = "full"
+	hostTooSmall           HostReason = "too_small"
+	hostDisconnected       HostReason = "disconnected"
+	hostDraining           HostReason = "draining"
+	hostSettingsNotApplied HostReason = "settings_not_applied"
+	hostProving            HostReason = "proving"
+	hostUnproved           HostReason = "unproved"
+	hostNotReady           HostReason = "not_ready"
+	hostImagePulling       HostReason = "image_pulling"
+	hostHeld               HostReason = "held"
+	hostFull               HostReason = "full"
 )
 
 // JobReason is why a job waits, a closed set: the first that applies,
@@ -34,24 +34,24 @@ type JobReason string
 // The job reasons.
 const (
 	JobStarting           JobReason = "starting"
-	JobAwaitingAssignment JobReason = "awaiting_assignment"
-	JobUnassignable       JobReason = "unassignable"
-	JobScopeNotServed     JobReason = "scope_not_served"
+	jobAwaitingAssignment JobReason = "awaiting_assignment"
+	jobUnassignable       JobReason = "unassignable"
+	jobScopeNotServed     JobReason = "scope_not_served"
 	JobProfileLimit       JobReason = "profile_limit"
-	JobHeldForOlder       JobReason = "held_for_older"
+	jobHeldForOlder       JobReason = "held_for_older"
 	JobWaitingForSlot     JobReason = "waiting_for_slot"
-	JobImagePulling       JobReason = "image_pulling"
-	JobProving            JobReason = "proving"
-	JobHostNotReady       JobReason = "host_not_ready"
+	jobImagePulling       JobReason = "image_pulling"
+	jobProving            JobReason = "proving"
+	jobHostNotReady       JobReason = "host_not_ready"
 	JobNoHostServing      JobReason = "no_host_serving"
-	JobTooLarge           JobReason = "too_large"
+	jobTooLarge           JobReason = "too_large"
 )
 
 // JobReasons is every JobReason, nearest running first; a tie for the
 // reason a job waited under longest goes to the one nearer running.
 var JobReasons = []JobReason{
-	JobStarting, JobAwaitingAssignment, JobUnassignable, JobScopeNotServed, JobProfileLimit, JobHeldForOlder,
-	JobWaitingForSlot, JobImagePulling, JobProving, JobHostNotReady, JobNoHostServing, JobTooLarge,
+	JobStarting, jobAwaitingAssignment, jobUnassignable, jobScopeNotServed, JobProfileLimit, jobHeldForOlder,
+	JobWaitingForSlot, jobImagePulling, jobProving, jobHostNotReady, JobNoHostServing, jobTooLarge,
 }
 
 // The details beside a reason that names a cause of its own: a scope not
@@ -59,18 +59,18 @@ var JobReasons = []JobReason{
 // state (hostapi.SectionState) or a profile's readiness reason
 // (hostapi.Reason) is passed through as its own text.
 const (
-	DetailEnsureFailed         = "ensure_failed"
-	DetailNotConnected         = "github_not_connected"
-	DetailEnterpriseNeedsToken = "enterprise_needs_token"
-	DetailHeldByOtherPool      = "held_by_other_pool"
-	DetailScaleSetLost         = "scale_set_lost"
-	DetailPublic               = "public"
+	detailEnsureFailed         = "ensure_failed"
+	detailNotConnected         = "github_not_connected"
+	detailEnterpriseNeedsToken = "enterprise_needs_token"
+	detailHeldByOtherPool      = "held_by_other_pool"
+	detailScaleSetLost         = "scale_set_lost"
+	detailPublic               = "public"
 	DetailVisibilityUnproved   = "visibility_unproved"
-	DetailQueueReadPartial     = "queue_read_partial"
-	DetailPoolStopping         = "pool_stopping"
-	DetailAdopting             = "adopting"
-	DetailCapacityOverLimits   = "capacity_over_limits"
-	DetailProfileRefused       = "profile_refused"
+	detailQueueReadPartial     = "queue_read_partial"
+	detailPoolStopping         = "pool_stopping"
+	detailAdopting             = "adopting"
+	detailCapacityOverLimits   = "capacity_over_limits"
+	detailProfileRefused       = "profile_refused"
 )
 
 // Waiting is one job waiting for a runner: an assignment GitHub made with
@@ -82,8 +82,8 @@ type Waiting struct {
 	github.ScaleSet
 	Name   string
 	Reason JobReason
-	// Detail names the cause beside JobScopeNotServed, and HeldBy the
-	// other pool's owner beside DetailHeldByOtherPool.
+	// Detail names the cause beside scope_not_served, and HeldBy the
+	// other pool's owner beside held_by_other_pool.
 	Detail, HeldBy string
 	Hosts          []HostWait
 	RunID          int64
@@ -94,7 +94,7 @@ type Waiting struct {
 }
 
 // HostWait is one host's reason for a waiting job, with its runners and
-// max_runners (0 for none) beside HostFull.
+// max_runners (0 for none) beside full.
 type HostWait struct {
 	Host           string
 	Reason         HostReason
@@ -124,15 +124,15 @@ func (g *generation) waiting(now time.Time, a *allocation) []Waiting {
 			w := Waiting{ScaleSet: b.ss, Created: j.Created, Name: j.Name, RunID: j.RunID}
 			switch {
 			case now.Before(b.skipped[jobKey{j.Name, j.RunID}].until):
-				w.Reason = JobUnassignable
+				w.Reason = jobUnassignable
 			case !b.fundable:
 				g.notServed(&w, b)
 			case a.funded[[2]int{bi, rank}]:
-				w.Reason = JobAwaitingAssignment
+				w.Reason = jobAwaitingAssignment
 			default:
 				g.slotReason(&w, bi, a, used, now)
 			}
-			if w.Reason != JobUnassignable && b.fundable {
+			if w.Reason != jobUnassignable && b.fundable {
 				rank++
 			}
 			out = append(out, w)
@@ -157,20 +157,20 @@ func (g *generation) slotReason(w *Waiting, bi int, a *allocation, used []int, n
 		return slices.ContainsFunc(w.Hosts, func(hw HostWait) bool { return slices.Contains(rs, hw.Reason) })
 	}
 	switch {
-	case has(HostHeld):
-		w.Reason = JobHeldForOlder
-	case has(HostFull):
+	case has(hostHeld):
+		w.Reason = jobHeldForOlder
+	case has(hostFull):
 		w.Reason = JobWaitingForSlot
-	case has(HostImagePulling):
-		w.Reason = JobImagePulling
-	case has(HostProving):
-		w.Reason = JobProving
-	case has(HostSettingsNotApplied, HostNotReady):
-		w.Reason = JobHostNotReady
-	case has(HostDisconnected, HostDraining, HostUnproved):
+	case has(hostImagePulling):
+		w.Reason = jobImagePulling
+	case has(hostProving):
+		w.Reason = jobProving
+	case has(hostSettingsNotApplied, hostNotReady):
+		w.Reason = jobHostNotReady
+	case has(hostDisconnected, hostDraining, hostUnproved):
 		w.Reason = JobNoHostServing
 	default:
-		w.Reason = JobTooLarge
+		w.Reason = jobTooLarge
 	}
 }
 
@@ -183,19 +183,19 @@ func (g *generation) hostWait(p, h int, a *allocation, claimant bool, now time.T
 	slot := g.l.slot(p, h)
 	switch {
 	case (!hb.reported || ho.st != nil) && !slot.within(hb.budget):
-		w.Reason = HostTooSmall
+		w.Reason = hostTooSmall
 	case !ho.reachable || !ho.cfg.Accepting || !ho.current || ho.proof(now) != proofHeld:
 		w.Reason, w.Detail = unserved(ho, now)
 	case !ho.settled:
-		w.Reason, w.Detail = HostNotReady, DetailAdopting
+		w.Reason, w.Detail = hostNotReady, detailAdopting
 	case ho.admit != nil:
-		w.Reason, w.Detail = HostNotReady, DetailCapacityOverLimits
+		w.Reason, w.Detail = hostNotReady, detailCapacityOverLimits
 	case !hb.ready[p]:
 		w.Reason, w.Detail = profileWait(ho.st, g.cfg.Profiles[p].Name)
 	case slot.within(a.left[h]) && a.held[h] && !claimant:
-		w.Reason = HostHeld
+		w.Reason = hostHeld
 	default:
-		w.Reason, w.Runners = HostFull, g.runnersOn(h)
+		w.Reason, w.Runners = hostFull, g.runnersOn(h)
 		if hb.budget.runners < unbounded {
 			w.Limit = int(hb.budget.runners)
 		}
@@ -208,15 +208,15 @@ func (g *generation) hostWait(p, h int, a *allocation, claimant bool, now time.T
 func unserved(ho *host, now time.Time) (reason HostReason, detail string) {
 	switch {
 	case !ho.reachable:
-		return HostDisconnected, ""
+		return hostDisconnected, ""
 	case !ho.cfg.Accepting:
-		return HostDraining, ""
+		return hostDraining, ""
 	case !ho.current:
-		return HostSettingsNotApplied, sectionDetail(ho.st)
+		return hostSettingsNotApplied, sectionDetail(ho.st)
 	case ho.proof(now) == proofPending:
-		return HostProving, ""
+		return hostProving, ""
 	}
-	return HostUnproved, ""
+	return hostUnproved, ""
 }
 
 // sectionDetail names why a host does not run the section last delivered:
@@ -232,15 +232,15 @@ func sectionDetail(st *hostapi.Status) string {
 func profileWait(st *hostapi.Status, profile string) (reason HostReason, detail string) {
 	i := slices.IndexFunc(st.Profiles, func(ps hostapi.ProfileStatus) bool { return ps.Name == profile })
 	if i < 0 {
-		return HostNotReady, DetailProfileRefused
+		return hostNotReady, detailProfileRefused
 	}
 	switch r := st.Profiles[i].Reason; r {
 	case hostapi.ReasonPulling, hostapi.ReasonImageMissing:
-		return HostImagePulling, ""
+		return hostImagePulling, ""
 	case hostapi.ReasonEgressChangePending, hostapi.ReasonEgressChangeFailed, hostapi.ReasonRestartPending:
-		return HostSettingsNotApplied, string(r)
+		return hostSettingsNotApplied, string(r)
 	default:
-		return HostNotReady, string(r)
+		return hostNotReady, string(r)
 	}
 }
 
@@ -265,8 +265,8 @@ func (g *generation) runnersOn(h int) int {
 // notServed gives w, a job of b, its scope_not_served reason: the detail
 // and, beside held_by_other_pool, the holder; g.mu is held.
 func (g *generation) notServed(w *Waiting, b *book) {
-	w.Reason, w.Detail = JobScopeNotServed, g.unservedDetail(b)
-	if w.Detail == DetailHeldByOtherPool {
+	w.Reason, w.Detail = jobScopeNotServed, g.unservedDetail(b)
+	if w.Detail == detailHeldByOtherPool {
 		w.HeldBy = g.sets[b].holder
 	}
 }
@@ -276,21 +276,21 @@ func (g *generation) unservedDetail(b *book) string {
 	s := g.sets[b]
 	switch {
 	case g.stopping:
-		return DetailPoolStopping
+		return detailPoolStopping
 	case !g.credentialed:
-		return DetailNotConnected
+		return detailNotConnected
 	case s.scope.public:
-		return DetailPublic
+		return detailPublic
 	case s.lost && s.scope.ensureErr != nil:
 		return ensureDetail(s.scope.ensureErr)
 	case s.lost:
-		return DetailScaleSetLost
+		return detailScaleSetLost
 	case s.held:
-		return DetailHeldByOtherPool
+		return detailHeldByOtherPool
 	case !s.scope.private():
 		return DetailVisibilityUnproved
 	}
-	return DetailQueueReadPartial
+	return detailQueueReadPartial
 }
 
 // unensured answers the queued jobs of each profile serving a scope that
@@ -307,7 +307,7 @@ func (g *generation) unensured() []Waiting {
 			for _, job := range sc.jobsOf(pr.Name) {
 				out = append(out, Waiting{
 					Scope: sc.cfg.Key, Profile: pr.Name, Created: job.Created, Name: job.Name, RunID: job.RunID,
-					Reason: JobScopeNotServed, Detail: ensureDetail(sc.ensureErr),
+					Reason: jobScopeNotServed, Detail: ensureDetail(sc.ensureErr),
 				})
 			}
 		}
@@ -321,9 +321,9 @@ func (g *generation) unensured() []Waiting {
 func ensureDetail(err error) string {
 	switch {
 	case errors.Is(err, errNoCredential):
-		return DetailNotConnected
+		return detailNotConnected
 	case errors.Is(err, github.ErrEnterpriseNeedsToken):
-		return DetailEnterpriseNeedsToken
+		return detailEnterpriseNeedsToken
 	}
-	return DetailEnsureFailed
+	return detailEnsureFailed
 }
