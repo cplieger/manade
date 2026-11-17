@@ -463,7 +463,7 @@ func TestRecordedSeriesFollowTheGenerations(t *testing.T) {
 			t.Errorf("starts %v before a generation, want none", f.Samples)
 		}
 	})
-	m.Generation(settings(), 1, at)
+	m.Generation(settings(), at)
 	fams := gather(t, m)
 	t.Run("seeded from the first settings", func(t *testing.T) {
 		wantValue(t, fams, unix(at), "manade_generation_applied_timestamp_seconds")
@@ -529,7 +529,7 @@ func TestRecordedSeriesFollowTheGenerations(t *testing.T) {
 	next.Hosts = next.Hosts[:1]
 	next.Profiles[0].Hosts = []string{"default"}
 	next.Profiles = append(next.Profiles[:1], config.Profile{Name: "gpu", Hosts: []string{"default"}, Scopes: []string{"acme"}})
-	m.Generation(next, 2, at.Add(time.Hour))
+	m.Generation(next, at.Add(time.Hour))
 	t.Run("a later generation adds and deletes", func(t *testing.T) {
 		fams := gather(t, m)
 		wantValue(t, fams, unix(at.Add(time.Hour)), "manade_generation_applied_timestamp_seconds")
@@ -575,7 +575,7 @@ func TestARetiringProfileKeepsItsSeries(t *testing.T) {
 	m := newMetrics(t, &snap)
 	cfg := settings()
 	cfg.Profiles[1].Scopes, cfg.Profiles[1].Retiring = []string{"acme"}, []string{"acme/app"}
-	m.Generation(cfg, 1, at)
+	m.Generation(cfg, at)
 	fams := gather(t, m)
 	wantValue(t, fams, 0, "manade_runner_starts_total", "default", "acme/app", "large", "ok")
 	wantValue(t, fams, 0, "manade_runner_starts_total", "default", "acme", "large", "ok")
@@ -588,7 +588,7 @@ func TestDurationsUseTheLadderToSevenDays(t *testing.T) {
 	want := []float64{0, 1, 2, 5, 10, 30, 60, 120, 300, 600, 1800, 3600, 7200, 21600, 43200, day, 3 * day, 7 * day}
 	snap := fixture()
 	m := newMetrics(t, &snap)
-	m.Generation(settings(), 1, at)
+	m.Generation(settings(), at)
 	m.JobFinished("small", pool.JobSucceeded, 5*24*time.Hour)
 	m.JobAssigned("small", 24*time.Hour)
 	fams := gather(t, m)

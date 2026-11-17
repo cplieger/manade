@@ -324,10 +324,15 @@ type fakeGitHub struct {
 	// varErr answers every variable call when set.
 	varErr error
 	// ensureHold, when set, runs at the start of each ensure, outside mu;
-	// with ensureBlock, each ensure answers only once its context ends.
-	ensureHold  func()
-	ensureBlock bool
-	mu          sync.Mutex
+	// with ensureBlock, each ensure answers only once its context ends,
+	// keeping each one's deadline in blockedUntil and the most blocked at
+	// once in blockedPeak.
+	ensureHold   func()
+	blockedUntil []time.Time
+	blocked      int
+	blockedPeak  int
+	ensureBlock  bool
+	mu           sync.Mutex
 	// jitFail refuses each JIT config; ensureFail, each ensure.
 	jitFail, ensureFail bool
 }
@@ -398,7 +403,16 @@ func (g *fakeGitHub) Ensure(ctx context.Context, _ *config.Config, sc *config.Sc
 		hold()
 	}
 	if block {
+		g.mu.Lock()
+		dl, _ := ctx.Deadline()
+		g.blockedUntil = append(g.blockedUntil, dl)
+		g.blocked++
+		g.blockedPeak = max(g.blockedPeak, g.blocked)
+		g.mu.Unlock()
 		<-ctx.Done()
+		g.mu.Lock()
+		g.blocked--
+		g.mu.Unlock()
 		return nil, ctx.Err()
 	}
 	g.mu.Lock()
@@ -505,16 +519,12 @@ type fakeMetrics struct {
 	linkErrors map[string]int
 	starts     map[string]int
 	exits      map[ExitReason]int
-	// events holds each RunnerExited and Generation call in order;
-	// generations, each Generation's revision and settings.
+	// events holds each RunnerExited and Generation call in order, the
+	// nth generation as "generation n"; generations, each Generation's
+	// settings.
 	events      []string
-	generations []generationCall
+	generations []*config.Config
 	mu          sync.Mutex
-}
-
-type generationCall struct {
-	cfg *config.Config
-	rev uint64
 }
 
 func newFakeMetrics() *fakeMetrics {
@@ -548,11 +558,11 @@ func (m *fakeMetrics) linkErrorsOf(host string) int {
 	return m.linkErrors[host]
 }
 
-func (m *fakeMetrics) Generation(cfg *config.Config, rev uint64, _ time.Time) {
+func (m *fakeMetrics) Generation(cfg *config.Config, _ time.Time) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.generations = append(m.generations, generationCall{cfg: cfg, rev: rev})
-	m.events = append(m.events, fmt.Sprint("generation ", rev))
+	m.generations = append(m.generations, cfg)
+	m.events = append(m.events, fmt.Sprint("generation ", len(m.generations)))
 }
 
 // fakeSettler keeps each Settle call; the test decides what the settings

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"testing"
 	"time"
 )
@@ -107,13 +108,13 @@ func TestHealthAppliedFollowsTheApply(t *testing.T) {
 	}
 }
 
-// A GitHub that never answers holds an install's ensures for one
-// ensureTimeout together, whatever the scope count: the generation boots
-// with the unanswered scopes not served and the apply stays within its
-// lease.
+// A GitHub that never answers holds an install's ensures under one
+// deadline, ensureLimit at a time, whatever the scope count: the
+// generation boots with the unanswered scopes not served and the apply
+// stays within its lease.
 func TestEnsuresThatHangShareOneTimeout(t *testing.T) {
 	old := ensureTimeout
-	ensureTimeout = 100 * time.Millisecond
+	ensureTimeout = 250 * time.Millisecond
 	t.Cleanup(func() { ensureTimeout = old })
 	r := quietRig(t, oneHost())
 	next := cloneConfig(r.cfg)
@@ -147,10 +148,20 @@ func TestEnsuresThatHangShareOneTimeout(t *testing.T) {
 		}
 	}()
 	r.apply(next)
-	took := time.Since(start)
 	close(done)
-	if took > 3*ensureTimeout {
-		t.Errorf("the install took %v with 12 hanging ensures, want about one ensureTimeout (%v)", took, ensureTimeout)
+	r.gh.mu.Lock()
+	until, peak := slices.Clone(r.gh.blockedUntil), r.gh.blockedPeak
+	r.gh.mu.Unlock()
+	if len(until) != len(added) {
+		t.Fatalf("%d ensures blocked, want one per added scope (%d)", len(until), len(added))
+	}
+	for i, dl := range until {
+		if dl.IsZero() || !dl.Equal(until[0]) {
+			t.Errorf("ensure %d ran under the deadline %v, want the round's one deadline %v", i, dl, until[0])
+		}
+	}
+	if peak != ensureLimit {
+		t.Errorf("%d ensures ran at once, want ensureLimit (%d)", peak, ensureLimit)
 	}
 	select {
 	case h := <-notApplied:

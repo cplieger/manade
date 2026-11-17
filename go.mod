@@ -23,7 +23,6 @@ require (
 	github.com/cplieger/go/textsafe v1.1.0
 	github.com/cplieger/go/yamlenv v1.1.0
 	go.yaml.in/yaml/v4 v4.0.0
-	golang.org/x/sync v0.25.0
 )
 
 require (
@@ -33,5 +32,6 @@ require (
 	github.com/golang-jwt/jwt/v5 v5.3.1 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	go.etcd.io/bbolt v1.5.0 // indirect
+	golang.org/x/sync v0.25.0 // indirect
 	golang.org/x/sys v0.50.0 // indirect
 )

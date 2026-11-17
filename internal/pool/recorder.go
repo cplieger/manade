@@ -53,5 +53,5 @@ type Recorder interface {
 	HostLinkError(host string)
 	// Generation takes each generation's settings before the generation
 	// boots, so the events it records name what those settings hold.
-	Generation(cfg *config.Config, revision uint64, at time.Time)
+	Generation(cfg *config.Config, at time.Time)
 }

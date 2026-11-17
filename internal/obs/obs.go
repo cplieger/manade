@@ -190,7 +190,7 @@ func setsOf(cfg *config.Config) labelSets {
 
 // Generation seeds at 0 each label set cfg allows that the last settings
 // did not, and deletes each one they allowed that cfg does not.
-func (m *Metrics) Generation(cfg *config.Config, _ uint64, at time.Time) {
+func (m *Metrics) Generation(cfg *config.Config, at time.Time) {
 	next := setsOf(cfg)
 	m.mu.Lock()
 	defer m.mu.Unlock()

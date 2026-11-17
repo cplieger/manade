@@ -14,7 +14,6 @@ import (
 
 	"github.com/cplieger/manade/internal/config"
 	"github.com/cplieger/manade/internal/github"
-	"golang.org/x/sync/errgroup"
 )
 
 const (
@@ -187,15 +186,16 @@ func (g *generation) ensure(ctx context.Context) {
 func (g *generation) ensureAll(ctx context.Context, due []*scope) {
 	ectx, cancel := context.WithTimeout(ctx, ensureTimeout)
 	defer cancel()
-	var eg errgroup.Group
-	eg.SetLimit(ensureLimit)
+	slots := make(chan struct{}, ensureLimit)
+	var wg sync.WaitGroup
 	for _, sc := range due {
-		eg.Go(func() error {
+		slots <- struct{}{}
+		wg.Go(func() {
+			defer func() { <-slots }()
 			g.ensureScope(ctx, ectx, sc)
-			return nil
 		})
 	}
-	_ = eg.Wait()
+	wg.Wait()
 }
 
 // lacksSets reports a profile serving sc with no scale set recorded, or

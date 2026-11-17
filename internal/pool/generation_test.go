@@ -3,6 +3,7 @@ package pool
 import (
 	"context"
 	"log/slog"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -19,6 +20,7 @@ func TestAGenerationChangeKeepsABusyRunnerAndItsJob(t *testing.T) {
 	name := r.hosts[0].running()[0]
 	r.pass()
 	r.poll(b, github.Stats{Assigned: 1, Running: 1}, github.Event{Kind: github.Started, Runner: name, Name: "a", RunID: 1})
+	first := r.cfg
 	cfg := cloneConfig(r.cfg)
 	cfg.Profiles[0].MilliCPUs = 1000
 	r.apply(cfg)
@@ -30,8 +32,8 @@ func TestAGenerationChangeKeepsABusyRunnerAndItsJob(t *testing.T) {
 	if r.gh.wasRemoved(rec.id) || len(r.hosts[0].running()) != 1 {
 		t.Error("a generation change removed a runner on a job")
 	}
-	if got := r.m.generations; len(got) != 2 || got[1].rev != 2 || got[1].cfg != cfg {
-		t.Errorf("generations recorded %v, want revisions 1 and 2 with their settings", got)
+	if got := r.m.generations; !slices.Equal(got, []*config.Config{first, cfg}) {
+		t.Errorf("generations recorded %v, want the first settings, then the resized ones", got)
 	}
 }
 
