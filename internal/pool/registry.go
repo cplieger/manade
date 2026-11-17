@@ -39,6 +39,7 @@ type scaleSets interface {
 	JIT(ctx context.Context, scope *config.Scope, ss github.ScaleSet, name string) (github.JIT, error)
 	RemoveRunner(ctx context.Context, scope *config.Scope, id int64) error
 	Recheck(ctx context.Context) error
+	Exists(ctx context.Context, scope *config.Scope, ss github.ScaleSet) (bool, error)
 }
 
 // restAPI is the REST reads the pool makes besides the queue's.
@@ -57,6 +58,10 @@ type scaleSetRecords interface {
 	// RecordScaleSets writes each of sets, replacing the record of the same
 	// scope and profile, in one transaction.
 	RecordScaleSets(ctx context.Context, sets []github.ScaleSet, at time.Time) error
+	// DropScaleSet drops the record of ss, one GitHub no longer has, with
+	// its journal row in one transaction, unless the record names another
+	// ID.
+	DropScaleSet(ctx context.Context, ss github.ScaleSet, at time.Time) error
 }
 
 // sweeper reads the queued jobs of cfg's repository scopes until ctx ends.
@@ -113,9 +118,11 @@ type Registry struct {
 	// routeRecs holds the store's route records by scope without case once
 	// read, nil before.
 	routeRecs map[string]Route
-	changed   chan struct{}
-	now       func() time.Time
-	swg       sync.WaitGroup
+	// unreadable holds the recorded scale sets whose last read failed.
+	unreadable map[setKey]bool
+	changed    chan struct{}
+	now        func() time.Time
+	swg        sync.WaitGroup
 	// mu guards cur: a handler call holds it for reading, so no call lands
 	// in a generation after its successor copied it. smu guards spawn and
 	// sessions, and is never held while a generation's lock is taken or a
@@ -148,7 +155,7 @@ type want struct {
 // NewRegistry builds the pool for its first settings revision. It calls
 // nothing until Run.
 func NewRegistry(s *Settings, d *Deps) *Registry {
-	r := &Registry{d: *d, sessions: map[setKey]*session{}, changed: make(chan struct{}, 1), now: time.Now}
+	r := &Registry{d: *d, sessions: map[setKey]*session{}, unreadable: map[setKey]bool{}, changed: make(chan struct{}, 1), now: time.Now}
 	r.d.Log = cmp.Or(r.d.Log, slog.Default())
 	r.pending = s
 	return r
@@ -325,11 +332,28 @@ func (r *Registry) Polled(ss github.ScaleSet, p *github.Poll) {
 	r.cur.polled(ss, p)
 }
 
-// Held records whether another process holds the scale set's session.
-func (r *Registry) Held(ss github.ScaleSet, held bool) {
+// Held records whether another process holds the scale set's session, and
+// the holder GitHub named.
+func (r *Registry) Held(ss github.ScaleSet, held bool, owner string) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	r.cur.held(ss, held)
+	r.cur.held(ss, held, owner)
+}
+
+// Lost records that GitHub no longer has the scale set and forgets its
+// ended session, so the session reopens once the scope's ensure answers,
+// under the same ID too.
+func (r *Registry) Lost(ss github.ScaleSet) {
+	r.mu.RLock()
+	r.cur.lost(ss)
+	r.mu.RUnlock()
+	r.smu.Lock()
+	defer r.smu.Unlock()
+	k := setKey{ss.Scope, ss.Profile}
+	if s := r.sessions[k]; s != nil && s.ss.ID == ss.ID {
+		s.cancel()
+		delete(r.sessions, k)
+	}
 }
 
 // Beat refreshes the scale set's listener lease.
@@ -392,6 +416,48 @@ func (r *Registry) record(ctx context.Context, sets []github.ScaleSet) {
 	for _, ss := range fresh {
 		r.recorded[keyOf(ss)] = ss
 	}
+}
+
+// prune reads each orphaned scale set under g's credential and drops the
+// record of one GitHub no longer has (§9.3). A served one's loss is found
+// by its session; a failed read keeps the record and is logged once while
+// it fails.
+func (r *Registry) prune(ctx context.Context, g *generation) {
+	for _, ss := range r.orphaned(g.cfg) {
+		scope := g.settingsOf(ss.Scope)
+		found, err := g.gh.ScaleSets.Exists(ctx, &scope, ss)
+		if ctx.Err() != nil {
+			return
+		}
+		r.rmu.Lock()
+		k := keyOf(ss)
+		if err != nil && !r.unreadable[k] {
+			r.d.Log.Warn("Reading a recorded scale set failed, so its record is kept until a read tells", "scope", ss.Scope, "profile", ss.Profile, "id", ss.ID, "error", err)
+		}
+		if r.unreadable[k] = err != nil; err == nil {
+			delete(r.unreadable, k)
+		}
+		r.rmu.Unlock()
+		if err == nil && !found {
+			r.drop(ctx, ss)
+		}
+	}
+}
+
+// drop removes ss's record, with its journal row, unless an ensure has
+// recorded another ID for it since it was read.
+func (r *Registry) drop(ctx context.Context, ss github.ScaleSet) {
+	r.rmu.Lock()
+	defer r.rmu.Unlock()
+	if r.recorded[keyOf(ss)] != ss {
+		return
+	}
+	if err := r.d.Records.DropScaleSet(ctx, ss, r.now()); err != nil {
+		r.d.Log.Warn("Dropping the record of a scale set GitHub no longer has failed, so the next check drops it", "scope", ss.Scope, "profile", ss.Profile, "error", err)
+		return
+	}
+	delete(r.recorded, keyOf(ss))
+	r.d.Log.Info("GitHub no longer has an orphaned scale set, so its record is dropped", "scope", ss.Scope, "profile", ss.Profile, "id", ss.ID)
 }
 
 // orphaned answers the recorded scale sets cfg would not ensure (§9.3),

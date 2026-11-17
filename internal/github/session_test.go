@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"slices"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -518,9 +519,6 @@ func TestListenAnsweredRefusalMakesNoClaim(t *testing.T) {
 		{name: "rateLimited", fail: reply(http.StatusTooManyRequests, `{"message":"slow down"}`, "Retry-After", "60")},
 		{name: "unauthorized", fail: reply(http.StatusUnauthorized, `{"message":"Bad credentials"}`)},
 		{name: "badRequest", fail: func(w http.ResponseWriter, _ *http.Request) { exception(w, http.StatusBadRequest, "ArgumentException") }},
-		{name: "notFound", fail: func(w http.ResponseWriter, _ *http.Request) {
-			exception(w, http.StatusNotFound, "RunnerScaleSetNotFoundException")
-		}},
 		// scaleset v0.5.0 types neither status; these rows pin the error text
 		// unanswered reads them from.
 		{name: "forbidden", fail: reply(http.StatusForbidden, `{"message":"Resource not accessible by integration"}`)},
@@ -602,5 +600,68 @@ func TestListenCloseOutlastsNoJIT(t *testing.T) {
 	}
 	if n := len(f.seen("/api/v3/repos/acme/app/actions/runners/registration-token")); n != 3 {
 		t.Errorf("registration token requests = %d, want the create's, the JIT's and the close's", n)
+	}
+}
+
+// GitHub names the holder of a scale set's session in its 409, and the
+// scope's row shows that owner (§9.3): one bounded line, or none when the
+// message names no owner.
+func TestListenHeldNamesTheHolder(t *testing.T) {
+	for _, tc := range []struct {
+		name, message, owner string
+	}{
+		{name: "named", message: "The runner scale set small already has an active session for owner other-pool.", owner: "other-pool"},
+		{name: "unnamed", message: "refused"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			lf := newListen(t)
+			lf.b.do(func(b *broker) { b.holder = tc.message })
+			lf.run(t, 2, replaceAfterGap(lf, 0, 1))
+			if !slices.Equal(lf.h.owners, []string{tc.owner, ""}) {
+				t.Errorf("owners = %q, want %q while held and none once cleared", lf.h.owners, tc.owner)
+			}
+		})
+	}
+	t.Run("oneBoundedLine", func(t *testing.T) {
+		lf := newListen(t)
+		lf.b.do(func(b *broker) {
+			b.holder = "already has an active session for owner evil\npool" + strings.Repeat("x", 200) + "."
+		})
+		lf.run(t, 2, replaceAfterGap(lf, 0, 1))
+		if o := lf.h.owners[0]; strings.ContainsAny(o, "\n\r") || len(o) > 67 || !strings.HasPrefix(o, "evil") {
+			t.Errorf("owner = %q, want the holder's name as one line of at most 64 bytes and its cut mark", o)
+		}
+	})
+}
+
+// A session create GitHub answers not found means it dropped the scale
+// set: Listen reports it lost once and returns, retrying nothing, so the
+// pool ensures it again under its name (§9.3).
+func TestListenReportsALostScaleSet(t *testing.T) {
+	lf := newListen(t)
+	lf.b.do(func(b *broker) { delete(b.sets, 1) })
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		lf.s.Listen(t.Context(), scope(t, lf.cfg, "acme/app"), appSmallSet, "manade", lf.h)
+	}()
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("Listen did not return once the scale set was lost")
+	}
+	if lf.h.lost != 1 || len(lf.h.opened) != 0 {
+		t.Errorf("lost %d, opened %d; want the scale set lost once and no session", lf.h.lost, len(lf.h.opened))
+	}
+	lf.b.do(func(b *broker) {
+		if b.creates != 1 || b.closes != 0 {
+			t.Errorf("creates, closes = %d, %d; want the one create and nothing to close", b.creates, b.closes)
+		}
+	})
+	if len(*lf.waits) != 0 {
+		t.Errorf("waits = %v, want no retry of a lost scale set", *lf.waits)
+	}
+	if n := lf.rec.CountLevel(slog.LevelWarn, "no longer has the scale set"); n != 1 {
+		t.Errorf("lost WARN lines = %d, want 1", n)
 	}
 }

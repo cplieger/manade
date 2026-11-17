@@ -88,21 +88,39 @@ func (g *generation) polled(ss github.ScaleSet, poll *github.Poll) {
 	g.poke()
 }
 
-// held records whether another process holds the scale set's session. A
-// held scale set reports nothing, so its last figure no longer reserves.
-func (g *generation) held(ss github.ScaleSet, held bool) {
+// held records whether another process holds the scale set's session, and
+// the holder GitHub named. A held scale set reports nothing, so its last
+// figure no longer reserves.
+func (g *generation) held(ss github.ScaleSet, held bool, owner string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	b, s := g.book(ss)
 	if b == nil {
 		return
 	}
-	s.held = held
+	s.held, s.holder = held, owner
 	g.gate()
 	if held {
 		g.l.dropFlight(b, g.now())
 	}
 	g.d.Metrics.ScopeServing(ss.Scope, g.serving(s.scope))
+}
+
+// lost records that GitHub no longer has the scale set: it reports
+// nothing, so its last figure no longer reserves, and the scope's ensure
+// runs at once.
+func (g *generation) lost(ss github.ScaleSet) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	b, s := g.book(ss)
+	if b == nil {
+		return
+	}
+	s.lost, s.held, s.holder = true, false, ""
+	g.gate()
+	g.l.dropFlight(b, g.now())
+	g.d.Metrics.ScopeServing(ss.Scope, g.serving(s.scope))
+	wake(g.reensure)
 }
 
 // beat refreshes the scale set's listener lease.
@@ -114,18 +132,38 @@ func (g *generation) beat(ss github.ScaleSet) {
 	}
 }
 
-// serving reports whether sc is served: its scale sets ensured, private,
-// and no session of it held by another process; g.mu is held.
-func (g *generation) serving(sc *scope) bool {
-	if sc.ensureErr != nil || !sc.private() {
+// serving reports whether sc is served: scopeDetail names no reason it is
+// not; g.mu is held.
+func (g *generation) serving(sc *scope) bool { return g.scopeDetail(sc) == "" }
+
+// scopeDetail names why sc is not served, the first that holds, or none;
+// g.mu is held.
+func (g *generation) scopeDetail(sc *scope) string {
+	anySet := func(f func(*set) bool) bool {
+		for _, s := range g.sets {
+			if s.scope == sc && f(s) {
+				return true
+			}
+		}
 		return false
 	}
-	for _, s := range g.sets {
-		if s.scope == sc && s.held {
-			return false
-		}
+	switch {
+	case g.stopping:
+		return DetailPoolStopping
+	case !g.credentialed:
+		return DetailNotConnected
+	case sc.ensureErr != nil:
+		return ensureDetail(sc.ensureErr)
+	case sc.public:
+		return DetailPublic
+	case anySet(func(s *set) bool { return s.lost }):
+		return DetailScaleSetLost
+	case anySet(func(s *set) bool { return s.held }):
+		return DetailHeldByOtherPool
+	case !sc.private():
+		return DetailVisibilityUnproved
 	}
-	return true
+	return ""
 }
 
 // queued takes one sweep's reads, the sweep ending at ended. A scope read

@@ -53,7 +53,7 @@ func stats(t *testing.T, s *Store) bolttable.Stats {
 // holds any.
 func writeFile(t *testing.T, path string, rows, later map[string]string) {
 	t.Helper()
-	s, m, _, _ := declare(bolttable.NewSchema(schemaName))
+	s, m, _, _, _ := declare(bolttable.NewSchema(schemaName))
 	var l *bolttable.Table[[]byte, json.RawMessage]
 	if later != nil {
 		l = bolttable.Must(bolttable.Define(bolttable.Must(s.Namespace("later")), 0xef, "rows",
@@ -97,6 +97,22 @@ func readRaw(t *testing.T, s *Store, key string) (json.RawMessage, bool) {
 		t.Fatalf("read meta %s: %v", key, err)
 	}
 	return raw, found
+}
+
+// journalRows answers every journal row in key order.
+func journalRows(t *testing.T, s *Store) []Entry {
+	t.Helper()
+	var out []Entry
+	err := s.db.View(t.Context(), func(r *bolttable.ReadTx) error {
+		return journal.Scan(r, bolttable.Range{}, func(_ uint64, e *Entry) (bool, error) {
+			out = append(out, *e)
+			return true, nil
+		})
+	})
+	if err != nil {
+		t.Fatalf("read the journal: %v", err)
+	}
+	return out
 }
 
 func readStampOf(t *testing.T, s *Store) stamp {
@@ -169,7 +185,7 @@ func TestOpenDeclaresItsNamespaces(t *testing.T) {
 			got[ns.Name] = append(got[ns.Name], tb.Name)
 		}
 	}
-	if want := map[string][]string{"github": {"scalesets", "routes"}, "meta": {"meta"}}; !maps.EqualFunc(got, want, slices.Equal) {
+	if want := map[string][]string{"github": {"scalesets", "routes"}, "journal": {"journal"}, "meta": {"meta"}}; !maps.EqualFunc(got, want, slices.Equal) {
 		t.Errorf("namespaces = %v, want %v", got, want)
 	}
 }

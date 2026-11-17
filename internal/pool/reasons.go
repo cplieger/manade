@@ -56,6 +56,7 @@ const (
 	DetailNotConnected         = "github_not_connected"
 	DetailEnterpriseNeedsToken = "enterprise_needs_token"
 	DetailHeldByOtherPool      = "held_by_other_pool"
+	DetailScaleSetLost         = "scale_set_lost"
 	DetailPublic               = "public"
 	DetailVisibilityUnproved   = "visibility_unproved"
 	DetailQueueReadPartial     = "queue_read_partial"
@@ -74,10 +75,11 @@ type Waiting struct {
 	github.ScaleSet
 	Name   string
 	Reason JobReason
-	// Detail names the cause beside JobScopeNotServed.
-	Detail string
-	Hosts  []HostWait
-	RunID  int64
+	// Detail names the cause beside JobScopeNotServed, and HeldBy the
+	// other pool's owner beside DetailHeldByOtherPool.
+	Detail, HeldBy string
+	Hosts          []HostWait
+	RunID          int64
 	// Runners and Limit are the profile's runners and slots and its
 	// max_runners, beside JobProfileLimit.
 	Runners, Limit int
@@ -117,7 +119,7 @@ func (g *generation) waiting(now time.Time, a *allocation) []Waiting {
 			case now.Before(b.skipped[jobKey{j.Name, j.RunID}].until):
 				w.Reason = JobUnassignable
 			case !b.fundable:
-				w.Reason, w.Detail = JobScopeNotServed, g.unservedDetail(b)
+				g.notServed(&w, b)
 			case a.funded[[2]int{bi, rank}]:
 				w.Reason = JobAwaitingAssignment
 			default:
@@ -253,6 +255,15 @@ func (g *generation) runnersOn(h int) int {
 	return n
 }
 
+// notServed gives w, a job of b, its scope_not_served reason: the detail
+// and, beside held_by_other_pool, the holder; g.mu is held.
+func (g *generation) notServed(w *Waiting, b *book) {
+	w.Reason, w.Detail = JobScopeNotServed, g.unservedDetail(b)
+	if w.Detail == DetailHeldByOtherPool {
+		w.HeldBy = g.sets[b].holder
+	}
+}
+
 // unservedDetail names why b funds nothing; g.mu is held.
 func (g *generation) unservedDetail(b *book) string {
 	s := g.sets[b]
@@ -263,6 +274,10 @@ func (g *generation) unservedDetail(b *book) string {
 		return DetailNotConnected
 	case s.scope.public:
 		return DetailPublic
+	case s.lost && s.scope.ensureErr != nil:
+		return ensureDetail(s.scope.ensureErr)
+	case s.lost:
+		return DetailScaleSetLost
 	case s.held:
 		return DetailHeldByOtherPool
 	case !s.scope.private():

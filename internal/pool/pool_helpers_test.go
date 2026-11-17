@@ -45,8 +45,9 @@ type smodel struct {
 	jobOf map[string]*sjob
 	sets  []*sset
 	runID int64
-	// added counts the scopes the run added.
-	added int
+	// added counts the scopes the run added; lost, the scale sets GitHub
+	// dropped.
+	added, lost int
 }
 
 // newModel boots a quiet rig with every allowed scale set opened.
@@ -118,7 +119,7 @@ func (m *smodel) scopes() map[string]bool {
 // allows, oldest first, and sends every pending message.
 func (m *smodel) poll(s *sset, n int) {
 	b := m.book(s)
-	if b == nil {
+	if b == nil || m.r.p.sets[b].lost {
 		return
 	}
 	if !m.r.p.sets[b].opened {
@@ -284,13 +285,14 @@ func (m *smodel) step(in *bytesIn) {
 			}
 		})
 	case 10:
-		m.r.gh.set(func(g *fakeGitHub) {
-			if in.n(2) == 0 {
-				g.jitFail = !g.jitFail
-			} else {
-				g.ensureFail = !g.ensureFail
-			}
-		})
+		switch in.n(3) {
+		case 0:
+			m.r.gh.set(func(g *fakeGitHub) { g.jitFail = !g.jitFail })
+		case 1:
+			m.r.gh.set(func(g *fakeGitHub) { g.ensureFail = !g.ensureFail })
+		default:
+			m.lose(s)
+		}
 	case 11:
 		if in.n(3) == 0 {
 			m.restart()
@@ -300,6 +302,23 @@ func (m *smodel) step(in *bytesIn) {
 	default:
 		m.advance(time.Duration(in.n(120)) * time.Second)
 	}
+}
+
+// lose has GitHub drop s's scale set, as it purges one no session polled
+// for a day: its assigned jobs wait in the queue again, the pool's next
+// session create answers not found, and an ensure creates the scale set
+// anew under another ID.
+func (m *smodel) lose(s *sset) {
+	b := m.book(s)
+	if b == nil || m.r.p.sets[b].lost {
+		return
+	}
+	m.lost++
+	s.queue = append(slices.Clone(s.assigned), s.queue...)
+	s.assigned = nil
+	s.pending = slices.DeleteFunc(s.pending, func(e github.Event) bool { return e.Kind == github.Assigned })
+	m.r.gh.set(func(g *fakeGitHub) { g.ids[setKey{s.scope, s.profile}] = 1000 + m.lost })
+	m.r.reg.Lost(b.ss)
 }
 
 // reconfigure commits a new settings revision: a profile resized within

@@ -195,6 +195,7 @@ func TestRecheckRebuildsAfterReinstall(t *testing.T) {
 	f := newFake(t)
 	cfg, gh := load(t, true, reinstallLayout)
 	b := newBroker(t, f, "acme/app", "solo/tool")
+	b.set(1, fakeSet{name: "small", labels: []string{"small"}, group: 1, disableUpdate: true})
 	for _, id := range []string{"42", "43", "77"} {
 		f.route("/api/v3/app/installations/"+id+"/access_tokens", reply(http.StatusCreated,
 			`{"token":"ghs_scaleset`+id+`","expires_at":"`+time.Now().Add(time.Hour).UTC().Format(time.RFC3339)+`"}`))
@@ -263,6 +264,40 @@ func TestRecheckRebuildsAfterReinstall(t *testing.T) {
 		}
 		if n := len(f.seen("/repos/solo/tool/installation")); n != 1 {
 			t.Errorf("solo/tool lookups = %d, want the one proof of its configured installation_id and none at Recheck", n)
+		}
+	})
+}
+
+// A recorded scale set is gone once GitHub answers 404 for its ID or names
+// another set by it (§9.3); any other failure tells nothing.
+func TestExists(t *testing.T) {
+	f := newFake(t)
+	cfg, gh := load(t, false, setLayout)
+	b := newBroker(t, f, "acme/app")
+	b.set(1, fakeSet{name: "small", labels: []string{"small"}, group: 1, disableUpdate: true})
+	b.set(2, fakeSet{name: "big", labels: []string{"big"}, group: 1, disableUpdate: true})
+	s, _, _, _ := newTestScaleSets(t, f, gh, &clock{t: time.Now()})
+	sc := scope(t, cfg, "acme/app")
+	for _, tc := range []struct {
+		name  string
+		ss    ScaleSet
+		found bool
+	}{
+		{name: "present", ss: ScaleSet{Scope: "acme/app", Profile: "small", ID: 1}, found: true},
+		{name: "notFound", ss: ScaleSet{Scope: "acme/app", Profile: "small", ID: 9}},
+		{name: "anotherSetUnderTheID", ss: ScaleSet{Scope: "acme/app", Profile: "small", ID: 2}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			found, err := s.Exists(t.Context(), sc, tc.ss)
+			if err != nil || found != tc.found {
+				t.Errorf("Exists(%+v) = %v, %v; want %v", tc.ss, found, err, tc.found)
+			}
+		})
+	}
+	t.Run("failureTellsNothing", func(t *testing.T) {
+		f.route("/svc/_apis/runtime/runnerscalesets/1", reply(http.StatusForbidden, `{}`))
+		if found, err := s.Exists(t.Context(), sc, ScaleSet{Scope: "acme/app", Profile: "small", ID: 1}); err == nil {
+			t.Errorf("Exists on a failing GitHub = %v with no error, want the failure", found)
 		}
 	})
 }

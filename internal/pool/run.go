@@ -109,7 +109,7 @@ func (g *generation) health() Health {
 	now := g.now()
 	h := Health{Started: !g.booting, Listening: true, Reconciling: true, Stopping: g.stopping}
 	for _, s := range g.sets {
-		if s.scope.public || !g.credentialed {
+		if s.scope.public || s.lost || !g.credentialed {
 			continue
 		}
 		h.Started = h.Started && s.opened

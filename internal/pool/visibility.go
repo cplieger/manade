@@ -75,6 +75,7 @@ func (g *generation) visibility(ctx context.Context) {
 	}
 	g.routing(ctx, all, now)
 	if all {
+		g.reg.prune(ctx, g)
 		if err := g.gh.ScaleSets.Recheck(ctx); err != nil && ctx.Err() == nil {
 			g.log.Warn("Resolving the scopes' installations failed, so their clients stay as they are until the next pass", "error", err)
 		}

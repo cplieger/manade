@@ -375,3 +375,21 @@ func TestBuildReportsEveryPath(t *testing.T) {
 		t.Errorf("paths = %q, want %q", got, want)
 	}
 }
+
+// A key reaches the scope its settings entry named: what the pool reads a
+// scale set of a scope the settings dropped under (§9.3).
+func TestScopeOfAKeyIsItsParsedScope(t *testing.T) {
+	cfg := mustBuildJSON(t, &Config{}, object(
+		`"scopes": [{"repo": "acme/app", "default_profile": "p"}, {"org": "acme", "default_profile": "p"}, {"enterprise": "big", "default_profile": "p"}]`,
+		jsonHost, jsonProfile(`"scopes": ["acme/app", "acme", "enterprises/big"]`),
+	))
+	for i := range cfg.Scopes {
+		want := cfg.Scopes[i]
+		t.Run(strings.ReplaceAll(want.Key, "/", "_"), func(t *testing.T) {
+			got := ScopeOf(want.Key)
+			if got.Key != want.Key || got.Kind != want.Kind || got.Owner != want.Owner || got.Repo != want.Repo || got.RunnerGroup != want.RunnerGroup {
+				t.Errorf("ScopeOf(%q) = %+v, want %+v", want.Key, got, want)
+			}
+		})
+	}
+}

@@ -40,6 +40,8 @@ type generation struct {
 	now      func() time.Time
 	kick     chan struct{}
 	verify   chan struct{}
+	// reensure wakes the ensure loop for a lost scale set.
+	reensure chan struct{}
 	scopes   map[string]*scope
 	l        *ledger
 	log      *slog.Logger
@@ -71,7 +73,7 @@ func newGeneration(r *Registry, s *Settings) *generation {
 	}
 	g := &generation{
 		reg: r, d: &r.d, gh: gh, credentialed: s.GitHub != nil, cfg: cfg, sections: s.Sections, rev: s.Revision, log: r.d.Log, now: r.now,
-		l: newLedger(cfg), booting: true, kick: make(chan struct{}, 1), verify: make(chan struct{}, 1),
+		l: newLedger(cfg), booting: true, kick: make(chan struct{}, 1), verify: make(chan struct{}, 1), reensure: make(chan struct{}, 1),
 		scopes: map[string]*scope{}, sets: map[*book]*set{}, settled: map[setKey]bool{}, departed: map[string]map[string]int64{}, gone: map[string]*config.Scope{}, born: r.now(),
 	}
 	for i := range cfg.Hosts {
@@ -135,9 +137,12 @@ type set struct {
 	beat time.Time
 	// retryAt holds starts back after a failed JIT config.
 	retryAt time.Time
+	// holder is the owner GitHub named for a held session.
+	holder string
 	// opened reports a session opened; held, a session another process
-	// holds.
-	opened, held bool
+	// holds; lost, a scale set GitHub no longer has, which the scope's
+	// ensure finds or creates again.
+	opened, held, lost bool
 }
 
 // keepSets records old's scale sets whose scope and profile g's settings
@@ -166,10 +171,16 @@ func (g *generation) ensure(ctx context.Context) {
 	}
 }
 
-// lacksSets reports a profile serving sc with no scale set recorded.
+// lacksSets reports a profile serving sc with no scale set recorded, or
+// one of sc's scale sets lost.
 func (g *generation) lacksSets(sc *scope) bool {
 	for i := range g.cfg.Profiles {
 		if g.cfg.Profiles[i].Serves(sc.cfg.Key) && g.bookOf(sc.cfg.Key, g.cfg.Profiles[i].Name) == nil {
+			return true
+		}
+	}
+	for _, s := range g.sets {
+		if s.scope == sc && s.lost {
 			return true
 		}
 	}
@@ -195,11 +206,30 @@ func (g *generation) ensureScope(ctx context.Context, sc *scope) {
 	}
 	sc.ensureErr = nil
 	for _, ss := range sets {
-		if g.bookOf(ss.Scope, ss.Profile) == nil {
+		if b := g.bookOf(ss.Scope, ss.Profile); b == nil {
 			g.addSet(ss)
+		} else {
+			g.found(b, ss)
 		}
 	}
 	g.gate()
+}
+
+// found takes an ensure's answer for a scale set g holds; g.mu is held. A
+// new ID is a scale set GitHub created again: a runner registered on the
+// old one takes no job, so each is marked stale, and the listener's lease
+// starts again for the session the new ID opens.
+func (g *generation) found(b *book, ss github.ScaleSet) {
+	s := g.sets[b]
+	if b.ss.ID != ss.ID {
+		b.ss.ID = ss.ID
+		for _, rr := range b.runners {
+			rr.stale = true
+		}
+	}
+	if s.lost {
+		s.lost, s.beat = false, g.now()
+	}
 }
 
 // runEnsure retries each scope whose ensure failed every ensureRetry until
@@ -213,6 +243,7 @@ func (g *generation) runEnsure(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
+		case <-g.reensure:
 		}
 		g.reg.record(ctx, nil)
 		if g.retryEnsure(ctx) && ctx.Err() == nil {
@@ -221,13 +252,13 @@ func (g *generation) runEnsure(ctx context.Context) {
 	}
 }
 
-// retryEnsure ensures again each scope whose last ensure failed, and
-// reports whether any was due.
+// retryEnsure ensures again each scope whose last ensure failed or that
+// lost a scale set, and reports whether any was due.
 func (g *generation) retryEnsure(ctx context.Context) bool {
 	g.mu.Lock()
 	var due []*scope
 	for i := range g.cfg.Scopes {
-		if sc := g.scopes[g.cfg.Scopes[i].Key]; sc.ensureErr != nil {
+		if sc := g.scopes[g.cfg.Scopes[i].Key]; sc.ensureErr != nil || g.lacksSets(sc) {
 			due = append(due, sc)
 		}
 	}
@@ -246,10 +277,11 @@ func (g *generation) addSet(ss github.ScaleSet) {
 }
 
 // book finds the scale set's records, nil for one this generation does
-// not hold.
+// not hold under ss's ID: a closing session's late call never lands on
+// the scale set an ensure found again.
 func (g *generation) book(ss github.ScaleSet) (*book, *set) {
 	b := g.bookOf(ss.Scope, ss.Profile)
-	if b == nil {
+	if b == nil || b.ss.ID != ss.ID {
 		return nil, nil
 	}
 	return b, g.sets[b]
@@ -267,7 +299,8 @@ func (g *generation) bookOf(scope, profile string) *book {
 }
 
 // servedSets answers the sessions that should be open: one per scale set
-// of a scope not proven public, none without a credential.
+// of a scope not proven public that GitHub still has, none without a
+// credential.
 func (g *generation) servedSets() map[setKey]want {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -276,7 +309,7 @@ func (g *generation) servedSets() map[setKey]want {
 		return out
 	}
 	for b, s := range g.sets {
-		if !s.scope.public {
+		if !s.scope.public && !s.lost {
 			out[setKey{b.ss.Scope, b.ss.Profile}] = want{gh: g.gh, scope: s.scope.cfg, owner: g.cfg.PoolName, ss: b.ss}
 		}
 	}
@@ -380,7 +413,10 @@ func (g *generation) takeBook(old *generation, ob *book, at []int) {
 	if nb != nil {
 		nb.carry(ob, at, g.l.profiles[nb.profile].hosts)
 		s, os := g.sets[nb], old.sets[ob]
-		s.beat, s.retryAt, s.opened, s.held = os.beat, os.retryAt, os.opened, os.held
+		s.beat, s.retryAt, s.opened, s.held, s.lost, s.holder = os.beat, os.retryAt, os.opened, os.held, os.lost, os.holder
+		if s.lost {
+			wake(g.reensure)
+		}
 	}
 	same := nb != nil && sameSpec(&old.cfg.Profiles[ob.profile], &g.cfg.Profiles[nb.profile])
 	for name, r := range ob.runners {
@@ -442,7 +478,7 @@ func (b *book) carry(o *book, at, hosts []int) {
 // settles it; g.mu is held.
 func (g *generation) gate() {
 	for b, s := range g.sets {
-		b.serve = g.credentialed && !g.stopping && !s.scope.public && !s.held
+		b.serve = g.credentialed && !g.stopping && !s.scope.public && !s.held && !s.lost
 		b.fundable = b.serve && s.scope.private() && !s.scope.partial
 	}
 	now := g.now()

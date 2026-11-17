@@ -99,6 +99,22 @@ func (g *generation) scopeOf(key string) *scope {
 	return nil
 }
 
+// settingsOf answers the settings of the scope with key: the generation's,
+// a dropped scope's it still keeps, or else the scope the key names.
+func (g *generation) settingsOf(key string) config.Scope {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if sc := g.scopeOf(key); sc != nil {
+		return *sc.cfg
+	}
+	for k, sc := range g.gone {
+		if strings.EqualFold(k, key) {
+			return *sc
+		}
+	}
+	return config.ScopeOf(key)
+}
+
 // settle hands the settler each stop that ended and that this generation
 // has not handed it before.
 func (g *generation) settle() {

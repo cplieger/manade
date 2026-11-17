@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"strconv"
 	"strings"
 	"time"
 
@@ -34,6 +35,26 @@ func (s *Store) ScaleSets(ctx context.Context) ([]ScaleSet, error) {
 		})
 	})
 	return out, err
+}
+
+// DropScaleSet drops the record of ss, a scale set GitHub no longer has,
+// with its journal row in one transaction. A record an ensure has since
+// moved to another ID, or one already gone, is kept and journals nothing.
+func (s *Store) DropScaleSet(ctx context.Context, ss ScaleSet, at time.Time) error {
+	key := scaleSetKey(ss.Scope, ss.Profile)
+	return s.db.Update(ctx, func(tx *bolttable.Tx) error {
+		cur, found, err := scaleSets.Get(tx.Read(), key)
+		if err != nil || !found || cur.ID != ss.ID {
+			return err
+		}
+		if _, err := scaleSets.Delete(tx, key); err != nil {
+			return err
+		}
+		return write(tx, &Entry{
+			At: at, Actor: Actor{Kind: ActorPool}, Action: ActionScaleSetRecordDropped, Subject: ss.Scope, Outcome: OutcomeDone,
+			Facts: map[string]string{"profile": ss.Profile, "scale_set_id": strconv.Itoa(ss.ID)},
+		})
+	})
 }
 
 // RecordScaleSets writes every one of sets in one transaction, each

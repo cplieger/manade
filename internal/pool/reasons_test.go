@@ -240,7 +240,7 @@ func TestEachJobReason(t *testing.T) {
 	t.Run("scopeHeldByAnotherPool", func(t *testing.T) {
 		t.Parallel()
 		r := quietRig(t, oneHost())
-		r.reg.Held(r.small().ss, true)
+		r.reg.Held(r.small().ss, true, "other-pool")
 		if w := reasonOf(t, r); w.Reason != JobScopeNotServed || w.Detail != DetailHeldByOtherPool {
 			t.Errorf("job %q (%q), want scope_not_served (held_by_other_pool)", w.Reason, w.Detail)
 		}

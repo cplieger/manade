@@ -10,8 +10,8 @@ import (
 
 // No job is ever stuck (D9): whatever boots, budgets, assignments, exits,
 // restarts of either role, unreachable, disconnected and full hosts,
-// refused starts, vanished images, failed ensures and settings changes
-// came before, once the faults end and the budget frees, no assignment
+// refused starts, vanished images, failed ensures, scale sets GitHub
+// dropped and settings changes came before, once the faults end and the budget frees, no assignment
 // waits beside room for its runner, and every job runs. GitHub never
 // cancels an assignment but to reassign it.
 

@@ -182,3 +182,17 @@ func (ds *docScope) target(path string, p *problems) Scope {
 	}
 	return Scope{Kind: ScopeEnterprise, Owner: ds.Enterprise, Key: "enterprises/" + ds.Enterprise}
 }
+
+// ScopeOf answers the scope key names, as its settings entry parses with
+// nothing but its target set: what reaches a scope the settings no longer
+// hold.
+func ScopeOf(key string) Scope {
+	ds := docScope{Org: key}
+	if name, ok := strings.CutPrefix(key, "enterprises/"); ok {
+		ds = docScope{Enterprise: name}
+	} else if strings.Contains(key, "/") {
+		ds = docScope{Repo: key}
+	}
+	s, _ := ds.parse("", &problems{})
+	return s
+}

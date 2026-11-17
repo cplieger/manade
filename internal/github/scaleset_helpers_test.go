@@ -23,6 +23,8 @@ import (
 // here /svc, and to each session's message queue, here /queue/<set>.
 type broker struct {
 	createWith http.HandlerFunc
+	// holder is a conflict's message, which names the session's holder.
+	holder     string
 	sets       map[int]*fakeSet
 	groups     map[string]int
 	queue      map[int][]string
@@ -63,7 +65,7 @@ func newBroker(t *testing.T, f *fakeGitHub, scopes ...string) *broker {
 	t.Helper()
 	b := &broker{
 		f: f, sets: map[int]*fakeSet{}, groups: map[string]int{}, queue: map[int][]string{},
-		remove: map[int64]int{}, nextSet: 100,
+		remove: map[int64]int{}, nextSet: 100, holder: "refused",
 	}
 	exp := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
 	for _, key := range scopes {
@@ -173,6 +175,12 @@ func (b *broker) serve(w http.ResponseWriter, r *http.Request) {
 		b.removeRunner(w, int64(id(len(parts)-1)))
 	case len(parts) == 4:
 		b.scaleSets(w, r, body)
+	case len(parts) == 5 && r.Method == http.MethodGet:
+		if b.sets[id(4)] == nil {
+			exception(w, http.StatusNotFound, "RunnerScaleSetNotFoundException")
+			return
+		}
+		_ = json.NewEncoder(w).Encode(b.setJSON(id(4)))
 	case len(parts) == 5 && r.Method == http.MethodPatch:
 		b.patches = append(b.patches, string(body))
 		b.sets[id(4)] = decodeSet(body)
@@ -243,10 +251,19 @@ func (b *broker) session(w http.ResponseWriter, r *http.Request, set int) {
 		b.createWith(w, r)
 		return
 	}
+	if b.sets[set] == nil {
+		exception(w, http.StatusNotFound, "RunnerScaleSetNotFoundException")
+		return
+	}
 	if b.conflict > 0 {
 		b.conflict--
 		b.refused++
-		exception(w, http.StatusConflict, "RunnerScaleSetSessionConflictException")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"typeName": "GitHub.Actions.Runtime.WebApi.RunnerScaleSetSessionConflictException, GitHub.Actions.Runtime.WebApi",
+			"message":  b.holder,
+		})
 		return
 	}
 	_, _ = fmt.Fprintf(w, `{"sessionId":"00000000-0000-4000-8000-%012d","ownerName":"manade","messageQueueUrl":"%s/queue/%d",`+
@@ -325,9 +342,11 @@ type handler struct {
 	opened   []Stats
 	polls    []Poll
 	held     []bool
+	owners   []string
 	log      []string
 	capacity int
 	beats    int
+	lost     int
 	mu       sync.Mutex
 }
 
@@ -356,11 +375,19 @@ func (h *handler) Polled(_ ScaleSet, p *Poll) {
 	}
 }
 
-func (h *handler) Held(_ ScaleSet, held bool) {
+func (h *handler) Held(_ ScaleSet, held bool, owner string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.held = append(h.held, held)
+	h.owners = append(h.owners, owner)
 	h.log = append(h.log, "held="+strconv.FormatBool(held))
+}
+
+func (h *handler) Lost(ScaleSet) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.lost++
+	h.log = append(h.log, "lost")
 }
 
 func (h *handler) Beat(ScaleSet) {

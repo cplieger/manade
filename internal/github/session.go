@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/actions/scaleset"
+	"github.com/cplieger/go/textsafe"
 	"github.com/cplieger/manade/internal/config"
 )
 
@@ -79,8 +80,12 @@ type Handler interface {
 	// poll answered more than 60 seconds after it began never arrives.
 	Polled(ss ScaleSet, p *Poll)
 	// Held reports whether another process holds the scale set's session,
-	// which stops the scale set being served.
-	Held(ss ScaleSet, held bool)
+	// which stops the scale set being served, and owner, the holder GitHub
+	// named: empty when held is false or GitHub named none.
+	Held(ss ScaleSet, held bool, owner string)
+	// Lost reports that GitHub no longer has the scale set: its session
+	// create answered not found. Listen returns after it.
+	Lost(ss ScaleSet)
 	// Beat marks the end of each session create, poll, ack and close,
 	// answered or not, and each 5 seconds of a rate limit's wait. Two beats
 	// are at most 5 seconds and one such call apart; a poll or a create
@@ -120,12 +125,12 @@ type listen struct {
 
 // Listen serves the session of ss, a scale set of scope, under owner (the
 // pool name, which GitHub names the holder by) until ctx ends, then closes
-// it, and returns once the close is done. Every failure is counted, logged
-// and retried.
-// Before each poll, when more than 60 seconds have passed since the last
-// answered poll began, or the scope's client was rebuilt (Recheck), it
-// replaces the session: a holder whose claim lapsed still receives every
-// message beside its successor.
+// it and returns once the close is done; a create answered not found ends
+// it at once through Handler.Lost. Every other failure is counted, logged
+// and retried. Before each poll, when more than 60 seconds have passed
+// since the last answered poll began, or the scope's client was rebuilt
+// (Recheck), it replaces the session: a holder whose claim lapsed still
+// receives every message beside its successor.
 func (s *ScaleSets) Listen(ctx context.Context, scope *config.Scope, ss ScaleSet, owner string, h Handler) {
 	l := &listen{s: s, h: h, sc: s.scope(scope), ss: ss, owner: owner, log: s.rest.log.With("scope", ss.Scope, "profile", ss.Profile)}
 	defer l.close(ctx)
@@ -152,26 +157,22 @@ type opening struct {
 }
 
 // open creates the session, retrying after each refusal (pause), and
-// answers false only when ctx ends.
+// answers false when ctx ends or the scale set is lost.
 func (l *listen) open(ctx context.Context) bool {
 	o := opening{since: l.s.now()}
 	for {
 		sess, err := l.create(ctx)
 		l.h.Beat(l.ss)
 		if err == nil {
-			now := l.s.now()
-			if !o.held.IsZero() {
-				l.log.Info("The scale set's session is no longer held elsewhere, so it is served again", "duration", now.Sub(o.held).Round(time.Second))
-				l.h.Held(l.ss, false)
-			}
-			if o.warned || o.alarmed {
-				l.log.Info("The scale set's session opened after failing", "duration", now.Sub(o.since).Round(time.Second))
-			}
-			l.sess, l.id, l.last = sess, 0, now
-			l.h.Opened(l.ss, *cmp.Or(statsOf(sess.Session().Statistics), &Stats{}))
+			l.opened(sess, &o)
 			return true
 		}
 		if ctx.Err() != nil {
+			return false
+		}
+		if errors.Is(err, scaleset.NotFoundError) {
+			l.log.Warn("GitHub no longer has the scale set, so the pool ensures it again under its name", "id", l.ss.ID)
+			l.h.Lost(l.ss)
 			return false
 		}
 		l.refused(err, &o)
@@ -179,6 +180,20 @@ func (l *listen) open(ctx context.Context) bool {
 			return false
 		}
 	}
+}
+
+// opened takes the session an open created, ending the states o logged.
+func (l *listen) opened(sess *scaleset.MessageSessionClient, o *opening) {
+	now := l.s.now()
+	if !o.held.IsZero() {
+		l.log.Info("The scale set's session is no longer held elsewhere, so it is served again", "duration", now.Sub(o.held).Round(time.Second))
+		l.h.Held(l.ss, false, "")
+	}
+	if o.warned || o.alarmed {
+		l.log.Info("The scale set's session opened after failing", "duration", now.Sub(o.since).Round(time.Second))
+	}
+	l.sess, l.id, l.last = sess, 0, now
+	l.h.Opened(l.ss, *cmp.Or(statsOf(sess.Session().Statistics), &Stats{}))
 }
 
 // create opens a session on the loop's own client, built again when the
@@ -212,8 +227,7 @@ func (l *listen) create(ctx context.Context) (*scaleset.MessageSessionClient, er
 // (https://github.com/actions/scaleset/blob/v0.5.0/errors.go#L190).
 func unanswered(err error) bool {
 	var rl *scaleset.RateLimitError
-	if errors.As(err, &rl) || errors.Is(err, scaleset.UnauthorizedError) ||
-		errors.Is(err, scaleset.BadRequestError) || errors.Is(err, scaleset.NotFoundError) {
+	if errors.As(err, &rl) || errors.Is(err, scaleset.UnauthorizedError) || errors.Is(err, scaleset.BadRequestError) {
 		return false
 	}
 	_, status, found := strings.Cut(err.Error(), `(status="`)
@@ -231,8 +245,9 @@ func (l *listen) refused(err error, o *opening) {
 	switch {
 	case conflict && o.held.IsZero() && l.prev != booting && (!own || now.Sub(from) > lapse):
 		o.held = now
-		l.log.Error("Another process holds the scale set's session, so the pool stops serving it")
-		l.h.Held(l.ss, true)
+		owner := holderOf(err)
+		l.log.Error("Another process holds the scale set's session, so the pool stops serving it", "owner", owner)
+		l.h.Held(l.ss, true, owner)
 	case conflict && l.prev == booting && !o.alarmed && now.Sub(o.since) >= conflictAlarm:
 		o.alarmed = true
 		l.log.Error("The scale set's session is still held elsewhere after 2 minutes, so another process may be serving it")
@@ -245,6 +260,17 @@ func (l *listen) refused(err error, o *opening) {
 	if !conflict && unanswered(err) {
 		o.doubt = now
 	}
+}
+
+// holderOf reads the owner a session conflict's message names ("… already
+// has an active session for owner <owner>.") as one bounded line, empty
+// when it names none.
+func holderOf(err error) string {
+	_, owner, found := strings.Cut(err.Error(), "active session for owner ")
+	if !found {
+		return ""
+	}
+	return textsafe.SanitizeSingleLineBounded(strings.TrimSuffix(strings.TrimSpace(owner), "."), 64)
 }
 
 var errLate = errors.New("the poll ran past 60 seconds, so its answer is dropped and the session replaced")

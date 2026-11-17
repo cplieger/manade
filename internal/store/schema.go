@@ -28,12 +28,14 @@ var stampKey = []byte("store")
 // meta holds one row per fact, each decoded by the code that owns it, so a
 // write of one fact leaves every other byte for byte. scaleSets and routes
 // are the github namespace's records of every scale set the pool ensured and
-// of each scope's routing variable as the pool last wrote it.
-var schema, meta, scaleSets, routes = declare(bolttable.NewSchema(schemaName))
+// of each scope's routing variable as the pool last wrote it. journal holds
+// one row per change to this file's state, keyed in the order written.
+var schema, meta, scaleSets, routes, journal = declare(bolttable.NewSchema(schemaName))
 
 // declare declares every namespace of this build in s.
 func declare(s *bolttable.Schema) (
 	sch *bolttable.Schema, m *bolttable.Table[[]byte, json.RawMessage], ss *bolttable.Table[[]byte, ScaleSet], rt *bolttable.Table[[]byte, Route],
+	j *bolttable.Table[uint64, Entry],
 ) {
 	m = bolttable.Must(bolttable.Define(bolttable.Must(s.Namespace("meta")), prefixMeta, "meta",
 		bolttable.BytesKey{}, bolttable.JSON[json.RawMessage](1), bolttable.TableOptions{}))
@@ -42,5 +44,7 @@ func declare(s *bolttable.Schema) (
 		bolttable.BytesKey{}, bolttable.JSON[ScaleSet](1), bolttable.TableOptions{}))
 	rt = bolttable.Must(bolttable.Define(gh, prefixRoutes, "routes",
 		bolttable.BytesKey{}, bolttable.JSON[Route](1), bolttable.TableOptions{}))
-	return s, m, ss, rt
+	j = bolttable.Must(bolttable.Define(bolttable.Must(s.Namespace("journal")), prefixJournal, "journal",
+		bolttable.Uint64Key{}, bolttable.JSON[Entry](1), bolttable.TableOptions{}))
+	return s, m, ss, rt, j
 }

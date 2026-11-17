@@ -33,7 +33,12 @@ func (refusing) JIT(context.Context, *config.Scope, github.ScaleSet, string) (gi
 
 func (refusing) RemoveRunner(context.Context, *config.Scope, int64) error { return errNoCredential }
 func (refusing) Recheck(context.Context) error                            { return nil }
-func (refusing) Private(context.Context, *config.Scope) (bool, error)     { return false, errNoCredential }
+
+func (refusing) Exists(context.Context, *config.Scope, github.ScaleSet) (bool, error) {
+	return false, errNoCredential
+}
+
+func (refusing) Private(context.Context, *config.Scope) (bool, error) { return false, errNoCredential }
 
 func (refusing) Variable(context.Context, *config.Scope, string) (value string, found bool, err error) {
 	return "", false, errNoCredential

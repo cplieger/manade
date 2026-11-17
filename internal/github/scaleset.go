@@ -7,6 +7,7 @@ import (
 	"maps"
 	"net/http"
 	"slices"
+	"strconv"
 	"sync"
 	"time"
 
@@ -262,6 +263,25 @@ func (s *ScaleSets) ensure(ctx context.Context, c *scaleset.Client, cfg *config.
 	}
 	s.rest.rec.Orphaned(scope.Key, len(all))
 	return out, nil
+}
+
+// Exists reports whether GitHub still has ss, a scale set of scope: false
+// once GitHub answers not found for its ID or names another scale set by
+// it. Any other failure is an error, counted as a scale set error.
+func (s *ScaleSets) Exists(ctx context.Context, scope *config.Scope, ss ScaleSet) (bool, error) {
+	c, err := s.client(ctx, s.scope(scope))
+	if err != nil {
+		return false, err
+	}
+	got, err := c.GetRunnerScaleSetByID(ctx, ss.ID)
+	switch {
+	case errors.Is(err, scaleset.NotFoundError):
+		return false, nil
+	case err != nil:
+		s.rest.failure(ctx, OpScaleSet)
+		return false, failed("scale set "+strconv.Itoa(ss.ID)+" of "+ss.Scope, err)
+	}
+	return got != nil && got.Name == ss.Profile, nil
 }
 
 // JIT registers runner name in ss, a scale set of scope. A failure is

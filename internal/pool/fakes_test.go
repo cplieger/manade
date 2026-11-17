@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"maps"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -277,7 +278,18 @@ type fakeGitHub struct {
 	// "delete scope name".
 	vars   map[string]string
 	varOps []string
-	next   int64
+	// gone holds the scale sets GitHub no longer has, by goneKey;
+	// existsErr, the scopes whose scale-set reads fail. asked and
+	// askedSets are every such read's scope and scale set.
+	gone      map[string]bool
+	existsErr map[string]bool
+	asked     []config.Scope
+	askedSets []github.ScaleSet
+	next      int64
+	// idBase is added to every ID Ensure answers, and ids replaces the ID
+	// of a scale set GitHub created again.
+	idBase int
+	ids    map[setKey]int
 	// varErr answers every variable call when set.
 	varErr error
 	mu     sync.Mutex
@@ -286,7 +298,10 @@ type fakeGitHub struct {
 }
 
 func newFakeGitHub(cfg *config.Config) *fakeGitHub {
-	return &fakeGitHub{cfg: cfg, regs: map[int64]bool{}, busy: map[int64]bool{}, public: map[string]bool{}, vars: map[string]string{}}
+	return &fakeGitHub{
+		cfg: cfg, regs: map[int64]bool{}, busy: map[int64]bool{}, public: map[string]bool{}, vars: map[string]string{},
+		gone: map[string]bool{}, existsErr: map[string]bool{}, ids: map[setKey]int{},
+	}
 }
 
 func varKey(scope, name string) string { return strings.ToLower(scope + "\x00" + name) }
@@ -349,7 +364,11 @@ func (g *fakeGitHub) Ensure(_ context.Context, _ *config.Config, sc *config.Scop
 	var out []github.ScaleSet
 	for i := range g.cfg.Profiles {
 		if pr := &g.cfg.Profiles[i]; pr.Serves(sc.Key) {
-			out = append(out, github.ScaleSet{Scope: sc.Key, Profile: pr.Name, ID: i + 1})
+			id := g.idBase + i + 1
+			if v, ok := g.ids[setKey{sc.Key, pr.Name}]; ok {
+				id = v
+			}
+			out = append(out, github.ScaleSet{Scope: sc.Key, Profile: pr.Name, ID: id})
 		}
 	}
 	return out, nil
@@ -382,6 +401,19 @@ func (g *fakeGitHub) RemoveRunner(_ context.Context, _ *config.Scope, id int64) 
 }
 
 func (*fakeGitHub) Recheck(context.Context) error { return nil }
+
+// goneKey names a scale set in fakeGitHub.gone.
+func goneKey(scope string, id int) string { return strings.ToLower(scope) + "\x00" + strconv.Itoa(id) }
+
+func (g *fakeGitHub) Exists(_ context.Context, s *config.Scope, ss github.ScaleSet) (bool, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.asked, g.askedSets = append(g.asked, *s), append(g.askedSets, ss)
+	if g.existsErr[s.Key] {
+		return false, errors.New("fake: GitHub refused the read")
+	}
+	return !g.gone[goneKey(s.Key, ss.ID)], nil
+}
 
 func (g *fakeGitHub) Private(_ context.Context, s *config.Scope) (bool, error) {
 	g.mu.Lock()
@@ -515,6 +547,8 @@ func (s *fakeSettler) take() []settleCall {
 type fakeRecords struct {
 	sets   map[setKey]github.ScaleSet
 	routes map[string]Route
+	// drops is every record dropped, in order.
+	drops []github.ScaleSet
 	// fail refuses every read and write.
 	fail bool
 	mu   sync.Mutex
@@ -537,6 +571,19 @@ func (f *fakeRecords) RecordScaleSets(_ context.Context, sets []github.ScaleSet,
 	}
 	for _, ss := range sets {
 		f.sets[keyOf(ss)] = ss
+	}
+	return nil
+}
+
+func (f *fakeRecords) DropScaleSet(_ context.Context, ss github.ScaleSet, _ time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.fail {
+		return errors.New("fake: the store refused the write")
+	}
+	if cur, ok := f.sets[keyOf(ss)]; ok && cur.ID == ss.ID {
+		delete(f.sets, keyOf(ss))
+		f.drops = append(f.drops, ss)
 	}
 	return nil
 }

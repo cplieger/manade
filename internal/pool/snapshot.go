@@ -25,6 +25,8 @@ type Snapshot struct {
 	// Routes is every repository and organization scope's routing
 	// variable (§9.4), in settings order.
 	Routes []RouteStatus
+	// Scopes is every scope's row, in settings order.
+	Scopes []ScopeStatus
 	// Revision is the settings revision the generation serves.
 	Revision uint64
 }
@@ -45,6 +47,19 @@ type Orphan struct {
 	github.ScaleSet
 	Queued int
 }
+
+// ScopeStatus is one scope's row: served, or the scope_not_served detail
+// that keeps it from being served, with each scale set another pool holds
+// and the owner GitHub named for it (§9.3).
+type ScopeStatus struct {
+	Scope   string
+	Detail  string
+	Held    []HeldSet
+	Serving bool
+}
+
+// HeldSet is a profile's scale set whose session another pool holds.
+type HeldSet struct{ Profile, Owner string }
 
 // Resources is a reservation in the settings' units.
 type Resources struct{ MilliCPUs, Memory, Disk int64 }
@@ -67,7 +82,7 @@ func (g *generation) snapshot() Snapshot {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	now := g.now()
-	snap := Snapshot{Revision: g.rev, Stops: g.stops(), Orphaned: g.orphans(g.reg.orphaned(g.cfg)), Routes: g.routeStatuses()}
+	snap := Snapshot{Revision: g.rev, Stops: g.stops(), Orphaned: g.orphans(g.reg.orphaned(g.cfg)), Routes: g.routeStatuses(), Scopes: g.scopeStatuses()}
 	a := g.l.allocate(now)
 	if a.headFound {
 		snap.HeadSince = a.headSince
@@ -88,6 +103,23 @@ func (g *generation) snapshot() Snapshot {
 		})
 	}
 	return snap
+}
+
+// scopeStatuses answers every scope's row; g.mu is held.
+func (g *generation) scopeStatuses() []ScopeStatus {
+	out := make([]ScopeStatus, 0, len(g.cfg.Scopes))
+	for i := range g.cfg.Scopes {
+		sc := g.scopes[g.cfg.Scopes[i].Key]
+		st := ScopeStatus{Scope: sc.cfg.Key, Detail: g.scopeDetail(sc)}
+		st.Serving = st.Detail == ""
+		for _, b := range g.l.books {
+			if s := g.sets[b]; s.scope == sc && s.held {
+				st.Held = append(st.Held, HeldSet{Profile: b.ss.Profile, Owner: s.holder})
+			}
+		}
+		out = append(out, st)
+	}
+	return out
 }
 
 // runnerCounts counts, by state, the runners of each scale set whose
