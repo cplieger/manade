@@ -82,7 +82,7 @@ func newGeneration(r *Registry, s *Settings) *generation {
 	for i := range cfg.Scopes {
 		// A scope this generation adds is read at once. An enterprise scope
 		// has no routing variable, so it is routed from the start.
-		sc := &scope{cfg: &cfg.Scopes[i], unregister: map[string]int64{}, wanted: true}
+		sc := &scope{cfg: &cfg.Scopes[i], unregister: map[string]int64{}, waits: map[waitKey]*dwell{}, wanted: true}
 		if sc.cfg.Kind == config.ScopeEnterprise {
 			sc.routed = g.born
 		}
@@ -110,6 +110,8 @@ type scope struct {
 	// unregister holds, by runner name, the registrations of ended
 	// runners whose removal GitHub has not yet taken.
 	unregister map[string]int64
+	// waits holds what each of jobs has waited under, for its assignment.
+	waits map[waitKey]*dwell
 	// jobs is the last complete read of the scope's queued jobs.
 	jobs []github.QueuedJob
 	// partial reports that the last read was not complete; wanted, that a
@@ -458,7 +460,7 @@ func sameSpec(a, b *config.Profile) bool {
 // carry takes old's state for the same scope key.
 func (sc *scope) carry(o *scope) {
 	sc.proof, sc.read, sc.failed, sc.above, sc.readAt = o.proof, o.read, o.failed, o.above, o.readAt
-	sc.unregister, sc.jobs = o.unregister, o.jobs
+	sc.unregister, sc.jobs, sc.waits = o.unregister, o.jobs, o.waits
 	sc.partial, sc.public, sc.wanted, sc.route = o.partial, o.public, o.wanted, o.route
 }
 

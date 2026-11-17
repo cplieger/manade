@@ -171,6 +171,7 @@ func (g *generation) passHost(ctx context.Context, i int) {
 func (g *generation) step(ctx context.Context) {
 	g.mu.Lock()
 	g.gate()
+	g.watch(g.now())
 	g.mu.Unlock()
 	g.d.Metrics.Pass(g.health().Reconciling)
 	g.settle()

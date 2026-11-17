@@ -62,10 +62,11 @@ func (g *generation) polled(ss github.ScaleSet, poll *github.Poll) {
 		return
 	}
 	g.gate()
+	g.watch(g.now())
 	g.l.polled(b, poll)
 	for i := range poll.Events {
 		e := &poll.Events[i]
-		g.d.Runs.Job(ss, g.runnerHost(b, e.Runner), e)
+		g.d.Runs.Job(ss, g.runnerHost(b, e.Runner), e, s.scope.waited(ss.Profile, e))
 		switch e.Kind {
 		case github.Started:
 			if !e.Queued.IsZero() && !e.RunnerAssigned.IsZero() {
@@ -207,6 +208,7 @@ func (g *generation) queued(ended time.Time, qs []github.Queue) {
 		}
 	}
 	g.gate()
+	g.watch(g.now())
 }
 
 // jobResult maps a JobCompleted's result to the pool's vocabulary.

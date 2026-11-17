@@ -195,19 +195,47 @@ func TestEvidenceOnlyAtAnUncleanExit(t *testing.T) {
 	}
 }
 
-// Job queues messages for Run, which writes them in order and those still
-// queued at shutdown; a message naming no request is no run's.
+// An assignment's reason lands on the run row, later messages with none
+// keep it, and a later assignment's replaces it.
+func TestTheLongestWaitReasonLandsOnTheRun(t *testing.T) {
+	at := queued.Add(10 * time.Second)
+	rec, st := recorder(t, &at)
+	waited := func(e github.Event, reason pool.JobReason) {
+		rec.write(t.Context(), &jobMsg{at: at, e: e, ss: ss, host: "nas", waited: reason})
+	}
+	reason := func() string {
+		r, _ := run(t, st, 7)
+		return r.WaitReason
+	}
+	waited(message(github.Assigned, 7, "", ""), pool.JobWaitingForSlot)
+	if got := reason(); got != "waiting_for_slot" {
+		t.Errorf("after the assignment, reason %q; want waiting_for_slot", got)
+	}
+	waited(message(github.Started, 7, "r7", ""), "")
+	if got := reason(); got != "waiting_for_slot" {
+		t.Errorf("after the start, reason %q; want the assignment's waiting_for_slot kept", got)
+	}
+	waited(message(github.Assigned, 7, "", ""), pool.JobNoHostServing)
+	if got := reason(); got != "no_host_serving" {
+		t.Errorf("after a second assignment, reason %q; want its no_host_serving", got)
+	}
+}
+
+// Job queues messages for Run, which writes them in order, with their
+// reasons, and those still queued at shutdown; a message naming no request
+// is no run's.
 func TestRunWritesTheQueuedMessages(t *testing.T) {
 	at := queued
 	rec, st := recorder(t, &at)
-	rec.Job(ss, "nas", new(message(github.Started, 0, "r0", "")))
-	rec.Job(ss, "nas", new(message(github.Started, 1, "r1", "")))
-	rec.Job(ss, "nas", new(message(github.Completed, 1, "r1", "succeeded")))
+	rec.Job(ss, "nas", new(message(github.Started, 0, "r0", "")), "")
+	rec.Job(ss, "", new(message(github.Assigned, 1, "", "")), pool.JobProfileLimit)
+	rec.Job(ss, "nas", new(message(github.Started, 1, "r1", "")), "")
+	rec.Job(ss, "nas", new(message(github.Completed, 1, "r1", "succeeded")), "")
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	rec.Run(ctx)
-	if r, _ := run(t, st, 1); r.Result != "succeeded" || r.Runner != "r1" {
-		t.Errorf("row = %+v, want started then succeeded", r)
+	if r, _ := run(t, st, 1); r.Result != "succeeded" || r.Runner != "r1" || r.WaitReason != "profile_limit" {
+		t.Errorf("row = %+v, want assigned after profile_limit, started, then succeeded", r)
 	}
 	if _, found := run(t, st, 0); found {
 		t.Error("a message with no request wrote a row")

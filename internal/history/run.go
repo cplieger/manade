@@ -41,9 +41,10 @@ func reassignment(e *github.Event) bool {
 	return e.Kind == github.Completed && e.Runner == "" && e.Finished.IsZero() && strings.EqualFold(e.Result, "canceled")
 }
 
-// job writes job message e of scale set ss, seen at, to its run row; host
-// holds its runner.
-func job(h *store.HistoryTx, ss github.ScaleSet, host string, e *github.Event, at time.Time) error {
+// job writes job message m to its run row. An assignment's reason replaces
+// the row's: the pool's latest covers every wait before it.
+func job(h *store.HistoryTx, m *jobMsg) error {
+	e, at := &m.e, m.at
 	id := uint64(e.RequestID) //nolint:gosec // a request ID is positive; job drops any other
 	r, found, err := h.Run(id)
 	if err != nil {
@@ -56,11 +57,14 @@ func job(h *store.HistoryTx, ss github.ScaleSet, host string, e *github.Event, a
 		return nil
 	}
 	if !found {
-		r = store.Run{ID: id, SeenAt: at, Scope: ss.Scope, Profile: ss.Profile}
+		r = store.Run{ID: id, SeenAt: at, Scope: m.ss.Scope, Profile: m.ss.Profile}
 	}
 	describe(&r, e)
+	if m.waited != "" {
+		r.WaitReason = string(m.waited)
+	}
 	if e.Runner != "" {
-		if err := bind(h, &r, e.Runner, host); err != nil {
+		if err := bind(h, &r, e.Runner, m.host); err != nil {
 			return err
 		}
 	}

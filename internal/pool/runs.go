@@ -12,8 +12,10 @@ import (
 // methods are safe for concurrent use.
 type Runs interface {
 	// Job takes one job message of scale set ss; host holds the message's
-	// runner, empty when no record holds it. It returns at once.
-	Job(ss github.ScaleSet, host string, e *github.Event)
+	// runner, empty when no record holds it. An assignment carries the
+	// reason its job waited under longest while queued, empty when no pass
+	// or read saw it waiting. It returns at once.
+	Job(ss github.ScaleSet, host string, e *github.Event, waited JobReason)
 	// Exited takes a runner's end, which may write before it returns.
 	Exited(ctx context.Context, x *RunnerExit)
 	// Listed takes the first runner list host answered in this process,

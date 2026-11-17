@@ -630,17 +630,18 @@ type fakeRuns struct {
 
 // runJob is one job message the run history took.
 type runJob struct {
-	e    github.Event
-	ss   github.ScaleSet
-	host string
+	e      github.Event
+	ss     github.ScaleSet
+	host   string
+	waited JobReason
 }
 
 func newFakeRuns() *fakeRuns { return &fakeRuns{listed: map[string][][]string{}} }
 
-func (f *fakeRuns) Job(ss github.ScaleSet, host string, e *github.Event) {
+func (f *fakeRuns) Job(ss github.ScaleSet, host string, e *github.Event, waited JobReason) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.jobs = append(f.jobs, runJob{ss: ss, host: host, e: *e})
+	f.jobs = append(f.jobs, runJob{ss: ss, host: host, e: *e, waited: waited})
 }
 
 func (f *fakeRuns) Exited(_ context.Context, x *RunnerExit) {

@@ -25,10 +25,11 @@ const drainTimeout = 5 * time.Second
 
 // jobMsg is one job message waiting for its write.
 type jobMsg struct {
-	at   time.Time
-	host string
-	ss   github.ScaleSet
-	e    github.Event
+	at     time.Time
+	host   string
+	waited pool.JobReason
+	ss     github.ScaleSet
+	e      github.Event
 }
 
 // Recorder writes the history. Job, State, Status and Proved queue their
@@ -58,11 +59,11 @@ func NewRecorder(st *store.Store, log *slog.Logger) *Recorder {
 
 // Job queues e for its write. A message naming no runner request is no
 // run's, and a full queue drops the message with a warning.
-func (rec *Recorder) Job(ss github.ScaleSet, host string, e *github.Event) {
+func (rec *Recorder) Job(ss github.ScaleSet, host string, e *github.Event, waited pool.JobReason) {
 	if e.RequestID <= 0 {
 		return
 	}
-	m := jobMsg{at: rec.now(), e: *e, ss: ss, host: host}
+	m := jobMsg{at: rec.now(), e: *e, ss: ss, host: host, waited: waited}
 	rec.enqueue(func(ctx context.Context) { rec.write(ctx, &m) })
 }
 
@@ -119,7 +120,7 @@ func (rec *Recorder) written(ctx context.Context, w func(context.Context)) {
 }
 
 func (rec *Recorder) write(ctx context.Context, m *jobMsg) {
-	err := rec.st.UpdateHistory(ctx, func(h *store.HistoryTx) error { return job(h, m.ss, m.host, &m.e, m.at) })
+	err := rec.st.UpdateHistory(ctx, func(h *store.HistoryTx) error { return job(h, m) })
 	if err != nil && ctx.Err() == nil {
 		rec.log.Warn("Writing a job message to the run history failed", "scope", m.ss.Scope, "request_id", m.e.RequestID, "error", err)
 	}

@@ -39,6 +39,9 @@ type Run struct {
 	Result     string `json:"result,omitempty"`
 	ResultText string `json:"result_text,omitempty"`
 	Exit       string `json:"exit,omitempty"`
+	// WaitReason is §10.5's job reason the run waited under longest while
+	// queued, empty when the pool saw it waiting under none.
+	WaitReason string `json:"wait_reason,omitempty"`
 	WaitMS     int64  `json:"wait_ms,omitempty"`
 	DurationMS int64  `json:"duration_ms,omitempty"`
 	RunID      int64  `json:"run_id"`
