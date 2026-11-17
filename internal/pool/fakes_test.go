@@ -161,7 +161,7 @@ func (f *fakeHost) Runners(context.Context) (hostapi.RunnerList, error) {
 	return l, nil
 }
 
-func (f *fakeHost) DeleteRunner(_ context.Context, name string, _ bool) ([]byte, error) {
+func (f *fakeHost) DeleteRunner(_ context.Context, name string, diag bool) ([]byte, error) {
 	f.mu.Lock()
 	hold, held := f.hold, f.held
 	f.mu.Unlock()
@@ -180,10 +180,15 @@ func (f *fakeHost) DeleteRunner(_ context.Context, name string, _ bool) ([]byte,
 		f.lost--
 		return nil, errLink
 	}
+	if diag {
+		return []byte("diag of " + name), nil
+	}
 	return nil, nil
 }
 
-func (*fakeHost) Logs(context.Context, string, int) ([]byte, error) { return []byte("the tail"), nil }
+func (*fakeHost) Logs(_ context.Context, name string, tail int) ([]byte, error) {
+	return fmt.Appendf(nil, "the last %d lines of %s", tail, name), nil
+}
 
 func (f *fakeHost) Probe(ctx context.Context, _ time.Duration) (hostapi.ProbeReport, error) {
 	f.mu.Lock()
@@ -611,6 +616,54 @@ func (f *fakeRecords) RecordRoute(_ context.Context, rt Route, _ time.Time) erro
 	return nil
 }
 
+// fakeRuns keeps what the pool hands the run history.
+type fakeRuns struct {
+	listed map[string][][]string
+	jobs   []runJob
+	exits  []RunnerExit
+	mu     sync.Mutex
+}
+
+// runJob is one job message the run history took.
+type runJob struct {
+	e    github.Event
+	ss   github.ScaleSet
+	host string
+}
+
+func newFakeRuns() *fakeRuns { return &fakeRuns{listed: map[string][][]string{}} }
+
+func (f *fakeRuns) Job(ss github.ScaleSet, host string, e *github.Event) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.jobs = append(f.jobs, runJob{ss: ss, host: host, e: *e})
+}
+
+func (f *fakeRuns) Exited(_ context.Context, x *RunnerExit) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.exits = append(f.exits, *x)
+}
+
+func (f *fakeRuns) Listed(_ context.Context, host string, runners []string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.listed[host] = append(f.listed[host], slices.Sorted(slices.Values(runners)))
+}
+
+// exitOf answers the exits handed over for runner name.
+func (f *fakeRuns) exitOf(name string) []RunnerExit {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []RunnerExit
+	for _, x := range f.exits {
+		if x.Runner == name {
+			out = append(out, x)
+		}
+	}
+	return out
+}
+
 // rig is a pool over fake hosts and a fake GitHub, on a clock the test
 // moves, with a log the test can read. Its generations are installed in
 // line and run no loops, so each step runs where the test calls it.
@@ -628,8 +681,10 @@ type rig struct {
 	links   *fakeLinks
 	settler *fakeSettler
 	records *fakeRecords
-	hosts   []*fakeHost
-	rev     uint64
+	// runs outlives a restart, as the store does.
+	runs  *fakeRuns
+	hosts []*fakeHost
+	rev   uint64
 }
 
 func newRig(t testing.TB, cfg *config.Config) *rig { return buildRig(t, cfg, &logBuf{}) }
@@ -639,7 +694,7 @@ func quietRig(t testing.TB, cfg *config.Config) *rig { return buildRig(t, cfg, &
 
 func buildRig(t testing.TB, cfg *config.Config, log *logBuf) *rig {
 	gh := newFakeGitHub(cfg)
-	r := &rig{t: t, now: epoch, cfg: cfg, gh: gh, side: sideOf(gh), log: log, rev: 1, settler: &fakeSettler{}, records: newRecords()}
+	r := &rig{t: t, now: epoch, cfg: cfg, gh: gh, side: sideOf(gh), log: log, rev: 1, settler: &fakeSettler{}, records: newRecords(), runs: newFakeRuns()}
 	for i := range cfg.Hosts {
 		r.hosts = append(r.hosts, newFakeHost(cfg, cfg.Hosts[i].Name, sectionHash(r.rev)))
 	}
@@ -669,7 +724,7 @@ func (r *rig) settings() *Settings {
 func (r *rig) restart() {
 	r.m = newFakeMetrics()
 	r.reg = NewRegistry(r.settings(), &Deps{
-		Links: r.links, Metrics: r.m, Settle: r.settler, Records: r.records, Routes: r.records,
+		Links: r.links, Metrics: r.m, Runs: r.runs, Settle: r.settler, Records: r.records, Routes: r.records,
 		Log: slog.New(slog.NewTextHandler(r.log, &slog.HandlerOptions{Level: slog.LevelDebug})),
 	})
 	r.reg.now = func() time.Time { return r.now }

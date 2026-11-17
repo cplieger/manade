@@ -31,11 +31,20 @@ type Config struct {
 	PoolName string
 	// RunnerVariable names the repository or organization variable that
 	// routes a scope's jobs to its default profile (§9.4).
-	RunnerVariable   string
+	RunnerVariable string
+	// TimeZone is the pool's days: a rollup's day and the calendar (§5.3).
+	TimeZone         *time.Location
 	Scopes           []Scope
 	Hosts            []Host
 	Profiles         []Profile
+	History          History
 	HeadReserveAfter time.Duration
+}
+
+// History is how long the run history keeps its rows: Runs for run rows,
+// Evidence for a failed run's log tail and diagnostics archive.
+type History struct {
+	Runs, Evidence time.Duration
 }
 
 // Host answers the host named name.

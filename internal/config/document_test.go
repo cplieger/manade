@@ -49,6 +49,16 @@ func TestBuildDefaults(t *testing.T) {
 			t.Errorf("pool.runner_variable = %q, want MANADE_RUNNER", cfg.RunnerVariable)
 		}
 	})
+	t.Run("timeZone", func(t *testing.T) {
+		if cfg.TimeZone != time.UTC {
+			t.Errorf("pool.time_zone = %v, want UTC", cfg.TimeZone)
+		}
+	})
+	t.Run("history", func(t *testing.T) {
+		if want := (History{Runs: 90 * 24 * time.Hour, Evidence: 7 * 24 * time.Hour}); cfg.History != want {
+			t.Errorf("history = %+v, want %+v", cfg.History, want)
+		}
+	})
 	t.Run("profileHosts", func(t *testing.T) {
 		if got := profile(t, cfg, "p").Hosts; !slices.Equal(got, []string{"default"}) {
 			t.Errorf("hosts = %v, want [default]", got)
@@ -70,6 +80,24 @@ func TestParsePoolName(t *testing.T) {
 	if cfg.PoolName != "ci-2" {
 		t.Errorf("pool.name = %q, want ci-2", cfg.PoolName)
 	}
+}
+
+func TestParseHistorySettings(t *testing.T) {
+	cfg, err := Parse([]byte(object(jsonScopes, jsonHost, jsonProfile(""),
+		`"pool": {"time_zone": "Europe/Paris"}`, `"history": {"runs": "400d", "evidence": "1d"}`)), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Run("timeZone", func(t *testing.T) {
+		if cfg.TimeZone.String() != "Europe/Paris" {
+			t.Errorf("pool.time_zone = %v, want Europe/Paris", cfg.TimeZone)
+		}
+	})
+	t.Run("history", func(t *testing.T) {
+		if want := (History{Runs: 400 * 24 * time.Hour, Evidence: 24 * time.Hour}); cfg.History != want {
+			t.Errorf("history = %+v, want %+v", cfg.History, want)
+		}
+	})
 }
 
 func TestParseRunnerVariable(t *testing.T) {
@@ -224,6 +252,16 @@ func TestBuildRefusals(t *testing.T) {
 		{"runnerVariableDigitFirst", withMember(`"pool": {"runner_variable": "2RUNNER"}`), []string{"pool.runner_variable: want letters, digits or underscores"}},
 		{"runnerVariableDash", withMember(`"pool": {"runner_variable": "MANADE-RUNNER"}`), []string{"pool.runner_variable: want letters, digits or underscores"}},
 		{"runnerVariableGitHub", withMember(`"pool": {"runner_variable": "github_runner"}`), []string{"pool.runner_variable: want letters, digits or underscores"}},
+		{"timeZoneUnknown", withMember(`"pool": {"time_zone": "Mars/Olympus"}`), []string{"pool.time_zone: want an IANA time zone name"}},
+		{"timeZoneLocal", withMember(`"pool": {"time_zone": "Local"}`), []string{"pool.time_zone: want an IANA time zone name"}},
+		{"runsBelow", withMember(`"history": {"runs": "6d"}`), []string{"history.runs: want whole days from 7d to 400d"}},
+		{"runsAbove", withMember(`"history": {"runs": "401d"}`), []string{"history.runs: want whole days from 7d to 400d"}},
+		{"runsHours", withMember(`"history": {"runs": "2160h"}`), []string{"history.runs: want whole days"}},
+		{"runsSigned", withMember(`"history": {"runs": "+90d"}`), []string{"history.runs: want whole days"}},
+		{"runsBare", withMember(`"history": {"runs": 90}`), []string{"history.runs: want whole days"}},
+		{"evidenceBelow", withMember(`"history": {"evidence": "0d"}`), []string{"history.evidence: want whole days from 1d to 30d"}},
+		{"evidenceAbove", withMember(`"history": {"evidence": "31d"}`), []string{"history.evidence: want whole days from 1d to 30d"}},
+		{"historyUnknown", withMember(`"history": {"blobs": "7d"}`), []string{"history.blobs: unknown key"}},
 		{"poolUnknown", withMember(`"pool": {"owner": "x"}`), []string{"pool.owner: unknown key"}},
 		{"topLevelCapacity", withMember(`"capacity": {"cpus": 1, "memory": "1GiB"}`), []string{"capacity: unknown key"}},
 		{"address", hosted(`"address": "https://nas:7464"`), []string{"hosts.h.address: refused: hosts dial the control plane"}},

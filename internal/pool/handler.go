@@ -65,6 +65,7 @@ func (g *generation) polled(ss github.ScaleSet, poll *github.Poll) {
 	g.l.polled(b, poll)
 	for i := range poll.Events {
 		e := &poll.Events[i]
+		g.d.Runs.Job(ss, g.runnerHost(b, e.Runner), e)
 		switch e.Kind {
 		case github.Started:
 			if !e.Queued.IsZero() && !e.RunnerAssigned.IsZero() {
@@ -86,6 +87,18 @@ func (g *generation) polled(ss github.ScaleSet, poll *github.Poll) {
 	}
 	g.mu.Unlock()
 	g.poke()
+}
+
+// runnerHost names the host holding runner name of b, or a stray's, empty
+// when no record holds it; g.mu is held.
+func (g *generation) runnerHost(b *book, name string) string {
+	if r, ok := b.runners[name]; ok {
+		return g.hosts[r.host].cfg.Name
+	}
+	if st, ok := g.l.strays[name]; ok {
+		return g.hosts[st.host].cfg.Name
+	}
+	return ""
 }
 
 // held records whether another process holds the scale set's session, and

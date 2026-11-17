@@ -121,10 +121,13 @@ func (b *broker) push(set int, st Stats, events ...string) {
 }
 
 // job is one job message as the broker sends it.
+// job answers a job message of run with runner request ID 10 times run, in
+// acme/app's ci workflow started by a push.
 func job(kind string, run int64, name, runner, result string) string {
-	return fmt.Sprintf(`{"messageType":%q,"workflowRunId":%d,"jobDisplayName":%q,"runnerName":%q,"result":%q,`+
-		`"queueTime":"2026-11-10T08:00:00Z","runnerAssignTime":"2026-11-10T08:00:30Z","finishTime":"2026-11-10T08:05:00Z"}`,
-		kind, run, name, runner, result)
+	return fmt.Sprintf(`{"messageType":%q,"runnerRequestId":%d,"workflowRunId":%d,"jobDisplayName":%q,"runnerName":%q,"result":%q,`+
+		`"ownerName":"acme","repositoryName":"app","jobWorkflowRef":"acme/app/.github/workflows/ci.yaml@refs/heads/main","eventName":"push",`+
+		`"queueTime":"2026-11-10T08:00:00Z","scaleSetAssignTime":"2026-11-10T08:00:10Z","runnerAssignTime":"2026-11-10T08:00:30Z","finishTime":"2026-11-10T08:05:00Z"}`,
+		kind, 10*run, run, name, runner, result)
 }
 
 // exception answers an actions service error the way the service does.

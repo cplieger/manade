@@ -46,15 +46,23 @@ const (
 	Completed
 )
 
-// Event is one job message. Name, Runner and Result are GitHub's text.
+// Event is one job message. Name, Runner, Result, Repository,
+// WorkflowRef and Trigger are GitHub's text.
 type Event struct {
-	Queued, RunnerAssigned, Finished time.Time
+	// Assigned is when GitHub gave the job to the scale set, RunnerAssigned
+	// when a runner took it.
+	Queued, Assigned, RunnerAssigned, Finished time.Time
 	// Name is the job's display name, the REST job's name.
 	Name   string
 	Runner string
 	Result string
-	RunID  int64
-	Kind   EventKind
+	// Repository is owner/name; Trigger is the event that started the
+	// workflow run.
+	Repository, WorkflowRef, Trigger string
+	// RequestID is the runner request, unique per job attempt.
+	RequestID int64
+	RunID     int64
+	Kind      EventKind
 }
 
 // Poll is one poll GitHub answered. Stats is nil when the answer carried
@@ -377,8 +385,9 @@ func statsOf(st *scaleset.RunnerScaleSetStatistic) *Stats {
 
 func event(k EventKind, b *scaleset.JobMessageBase, runner, result string) Event {
 	return Event{
-		Kind: k, RunID: b.WorkflowRunID, Name: b.JobDisplayName, Runner: runner, Result: result,
-		Queued: b.QueueTime, RunnerAssigned: b.RunnerAssignTime, Finished: b.FinishTime,
+		Kind: k, RequestID: b.RunnerRequestID, RunID: b.WorkflowRunID, Name: b.JobDisplayName, Runner: runner, Result: result,
+		Repository: b.OwnerName + "/" + b.RepositoryName, WorkflowRef: b.JobWorkflowRef, Trigger: b.EventName,
+		Queued: b.QueueTime, Assigned: b.ScaleSetAssignTime, RunnerAssigned: b.RunnerAssignTime, Finished: b.FinishTime,
 	}
 }
 

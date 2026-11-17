@@ -95,6 +95,7 @@ type Settings struct {
 type Deps struct {
 	Links   Links
 	Metrics Recorder
+	Runs    Runs
 	Settle  settler
 	Records scaleSetRecords
 	Routes  routeRecords
@@ -120,16 +121,18 @@ type Registry struct {
 	routeRecs map[string]Route
 	// unreadable holds the recorded scale sets whose last read failed.
 	unreadable map[setKey]bool
-	changed    chan struct{}
-	now        func() time.Time
-	swg        sync.WaitGroup
+	// listed holds each host whose runners were listed in this process.
+	listed  map[string]bool
+	changed chan struct{}
+	now     func() time.Time
+	swg     sync.WaitGroup
 	// mu guards cur: a handler call holds it for reading, so no call lands
 	// in a generation after its successor copied it. smu guards spawn and
 	// sessions, and is never held while a generation's lock is taken or a
 	// session's close is waited on; syncMu serializes sync across that
 	// wait. rmu guards recorded and routeRecs and serializes their writes.
-	mu                    sync.RWMutex
-	smu, syncMu, pmu, rmu sync.Mutex
+	mu                         sync.RWMutex
+	smu, syncMu, pmu, rmu, lmu sync.Mutex
 }
 
 // setKey names a scale set by scope and profile.
@@ -155,10 +158,20 @@ type want struct {
 // NewRegistry builds the pool for its first settings revision. It calls
 // nothing until Run.
 func NewRegistry(s *Settings, d *Deps) *Registry {
-	r := &Registry{d: *d, sessions: map[setKey]*session{}, unreadable: map[setKey]bool{}, changed: make(chan struct{}, 1), now: time.Now}
+	r := &Registry{d: *d, sessions: map[setKey]*session{}, unreadable: map[setKey]bool{}, listed: map[string]bool{}, changed: make(chan struct{}, 1), now: time.Now}
 	r.d.Log = cmp.Or(r.d.Log, slog.Default())
 	r.pending = s
 	return r
+}
+
+// firstList reports whether host's runners are listed for the first time
+// in this process, and marks them listed.
+func (r *Registry) firstList(host string) bool {
+	r.lmu.Lock()
+	defer r.lmu.Unlock()
+	first := !r.listed[host]
+	r.listed[host] = true
+	return first
 }
 
 // Run serves the settings revisions Apply hands it until ctx ends, then

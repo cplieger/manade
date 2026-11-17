@@ -53,7 +53,8 @@ func stats(t *testing.T, s *Store) bolttable.Stats {
 // holds any.
 func writeFile(t *testing.T, path string, rows, later map[string]string) {
 	t.Helper()
-	s, m, _, _, _ := declare(bolttable.NewSchema(schemaName))
+	s, d := declare(bolttable.NewSchema(schemaName))
+	m := d.meta
 	var l *bolttable.Table[[]byte, json.RawMessage]
 	if later != nil {
 		l = bolttable.Must(bolttable.Define(bolttable.Must(s.Namespace("later")), 0xef, "rows",
@@ -185,7 +186,11 @@ func TestOpenDeclaresItsNamespaces(t *testing.T) {
 			got[ns.Name] = append(got[ns.Name], tb.Name)
 		}
 	}
-	if want := map[string][]string{"github": {"scalesets", "routes"}, "journal": {"journal"}, "meta": {"meta"}}; !maps.EqualFunc(got, want, slices.Equal) {
+	want := map[string][]string{
+		"github": {"scalesets", "routes"}, "journal": {"journal"}, "meta": {"meta"},
+		"history": {"runs", "runblobs", "exits"}, "rollups": {"rollups", "cut"},
+	}
+	if !maps.EqualFunc(got, want, slices.Equal) {
 		t.Errorf("namespaces = %v, want %v", got, want)
 	}
 }

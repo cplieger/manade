@@ -122,6 +122,11 @@ func TestListenPollsAndAcks(t *testing.T) {
 		if ev[0].Kind != Started || ev[0].Runner != "manade-small-1" || ev[0].RunID != 1000 {
 			t.Errorf("started = %+v", ev[0])
 		}
+		if e := ev[0]; e.RequestID != 10000 || e.Repository != "acme/app" || e.Trigger != "push" ||
+			e.WorkflowRef != "acme/app/.github/workflows/ci.yaml@refs/heads/main" ||
+			!e.Assigned.Equal(time.Date(2026, 11, 10, 8, 0, 10, 0, time.UTC)) || !e.RunnerAssigned.Equal(time.Date(2026, 11, 10, 8, 0, 30, 0, time.UTC)) {
+			t.Errorf("started = %+v, want the job's request, repository, workflow, trigger and both assignments", e)
+		}
 		if ev[1].Kind != Completed || ev[1].Result != "succeeded" || ev[1].Runner != "manade-small-0" ||
 			!ev[1].Finished.Equal(time.Date(2026, 11, 10, 8, 5, 0, 0, time.UTC)) {
 			t.Errorf("completed = %+v", ev[1])

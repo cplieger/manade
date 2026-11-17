@@ -22,7 +22,12 @@ type document struct {
 	Pool struct {
 		Name           string `json:"name"`
 		RunnerVariable string `json:"runner_variable"`
+		TimeZone       string `json:"time_zone"`
 	} `json:"pool"`
+	History struct {
+		Runs     scalar `json:"runs"`
+		Evidence scalar `json:"evidence"`
+	} `json:"history"`
 	Images docImages  `json:"images"`
 	Scopes []docScope `json:"scopes"`
 }
@@ -99,6 +104,9 @@ func (d *document) apply(cfg *Config, p *problems) {
 	if !variableRe.MatchString(cfg.RunnerVariable) || strings.HasPrefix(strings.ToUpper(cfg.RunnerVariable), "GITHUB_") {
 		p.add("pool.runner_variable", invalid("want letters, digits or underscores, not starting with a digit or GITHUB_", cfg.RunnerVariable))
 	}
+	cfg.TimeZone = field(p, "pool.time_zone", scalar(d.Pool.TimeZone), "UTC", parseZone)
+	cfg.History.Runs = field(p, "history.runs", d.History.Runs, "90d", days(7, 400))
+	cfg.History.Evidence = field(p, "history.evidence", d.History.Evidence, "7d", days(1, 30))
 	refresh := parseRefresh(p, "images.refresh", cmp.Or(string(d.Images.Refresh), "1h"))
 	cfg.Scopes = d.scopes(p)
 	cfg.Hosts = d.hosts(refresh, p)

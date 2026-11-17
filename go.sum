@@ -4,6 +4,8 @@ github.com/cplieger/bolttable v1.2.0-dev.3 h1:gMMi6NdYnU5UvgP2dwWENrmcPSGB7rCZnJ
 github.com/cplieger/bolttable v1.2.0-dev.3/go.mod h1:KaCpwjysir78upGR3sp+d8STs21PdngmSXrgMBe/aVQ=
 github.com/cplieger/forgeapi/v3 v3.0.0-dev.2 h1:2XAoyj4Bx/njSCmJuQuWopf0XwozthsBqjN4NjpRqCk=
 github.com/cplieger/forgeapi/v3 v3.0.0-dev.2/go.mod h1:/n8tTsY6OkZHsnQOinlJ7MG5CnnaZ8Od6TQCpGdA9dY=
+github.com/cplieger/go/chartdata v1.0.0-dev.9 h1:Ou6djRzApX49r5d+LTWQBOAgpPDClx23nvbR/bWjF8g=
+github.com/cplieger/go/chartdata v1.0.0-dev.9/go.mod h1:eoAeUO9equ44lghyWFJmmY8ldmNk2tyeiG66VNtX6HQ=
 github.com/cplieger/go/envx v1.1.0 h1:AfJm5r7oR3zHmpplYwpNQL6yB7b50bmNAaOAijeG9aM=
 github.com/cplieger/go/envx v1.1.0/go.mod h1:USzzGAzdJGsU8ZYRmVaMGvKzgEGDDhXvUUsckSv4VfM=
 github.com/cplieger/go/filesafe v1.1.0 h1:zCInOHIkszZQKNxIQvPgaFg592E5J27+/2hfbPmzEfA=
@@ -24,6 +26,8 @@ github.com/cplieger/go/jsonx v1.1.0 h1:/XBHr3vJVqKYVDteO8cZEMAdTgmT3Df/SeyNw1pda
 github.com/cplieger/go/jsonx v1.1.0/go.mod h1:ry6co0JYAadIhjHtkktBSK3to4YdtEak1P7mdmQlr7U=
 github.com/cplieger/go/measure v1.3.0-dev.1 h1:TEqZtk/CrcVMwhY56s9hobL1PV7uwgfJnk8e2K1U55M=
 github.com/cplieger/go/measure v1.3.0-dev.1/go.mod h1:oH0qxNStRZYbEn3iHpXv/7jKcrjg/EzsxrhLhBK6BC0=
+github.com/cplieger/go/measure/v2 v2.0.0 h1:QsVroWatxnaS3JWJdm84Rt5RDw26uLpEYFANy6/z72s=
+github.com/cplieger/go/measure/v2 v2.0.0/go.mod h1:gG4hr0jum0sVWiAppZwHPdvHNIVPBbryOCxzCoPSo84=
 github.com/cplieger/go/pathinside v1.1.0 h1:INqhQezkPwf/gA4fGxVuTBvV4bh4CedFGKm36c+GeIQ=
 github.com/cplieger/go/pathinside v1.1.0/go.mod h1:fIyGk/T2XYqVLJ5/cXOFkjk202Mwbdu0aXhH7Ky1/kI=
 github.com/cplieger/go/scheduler v1.1.0 h1:AzmRDvZ/wEEwK7Ab5Uz0Pa5Xx67oWndalpVknoWsGDQ=

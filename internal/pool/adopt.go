@@ -22,7 +22,7 @@ func (g *generation) adopt(ctx context.Context, i int, a *action) bool {
 	sc := g.scopeConfig(lr.Scope)
 	switch lr.State {
 	case hostapi.StateExited, hostapi.StateFailed:
-		if !g.remove(ctx, i, lr.Name) {
+		if !g.endListed(ctx, i, lr) {
 			return true
 		}
 		if a.b != nil && lr.State == hostapi.StateExited {
@@ -117,13 +117,28 @@ func (g *generation) hold(i int, a *action, state runnerState) {
 // endStray removes an ended runner of no scale set the settings hold and
 // frees its reservation.
 func (g *generation) endStray(ctx context.Context, i int, lr *hostapi.Runner) {
-	if !g.remove(ctx, i, lr.Name) {
+	if !g.endListed(ctx, i, lr) {
 		return
 	}
 	g.mu.Lock()
 	g.l.release(lr.Name, g.now())
 	g.mu.Unlock()
 	g.unregister(ctx, lr.Scope, lr.Name, lr.RunnerID)
+}
+
+// endListed removes an ended runner no record holds, handing an exited
+// one's end to the run history with its evidence, and reports whether its
+// container is gone.
+func (g *generation) endListed(ctx context.Context, i int, lr *hostapi.Runner) bool {
+	if lr.State != hostapi.StateExited {
+		return g.remove(ctx, i, lr.Name)
+	}
+	reason := recordlessExit(lr)
+	ev, ok := g.endContainer(ctx, i, lr.Name, reason, lr.ExitCode)
+	if ok {
+		g.exited(ctx, g.hosts[i].cfg.Name, lr.Name, reason, &ev)
+	}
+	return ok
 }
 
 // limits is the reservation of a runner built with lim on host i: its

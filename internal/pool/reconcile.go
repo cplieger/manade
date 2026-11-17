@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"errors"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -16,8 +17,8 @@ import (
 
 const (
 	reconcileEvery = 30 * time.Second
-	// tailLines is how much of an unclean exit's log is kept.
-	tailLines = 50
+	// tailLines is how much of an unclean exit's log its run keeps.
+	tailLines = 200
 	// eventsRetry spaces reconnects to a failed events stream; the pass
 	// every reconcileEvery catches the exits between.
 	eventsRetry = 5 * time.Second
@@ -215,6 +216,13 @@ func (g *generation) reconcileHost(ctx context.Context, i int) {
 	if err != nil {
 		g.down(ctx, i, err)
 		return
+	}
+	if g.reg.firstList(h.cfg.Name) {
+		names := make([]string, len(list.Runners))
+		for j := range list.Runners {
+			names[j] = list.Runners[j].Name
+		}
+		g.await(i, func() { g.d.Runs.Listed(ctx, h.cfg.Name, names) })
 	}
 	g.mu.Lock()
 	g.applyStatus(i, &st)
@@ -522,23 +530,25 @@ func (g *generation) act(ctx context.Context, i int, a *action) bool {
 	return true
 }
 
-// closeExited logs an unclean exit's tail, removes the container, then
+// closeExited removes the container, with an unclean exit's evidence, then
 // closes the record, removing the registration when no JobCompleted named
 // the runner.
 func (g *generation) closeExited(ctx context.Context, a *action) {
 	h := a.r.host
-	if a.reason == ExitFailed || a.reason == ExitOOM || a.reason == ExitLost {
-		g.tail(ctx, h, a)
-	}
-	if !g.remove(ctx, h, a.r.name) {
+	ev, ok := g.endContainer(ctx, h, a.r.name, a.reason, a.lr.ExitCode)
+	if !ok {
 		return
 	}
-	g.closeRecord(ctx, a.b, a.r, a.reason, a.reason != ExitIdle)
+	g.closeRecord(ctx, a.b, a.r, a.reason, a.reason != ExitIdle, &ev)
 	code := -1
 	if a.lr.ExitCode != nil {
 		code = *a.lr.ExitCode
 	}
-	g.log.Info("A runner ended", "host", g.hosts[h].cfg.Name, "scope", a.b.ss.Scope, "profile", a.b.ss.Profile, "runner", a.r.name,
+	level := slog.LevelInfo
+	if unclean(a.reason) {
+		level = slog.LevelWarn
+	}
+	g.log.Log(ctx, level, "A runner ended", "host", g.hosts[h].cfg.Name, "scope", a.b.ss.Scope, "profile", a.b.ss.Profile, "runner", a.r.name,
 		"reason", string(a.reason), "exit_code", code, "oom", a.lr.OOMKilled, "duration", a.lr.ExitedAt.Sub(a.lr.StartedAt).Round(time.Second).String())
 }
 
@@ -582,7 +592,7 @@ func (g *generation) closeGone(ctx context.Context, a *action) {
 		g.unregister(ctx, a.b.ss.Scope, a.r.name, a.r.id)
 		return
 	}
-	g.closeRecord(ctx, a.b, a.r, a.reason, true)
+	g.closeRecord(ctx, a.b, a.r, a.reason, true, nil)
 	g.log.Warn("A host restarted and no longer lists a runner, so its record is closed", "host", name,
 		"scope", a.b.ss.Scope, "profile", a.b.ss.Profile, "runner", a.r.name, "reason", string(a.reason))
 }
@@ -597,16 +607,16 @@ func (g *generation) closeDropped(ctx context.Context, a *action) {
 	}
 	g.mu.Unlock()
 	if !failed {
-		g.closeRecord(ctx, a.b, a.r, a.reason, a.reason != ExitIdle)
+		g.closeRecord(ctx, a.b, a.r, a.reason, a.reason != ExitIdle, nil)
 	}
 	g.log.Info("A host no longer lists a runner, so its record is closed", "host", g.hosts[a.r.host].cfg.Name,
 		"scope", a.b.ss.Scope, "profile", a.b.ss.Profile, "runner", a.r.name, "reason", string(a.reason))
 }
 
 // closeRecord ends r's record, which frees its reservation, counts its
-// exit and, with unreg and no JobCompleted naming it, removes its
-// registration.
-func (g *generation) closeRecord(ctx context.Context, b *book, r *runner, reason ExitReason, unreg bool) {
+// exit, hands it to the run history with ev, nil when none was read, and,
+// with unreg and no JobCompleted naming it, removes its registration.
+func (g *generation) closeRecord(ctx context.Context, b *book, r *runner, reason ExitReason, unreg bool, ev *evidence) {
 	g.mu.Lock()
 	if b.runners[r.name] != r {
 		g.mu.Unlock()
@@ -614,8 +624,10 @@ func (g *generation) closeRecord(ctx context.Context, b *book, r *runner, reason
 	}
 	g.l.end(b, r.name, g.now())
 	completed := r.completed
-	g.d.Metrics.RunnerExited(g.hosts[r.host].cfg.Name, b.ss, reason)
+	host := g.hosts[r.host].cfg.Name
+	g.d.Metrics.RunnerExited(host, b.ss, reason)
 	g.mu.Unlock()
+	g.exited(ctx, host, r.name, reason, ev)
 	if unreg && !completed {
 		g.unregister(ctx, b.ss.Scope, r.name, r.id)
 	}
@@ -644,7 +656,7 @@ func (g *generation) retire(ctx context.Context, a *action) {
 	if !g.remove(ctx, a.r.host, a.r.name) {
 		return
 	}
-	g.closeRecord(ctx, a.b, a.r, ExitIdle, false)
+	g.closeRecord(ctx, a.b, a.r, ExitIdle, false, nil)
 	g.log.Info("Removed an idle runner", "scope", a.b.ss.Scope, "profile", a.b.ss.Profile, "runner", a.r.name)
 }
 
@@ -656,34 +668,56 @@ func (g *generation) expire(ctx context.Context, a *action) {
 	if !g.remove(ctx, a.r.host, a.r.name) {
 		return
 	}
-	g.closeRecord(ctx, a.b, a.r, ExitLifetime, true)
+	g.closeRecord(ctx, a.b, a.r, ExitLifetime, true, nil)
 	g.log.Warn("A runner passed its profile's max_lifetime, so it was removed", "scope", a.b.ss.Scope, "profile", a.b.ss.Profile, "runner", a.r.name)
 }
 
-// tail logs an unclean exit's last log lines.
-func (g *generation) tail(ctx context.Context, h int, a *action) {
-	name := g.hosts[h].cfg.Name
-	lines, err := g.api(h).Logs(ctx, a.r.name, tailLines)
-	if err != nil && ctx.Err() == nil {
-		g.log.Warn("Reading a failed runner's log failed", "host", name, "runner", a.r.name, "error", err)
+// exited hands a runner's end to the run history; an idle runner held no
+// job.
+func (g *generation) exited(ctx context.Context, host, name string, reason ExitReason, ev *evidence) {
+	if reason == ExitIdle {
+		return
 	}
-	code := -1
-	if a.lr.ExitCode != nil {
-		code = *a.lr.ExitCode
+	x := &RunnerExit{At: g.now(), Host: host, Runner: name, Reason: reason}
+	if ev != nil {
+		x.Code, x.Log, x.Diag = ev.code, ev.log, ev.diag
 	}
-	g.log.Warn("A runner exited with an error", "host", name, "scope", a.b.ss.Scope, "profile", a.b.ss.Profile,
-		"runner", a.r.name, "reason", string(a.reason), "exit_code", code, "oom", a.lr.OOMKilled, "tail", textsafe.Sanitize(string(lines)))
+	g.d.Runs.Exited(ctx, x)
+}
+
+// endContainer removes an ended runner's container on host h, reading an
+// unclean exit's log tail first and its _diag tar with the removal, and
+// reports whether the container is gone.
+func (g *generation) endContainer(ctx context.Context, h int, name string, reason ExitReason, code *int) (evidence, bool) {
+	ev := evidence{code: code}
+	keep := unclean(reason)
+	if keep {
+		var err error
+		if ev.log, err = g.api(h).Logs(ctx, name, tailLines); err != nil && ctx.Err() == nil {
+			g.log.Warn("Reading an ended runner's log failed, so its run keeps no log tail", "host", g.hosts[h].cfg.Name, "runner", name, "error", err)
+		}
+	}
+	diag, ok := g.removeKeeping(ctx, h, name, keep)
+	ev.diag = diag
+	return ev, ok
 }
 
 // remove deletes runner name's container and entry on host h, and reports
 // whether it is gone.
 func (g *generation) remove(ctx context.Context, h int, name string) bool {
-	if _, err := g.api(h).DeleteRunner(ctx, name, false); err != nil {
+	_, ok := g.removeKeeping(ctx, h, name, false)
+	return ok
+}
+
+// removeKeeping is remove, answering the runner's _diag tar with diag.
+func (g *generation) removeKeeping(ctx context.Context, h int, name string, diag bool) ([]byte, bool) {
+	tar, err := g.api(h).DeleteRunner(ctx, name, diag)
+	if err != nil {
 		if ctx.Err() == nil && !errors.Is(err, errDisconnected) {
 			g.d.Metrics.HostLinkError(g.hosts[h].cfg.Name)
 			g.log.Warn("Removing a runner failed, so the pass retries it", "host", g.hosts[h].cfg.Name, "runner", name, "error", err)
 		}
-		return false
+		return nil, false
 	}
-	return true
+	return tar, true
 }
