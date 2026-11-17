@@ -11,7 +11,7 @@ import (
 
 // ScaleSet is the record of one scale set the pool ensured: its
 // scope and profile, which name it, GitHub's ID for it and when the pool
-// last ensured it.
+// recorded that ID.
 type ScaleSet struct {
 	EnsuredAt time.Time `json:"ensured_at"`
 	Scope     string    `json:"scope"`

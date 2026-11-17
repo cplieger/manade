@@ -606,7 +606,9 @@ type fakeRecords struct {
 	// scale-set writes next. writes counts the scale-set writes made.
 	fail               bool
 	writeFails, writes int
-	mu                 sync.Mutex
+	// hold, when set, runs at the start of each scale-set write, outside mu.
+	hold func()
+	mu   sync.Mutex
 }
 
 func (f *fakeRecords) ScaleSets(context.Context) ([]github.ScaleSet, error) {
@@ -619,6 +621,12 @@ func (f *fakeRecords) ScaleSets(context.Context) ([]github.ScaleSet, error) {
 }
 
 func (f *fakeRecords) RecordScaleSets(_ context.Context, sets []github.ScaleSet, _ time.Time) error {
+	f.mu.Lock()
+	hold := f.hold
+	f.mu.Unlock()
+	if hold != nil {
+		hold()
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.fail || f.writeFails > 0 {

@@ -255,9 +255,8 @@ func (g *generation) found(b *book, ss github.ScaleSet) {
 	s.lost = false
 }
 
-// runEnsure retries each scope whose ensure failed every ensureRetry until
-// ctx ends, and opens the sessions the scale sets it found need; it reads
-// the scale-set record too while no read has succeeded.
+// runEnsure runs ensureTick every ensureRetry, and when reensure signals,
+// until ctx ends.
 func (g *generation) runEnsure(ctx context.Context) {
 	t := time.NewTicker(ensureRetry)
 	defer t.Stop()
@@ -268,10 +267,17 @@ func (g *generation) runEnsure(ctx context.Context) {
 		case <-t.C:
 		case <-g.reensure:
 		}
-		g.reg.record(ctx, nil)
-		if g.retryEnsure(ctx) && ctx.Err() == nil {
-			g.reg.sync()
-		}
+		g.ensureTick(ctx)
+	}
+}
+
+// ensureTick records the scale sets left unrecorded, reading the record
+// while no read has succeeded, then ensures again each scope whose ensure
+// failed or that lost a scale set and opens the sessions they need.
+func (g *generation) ensureTick(ctx context.Context) {
+	g.reg.record(ctx, nil)
+	if g.retryEnsure(ctx) && ctx.Err() == nil {
+		g.reg.sync()
 	}
 }
 

@@ -117,11 +117,14 @@ type RunnerCounts struct {
 
 // snapshot reads the generation's state now.
 func (g *generation) snapshot() Snapshot {
+	// orphaned waits on a record write's store I/O, so it is read before
+	// g.mu is taken: holding g.mu there stalls the passes and Health.
+	orph := g.reg.orphaned(g.cfg)
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	now := g.now()
 	snap := Snapshot{
-		At: now, Revision: g.rev, Booted: !g.booting, Stops: g.stops(), Orphaned: g.orphans(g.reg.orphaned(g.cfg)),
+		At: now, Revision: g.rev, Booted: !g.booting, Stops: g.stops(), Orphaned: g.orphans(orph),
 		Routes: g.routeStatuses(), Scopes: g.scopeStatuses(),
 	}
 	for i := range g.cfg.Profiles {

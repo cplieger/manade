@@ -228,13 +228,7 @@ func TestASessionFollowsItsScaleSetToANewID(t *testing.T) {
 	}
 }
 
-// tick runs one round of the ensure loop as runEnsure does.
-func (r *rig) tick() {
-	r.reg.record(context.Background(), nil)
-	if r.p.retryEnsure(context.Background()) {
-		r.reg.sync()
-	}
-}
+func (r *rig) tick() { r.p.ensureTick(context.Background()) }
 
 // storedSet answers the store's record of scope's scale set for profile.
 func (r *rig) storedSet(scope, profile string) github.ScaleSet {
@@ -350,6 +344,52 @@ func TestAnEnsureUnrecordedForAFailedReadIsWrittenAtTheNextTick(t *testing.T) {
 	}
 	if n := r.gh.ensureCount() - ensures; n != 0 {
 		t.Errorf("%d ensures at the tick, want the record written without one", n)
+	}
+}
+
+// A snapshot waiting on a scale-set record write the store has not
+// answered leaves the generation free: Health answers meanwhile.
+func TestASnapshotWaitingOnARecordWriteLeavesHealthFree(t *testing.T) {
+	t.Parallel()
+	r := quietRig(t, oneHost())
+	r.gh.set(func(g *fakeGitHub) { g.idBase = 40 })
+	r.records.mu.Lock()
+	r.records.writeFails = 1
+	r.records.mu.Unlock()
+	r.reg.Lost(r.small().ss)
+	r.pass()
+	entered, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	r.records.mu.Lock()
+	r.records.hold = func() {
+		once.Do(func() { close(entered) })
+		<-release
+	}
+	r.records.mu.Unlock()
+	var wg sync.WaitGroup
+	wg.Go(r.tick)
+	<-entered
+	wg.Go(func() { r.reg.Snapshot() })
+	// Health is asked over a window, since the snapshot's arrival at the
+	// record's lock is not observable once it no longer holds the generation.
+	for end := time.Now().Add(200 * time.Millisecond); time.Now().Before(end); {
+		answered := make(chan struct{})
+		go func() {
+			r.reg.Health()
+			close(answered)
+		}()
+		select {
+		case <-answered:
+			continue
+		case <-time.After(5 * time.Second):
+			t.Error("Health did not answer while a snapshot waited on the record write")
+		}
+		break
+	}
+	close(release)
+	wg.Wait()
+	if rec := r.storedSet(app, "small"); rec.ID != 41 {
+		t.Errorf("record %+v once the store answered, want the new ID 41", rec)
 	}
 }
 
