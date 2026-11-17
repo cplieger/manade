@@ -40,8 +40,9 @@ type Backend interface {
 	// bytes, or ErrUnknownRunner.
 	Diag(ctx context.Context, name string) ([]byte, error)
 	// Subscribe sends each runner whose state changes until ctx ends, then
-	// closes the channel; it may close it early for a reader that lags.
-	Subscribe(ctx context.Context) <-chan Runner
+	// closes the channel; it may close it early for a reader that lags. A
+	// host that is not up answers ErrWaitingForSection or ErrStarting.
+	Subscribe(ctx context.Context) (<-chan Runner, error)
 	// Probe runs the egress probe, after any run in progress ends.
 	Probe(ctx context.Context) (ProbeReport, error)
 	// ProbeDeadline bounds a probe request: two runs of the current plan.
@@ -346,7 +347,11 @@ func (s *Server) runnerName(w http.ResponseWriter, r *http.Request) (string, boo
 func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), eventsBound)
 	defer cancel()
-	changes := s.backend.Subscribe(ctx)
+	changes, err := s.backend.Subscribe(ctx)
+	if err != nil {
+		s.writeBackendError(w, err)
+		return
+	}
 	w.Header().Set("Content-Type", "application/x-ndjson")
 	w.WriteHeader(http.StatusOK)
 	enc := json.NewEncoder(w)

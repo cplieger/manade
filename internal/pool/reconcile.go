@@ -55,6 +55,12 @@ func (disconnected) Probe(context.Context, time.Duration) (hostapi.ProbeReport, 
 
 func (disconnected) Events(context.Context, func(*hostapi.Event)) error { return errDisconnected }
 
+// notUp reports a host's answer that it is not up: waiting for its first
+// section or booting it, when it answers its status and refuses the rest.
+func notUp(err error) bool {
+	return errors.Is(err, hostapi.ErrWaitingForSection) || errors.Is(err, hostapi.ErrStarting)
+}
+
 // api answers host i's API over its open connection, read at each call so
 // a reconnection is used at once.
 func (g *generation) api(i int) HostAPI {
@@ -114,7 +120,7 @@ func (g *generation) watchEvents(ctx context.Context, i int) {
 		if ctx.Err() != nil {
 			return
 		}
-		if !errors.Is(err, errDisconnected) {
+		if !errors.Is(err, errDisconnected) && !notUp(err) {
 			g.d.Metrics.HostLinkError(g.hosts[i].cfg.Name)
 			if !failing {
 				g.log.Warn("A host's events stream failed, so its exits wait for the next pass", "host", g.hosts[i].cfg.Name, "error", err)
@@ -217,6 +223,13 @@ func (g *generation) reconcileHost(ctx context.Context, i int) {
 	g.mu.Unlock()
 	var list hostapi.RunnerList
 	g.await(i, func() { list, err = api.Runners(ctx) })
+	if notUp(err) {
+		g.mu.Lock()
+		h.up = false
+		g.applyStatus(i, &st)
+		g.mu.Unlock()
+		return
+	}
 	if err != nil {
 		g.down(ctx, i, err)
 		return
@@ -229,6 +242,7 @@ func (g *generation) reconcileHost(ctx context.Context, i int) {
 		g.await(i, func() { g.d.Runs.Listed(ctx, h.cfg.Name, names) })
 	}
 	g.mu.Lock()
+	h.up = true
 	g.applyStatus(i, &st)
 	acts := g.plan(i, begin, &list)
 	g.mu.Unlock()

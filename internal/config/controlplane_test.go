@@ -7,6 +7,7 @@ import (
 	"encoding/pem"
 	"log/slog"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -15,7 +16,7 @@ func clearControlPlaneEnv(t *testing.T) {
 	t.Helper()
 	for _, key := range []string{
 		"DATA_DIR", "LOG_LEVEL", "GITHUB_PROXY", "GITHUB_APP_CLIENT_ID", "GITHUB_APP_PRIVATE_KEY",
-		"GITHUB_APP_PRIVATE_KEY_FILE", "GITHUB_TOKEN", "GITHUB_TOKEN_FILE",
+		"GITHUB_APP_PRIVATE_KEY_FILE", "GITHUB_TOKEN", "GITHUB_TOKEN_FILE", "OPS_LISTEN_ADDR", "ALLOWED_HOSTS",
 	} {
 		t.Setenv(key, "")
 		os.Unsetenv(key)
@@ -30,6 +31,55 @@ func TestLoadControlPlaneDefaults(t *testing.T) {
 	}
 	if cp.DataDir != "/data" || cp.LogLevel != slog.LevelInfo || cp.LogLevelInvalid {
 		t.Errorf("LoadControlPlane() = %+v, want /data at info", cp)
+	}
+	if cp.OpsAddr != ":7465" || len(cp.AllowedHosts) != 0 {
+		t.Errorf("OpsAddr, AllowedHosts = %q, %q; want :7465 and none", cp.OpsAddr, cp.AllowedHosts)
+	}
+}
+
+// OPS_LISTEN_ADDR is edge-trimmed and an empty value is the default, so
+// the ops listener cannot be turned off (§5.2).
+func TestLoadControlPlaneOpsAddr(t *testing.T) {
+	for value, want := range map[string]string{"127.0.0.1:9000": "127.0.0.1:9000", " :9000\u200b\n": ":9000", "  ": ":7465"} {
+		t.Run(strings.TrimSpace(value), func(t *testing.T) {
+			clearControlPlaneEnv(t)
+			t.Setenv("OPS_LISTEN_ADDR", value)
+			cp, err := LoadControlPlane()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cp.OpsAddr != want {
+				t.Errorf("OpsAddr = %q, want %q", cp.OpsAddr, want)
+			}
+		})
+	}
+}
+
+func TestLoadControlPlaneAllowedHosts(t *testing.T) {
+	clearControlPlaneEnv(t)
+	t.Setenv("ALLOWED_HOSTS", " manade , ,192.168.1.77,prometheus.lan")
+	cp, err := LoadControlPlane()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"manade", "192.168.1.77", "prometheus.lan"}; !slices.Equal(cp.AllowedHosts, want) {
+		t.Errorf("AllowedHosts = %q, want %q", cp.AllowedHosts, want)
+	}
+}
+
+// An entry no Host can match refuses start, naming the variable and the
+// entry: the ops listener would refuse it, and a scraper whose name was
+// dropped reads as a target down.
+func TestLoadControlPlaneRefusesAnUnusableAllowedHost(t *testing.T) {
+	for _, entry := range []string{"https://manade.lan", "manade.lan/metrics", "10.0.0.0/8"} {
+		t.Run(strings.ReplaceAll(entry, "/", "_"), func(t *testing.T) {
+			clearControlPlaneEnv(t)
+			t.Setenv("ALLOWED_HOSTS", "manade,"+entry)
+			_, err := LoadControlPlane()
+			if err == nil || !strings.Contains(err.Error(), "ALLOWED_HOSTS") || !strings.Contains(err.Error(), entry) {
+				t.Errorf("LoadControlPlane() = %v, want a refusal naming ALLOWED_HOSTS and %q", err, entry)
+			}
+		})
 	}
 }
 

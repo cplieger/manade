@@ -7,18 +7,29 @@ import (
 	"log/slog"
 	"net/url"
 	"path/filepath"
+	"strings"
 
 	"github.com/cplieger/forgeapi/v2/creds"
 	"github.com/cplieger/go/envx"
+	"github.com/cplieger/go/httpserver/v2"
 	"github.com/cplieger/go/slogx"
 )
+
+// DefaultOpsAddr is OPS_LISTEN_ADDR's default, the port after the product's
+// 7463 and the hosts' 7464 that is free on the lists §5.2 checks.
+const DefaultOpsAddr = ":7465"
 
 // ControlPlane is the control plane's environment.
 type ControlPlane struct {
 	GitHub GitHub
 	// DataDir holds the store; it is absolute.
-	DataDir  string
-	LogLevel slog.Level
+	DataDir string
+	// OpsAddr is the ops listener's address, never empty.
+	OpsAddr string
+	// AllowedHosts are the Host names the host check admits besides a
+	// request from the machine itself; each is one CanonicalHost accepts.
+	AllowedHosts []string
+	LogLevel     slog.Level
 	// LogLevelInvalid reports a LOG_LEVEL that did not parse, so LogLevel is
 	// the default; the caller warns once its handler is installed.
 	LogLevelInvalid bool
@@ -39,7 +50,10 @@ func (g *GitHub) Set() bool { return g.AppKey != nil || g.Token.Reveal() != "" }
 
 // LoadControlPlane reads the control plane's environment.
 func LoadControlPlane() (*ControlPlane, error) {
-	cp := &ControlPlane{DataDir: cmp.Or(envx.String("DATA_DIR"), "/data")}
+	cp := &ControlPlane{
+		DataDir: cmp.Or(envx.String("DATA_DIR"), "/data"),
+		OpsAddr: httpserver.OpsAddr(envx.String("OPS_LISTEN_ADDR"), DefaultOpsAddr),
+	}
 	var ok bool
 	cp.LogLevel, ok = slogx.ParseLevel(envx.String("LOG_LEVEL"), slog.LevelInfo)
 	cp.LogLevelInvalid = !ok
@@ -55,6 +69,10 @@ func LoadControlPlane() (*ControlPlane, error) {
 		cp.GitHub.Proxy = proxy
 	}
 	if err := readCredential(&cp.GitHub); err != nil {
+		errs = append(errs, err)
+	}
+	var err error
+	if cp.AllowedHosts, err = allowedHosts(envx.String("ALLOWED_HOSTS")); err != nil {
 		errs = append(errs, err)
 	}
 	if err := errors.Join(errs...); err != nil {
@@ -101,6 +119,26 @@ func readCredential(gh *GitHub) error {
 		gh.AppKey = key
 	}
 	return nil
+}
+
+// allowedHosts reads ALLOWED_HOSTS, a comma-separated list. An entry no Host
+// can match refuses start rather than being dropped: the ops listener refuses
+// one too, and a scraper whose name is dropped reads as a target down.
+func allowedHosts(raw string) ([]string, error) {
+	var hosts []string
+	for e := range strings.SplitSeq(raw, ",") {
+		if e = strings.TrimSpace(e); e != "" {
+			hosts = append(hosts, e)
+		}
+	}
+	_, invalid := httpserver.ParseHostList(hosts)
+	if len(invalid) == 0 {
+		return hosts, nil
+	}
+	for i, v := range invalid {
+		invalid[i] = quote(v)
+	}
+	return nil, fmt.Errorf("config: ALLOWED_HOSTS: no Host can match %s: give bare host names or IP addresses, with no scheme, path or prefix", strings.Join(invalid, ", "))
 }
 
 func parseProxy(raw string) (*url.URL, error) {

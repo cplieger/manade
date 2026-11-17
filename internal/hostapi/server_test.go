@@ -367,6 +367,25 @@ func TestEvents(t *testing.T) {
 	}
 }
 
+// An events stream asked of a host that is not up answers its 503, as
+// every route but status and the section does, which the client reads as
+// the same refusal.
+func TestEventsBeforeTheHostIsUp(t *testing.T) {
+	for code, err := range map[string]error{codeWaiting: ErrWaitingForSection, codeStarting: ErrStarting} {
+		t.Run(code, func(t *testing.T) {
+			b := &fakeBackend{subscribeErr: err}
+			resp, body := do(t, http.MethodGet, serve(t, b).URL+"/v1/events", "")
+			if resp.StatusCode != http.StatusServiceUnavailable || errorOf(t, body).Code != code {
+				t.Errorf("answer %d %s, want 503 %s", resp.StatusCode, body, code)
+			}
+			got := linkClient(t, b).Events(t.Context(), func(*Event) { t.Error("a line from a host that is not up") })
+			if !errors.Is(got, err) {
+				t.Errorf("Events = %v, want %v", got, err)
+			}
+		})
+	}
+}
+
 // An events stream served over HTTP/2, as the host channel serves it, stays
 // open however long its lines are apart.
 func TestEventsStayOpenBetweenLinesOverHTTP2(t *testing.T) {

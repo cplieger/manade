@@ -64,6 +64,9 @@ var errLink = errors.New("fake: the link is down")
 // fakeHost is a host's API over an in-memory record of its runners, each
 // entry standing for its record and its container alike.
 type fakeHost struct {
+	// notUp, set, is a host waiting for its first section or booting it:
+	// its status says so and every other call answers notUp.
+	notUp        error
 	hold         chan struct{}
 	runs         map[string]*hostapi.Runner
 	probe        func(ctx context.Context) (hostapi.ProbeReport, error)
@@ -76,6 +79,7 @@ type fakeHost struct {
 	state        hostapi.SectionState
 	deleted      []string
 	probes       int
+	streams      int
 	timeouts     int
 	posts        int
 	inst         int
@@ -98,6 +102,9 @@ func (f *fakeHost) Status(context.Context) (hostapi.Status, error) {
 	defer f.mu.Unlock()
 	if f.down {
 		return hostapi.Status{}, errLink
+	}
+	if f.notUp != nil {
+		return hostapi.Status{InstanceID: f.instance(), Section: hostapi.SectionStatus{State: cmp.Or(f.state, hostapi.SectionWaiting)}}, nil
 	}
 	h, _ := f.cfg.Host(f.name)
 	st := hostapi.Status{
@@ -122,6 +129,9 @@ func (f *fakeHost) CreateRunner(_ context.Context, req *hostapi.RunnerRequest) (
 	f.posts++
 	if f.down {
 		return hostapi.RunnerAnswer{}, errLink
+	}
+	if f.notUp != nil {
+		return hostapi.RunnerAnswer{}, f.notUp
 	}
 	if r := f.runs[req.RunnerName]; r != nil {
 		return hostapi.RunnerAnswer{InstanceID: f.instance(), Runner: *r}, nil
@@ -153,6 +163,9 @@ func (f *fakeHost) Runners(context.Context) (hostapi.RunnerList, error) {
 	defer f.mu.Unlock()
 	if f.down {
 		return hostapi.RunnerList{}, errLink
+	}
+	if f.notUp != nil {
+		return hostapi.RunnerList{}, f.notUp
 	}
 	l := hostapi.RunnerList{InstanceID: f.instance()}
 	for _, name := range slices.Sorted(maps.Keys(f.runs)) {
@@ -193,18 +206,27 @@ func (*fakeHost) Logs(_ context.Context, name string, tail int) ([]byte, error) 
 func (f *fakeHost) Probe(ctx context.Context, _ time.Duration) (hostapi.ProbeReport, error) {
 	f.mu.Lock()
 	f.probes++
-	probe, down := f.probe, f.down
+	probe, down, notUp := f.probe, f.down, f.notUp
 	f.mu.Unlock()
 	switch {
 	case down:
 		return hostapi.ProbeReport{}, errLink
+	case notUp != nil:
+		return hostapi.ProbeReport{}, notUp
 	case probe != nil:
 		return probe(ctx)
 	}
 	return hostapi.ProbeReport{Proven: true}, nil
 }
 
-func (*fakeHost) Events(ctx context.Context, _ func(*hostapi.Event)) error {
+func (f *fakeHost) Events(ctx context.Context, _ func(*hostapi.Event)) error {
+	f.mu.Lock()
+	f.streams++
+	notUp := f.notUp
+	f.mu.Unlock()
+	if notUp != nil {
+		return notUp
+	}
 	<-ctx.Done()
 	return ctx.Err()
 }
@@ -474,8 +496,9 @@ func (g *fakeGitHub) wasRemoved(id int64) bool {
 
 // fakeMetrics counts what the pool records.
 type fakeMetrics struct {
-	starts map[string]int
-	exits  map[ExitReason]int
+	linkErrors map[string]int
+	starts     map[string]int
+	exits      map[ExitReason]int
 	// events holds each RunnerExited and Generation call in order;
 	// generations, each Generation's revision and settings.
 	events      []string
@@ -489,7 +512,7 @@ type generationCall struct {
 }
 
 func newFakeMetrics() *fakeMetrics {
-	return &fakeMetrics{starts: map[string]int{}, exits: map[ExitReason]int{}}
+	return &fakeMetrics{linkErrors: map[string]int{}, starts: map[string]int{}, exits: map[ExitReason]int{}}
 }
 
 func (m *fakeMetrics) RunnerStarted(_ string, _ github.ScaleSet, ok bool) {
@@ -507,7 +530,17 @@ func (m *fakeMetrics) RunnerExited(_ string, ss github.ScaleSet, reason ExitReas
 
 func (*fakeMetrics) JobAssigned(string, time.Duration)            {}
 func (*fakeMetrics) JobFinished(string, JobResult, time.Duration) {}
-func (*fakeMetrics) HostLinkError(string)                         {}
+func (m *fakeMetrics) HostLinkError(host string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.linkErrors[host]++
+}
+
+func (m *fakeMetrics) linkErrorsOf(host string) int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.linkErrors[host]
+}
 
 func (m *fakeMetrics) Generation(cfg *config.Config, rev uint64, _ time.Time) {
 	m.mu.Lock()

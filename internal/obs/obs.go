@@ -67,9 +67,10 @@ type Metrics struct {
 	jobQueue    *measure.LabeledHistogram
 	jobDuration *measure.LabeledHistogram
 	applied     *measure.Gauge
-	src         Sources
-	log         *slog.Logger
-	mu          sync.Mutex
+	// src is nil until Ready.
+	src atomic.Pointer[Sources]
+	log *slog.Logger
+	mu  sync.Mutex
 	// sizeFailing and freeFailing hold a failing store read, warned once.
 	sizeFailing, freeFailing atomic.Bool
 }
@@ -98,15 +99,15 @@ var (
 	_ github.Recorder = (*Metrics)(nil)
 )
 
-// New registers every series. version is the build's, src is read at
-// each scrape, and log, slog.Default() when nil, takes measure's warnings
-// and a failing store read's.
-func New(version string, src *Sources, log *slog.Logger) (*Metrics, error) {
+// New registers every series. version is the build's, and log,
+// slog.Default() when nil, takes measure's warnings and a failing store
+// read's. Until Ready, the read series are manade_booting at 1 alone.
+func New(version string, log *slog.Logger) (*Metrics, error) {
 	log = cmp.Or(log, slog.Default())
 	reg := measure.NewRegistry("manade", measure.WithLogger(log))
 	hsp := []string{labelHost, labelScope, labelProfile}
 	m := &Metrics{
-		reg: reg, src: *src, log: log, allowed: labelSets{runners: map[hostSet]bool{}, profiles: map[string]bool{}, hosts: map[string]bool{}},
+		reg: reg, log: log, allowed: labelSets{runners: map[hostSet]bool{}, profiles: map[string]bool{}, hosts: map[string]bool{}},
 		applied: measure.NewGauge("generation_applied_timestamp_seconds",
 			"When the control plane last built a pool generation from the settings, 0 before the first.", measure.UnitSeconds),
 		restReads: measure.NewLabeledCounter("rest_reads_total",
@@ -140,6 +141,10 @@ func New(version string, src *Sources, log *slog.Logger) (*Metrics, error) {
 	}
 	return m, nil
 }
+
+// Ready hands the read series their sources, read at each scrape from
+// then on.
+func (m *Metrics) Ready(src *Sources) { m.src.Store(src) }
 
 func seeds[T ~string](vals []T) [][]string {
 	out := make([][]string, len(vals))

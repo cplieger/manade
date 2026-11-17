@@ -173,6 +173,7 @@ func TestControlPlaneImageSocket(t *testing.T) {
 				runHost()
 			}
 			awaitLog(t, cpCtr, `msg="A host connected" host=default`)
+			awaitOps(t, cpCtr)
 			// The host image has a shell; the control plane's has none.
 			got := docker(t, "run", "--rm", "--entrypoint", "stat", "-v", sock+":/s", "-v", data+":/d", baked("host"),
 				"-c", "%n %u:%g %A", "/s", "/s/hosts.sock", "/d", "/d/manade.db")
@@ -181,6 +182,31 @@ func TestControlPlaneImageSocket(t *testing.T) {
 				t.Errorf("the volumes hold\n%s\nwant\n%s", got, strings.Join(want, "\n"))
 			}
 		})
+	}
+}
+
+// awaitOps waits for the control plane in container ctr to answer /healthz
+// 200 on its ops port's loopback, its first generation booted, and then
+// reads it booted on /metrics. The host image's busybox wget sends the
+// request from inside ctr's network namespace.
+func awaitOps(t *testing.T, ctr string) {
+	t.Helper()
+	get := func(path string) (string, error) {
+		out, err := exec.CommandContext(t.Context(), "docker", "run", "--rm", "--network", "container:"+ctr, "--entrypoint", "wget",
+			baked("host"), "-q", "-O", "-", "http://127.0.0.1:7465"+path).CombinedOutput()
+		return string(out), err
+	}
+	for deadline := time.Now().Add(2 * time.Minute); ; time.Sleep(2 * time.Second) {
+		body, err := get("/healthz")
+		if err == nil && strings.Contains(body, `"status":"ok"`) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s's /healthz never answered 200: %v %s", ctr, err, body)
+		}
+	}
+	if body, err := get("/metrics"); err != nil || !strings.Contains(body, "\nmanade_booting 0\n") {
+		t.Errorf("%s's /metrics = %v, want manade_booting 0:\n%s", ctr, err, body)
 	}
 }
 

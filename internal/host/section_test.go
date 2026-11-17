@@ -266,8 +266,8 @@ func TestAFirstBootWaitsForItsSection(t *testing.T) {
 		if _, err := b.Probe(t.Context()); !errors.Is(err, hostapi.ErrWaitingForSection) {
 			t.Errorf("Probe = %v", err)
 		}
-		if _, open := <-b.Subscribe(t.Context()); open {
-			t.Error("a waiting host's events stream carries a runner")
+		if _, err := b.Subscribe(t.Context()); !errors.Is(err, hostapi.ErrWaitingForSection) {
+			t.Errorf("Subscribe = %v", err)
 		}
 	})
 	select {

@@ -131,10 +131,11 @@ func newMetrics(t *testing.T, snap *pool.Snapshot) *Metrics {
 
 func newMetricsOver(t *testing.T, src *Sources) *Metrics {
 	t.Helper()
-	m, err := New("v1.0.0-test", src, slog.New(slog.DiscardHandler))
+	m, err := New("v1.0.0-test", slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+	m.Ready(src)
 	return m
 }
 
@@ -212,6 +213,29 @@ func TestBuildInfoNamesTheVersion(t *testing.T) {
 	wantValue(t, fams, 1, "manade_build_info", "v1.0.0-test")
 	wantValue(t, fams, 1, "manade_booting")
 	wantValue(t, fams, 0, "manade_generation_applied_timestamp_seconds")
+}
+
+// Before its sources are ready (the store not open, no pool yet) the page
+// says the control plane is booting and reads nothing else.
+func TestBeforeReadyTheControlPlaneReadsBooting(t *testing.T) {
+	m, err := New("v1.0.0-test", slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fams := gather(t, m)
+	wantValue(t, fams, 1, "manade_build_info", "v1.0.0-test")
+	wantValue(t, fams, 1, "manade_booting")
+	wantValue(t, fams, 0, "manade_generation_applied_timestamp_seconds")
+	for _, name := range []string{"manade_store_size_bytes", "manade_store_write_failures_total", "manade_housekeeping_deadline_timestamp_seconds", "manade_queue_head_wait_seconds"} {
+		wantAbsent(t, fams, name)
+	}
+	m.Ready(&Sources{
+		Pool:  func() pool.Snapshot { return pool.Snapshot{Booted: true} },
+		Store: &fakeStore{size: 1 << 20}, Housekeeping: func() time.Time { return time.Time{} },
+	})
+	fams = gather(t, m)
+	wantValue(t, fams, 0, "manade_booting")
+	wantValue(t, fams, 1<<20, "manade_store_size_bytes")
 }
 
 // fixture is a booted pool over settings(): default serving with a status,
@@ -629,12 +653,13 @@ func TestHousekeepingDeadlineIsZeroBeforeItsRun(t *testing.T) {
 func TestAFailingStoreReadIsWarnedOncePerStreak(t *testing.T) {
 	var log bytes.Buffer
 	st := &fakeStore{sizeErr: errors.New("test: the file is gone")}
-	m, err := New("v1.0.0-test", &Sources{
-		Pool: func() pool.Snapshot { return pool.Snapshot{} }, Store: st, Housekeeping: func() time.Time { return time.Time{} },
-	}, slog.New(slog.NewTextHandler(&log, nil)))
+	m, err := New("v1.0.0-test", slog.New(slog.NewTextHandler(&log, nil)))
 	if err != nil {
 		t.Fatal(err)
 	}
+	m.Ready(&Sources{
+		Pool: func() pool.Snapshot { return pool.Snapshot{} }, Store: st, Housekeeping: func() time.Time { return time.Time{} },
+	})
 	const line = "Reading the store's size failed"
 	gather(t, m)
 	gather(t, m)

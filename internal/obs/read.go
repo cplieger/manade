@@ -138,9 +138,14 @@ func (d *descs) all() []*measure.Desc {
 // collect emits the read series from one snapshot, the store and the
 // housekeeper.
 func (m *Metrics) collect(_ context.Context, e *measure.Emitter) {
-	m.emitStore(e)
-	s := m.src.Pool()
 	d := &m.d
+	src := m.src.Load()
+	if src == nil {
+		e.Emit(d.booting, 1)
+		return
+	}
+	m.emitStore(e, src)
+	s := src.Pool()
 	e.Emit(d.booting, b2f(!s.Booted))
 	head := 0.0
 	if !s.HeadSince.IsZero() {
@@ -295,16 +300,16 @@ func (m *Metrics) emitStatus(e *measure.Emitter, v *pool.HostView) {
 
 // emitStore emits the store's series and the housekeeping deadline. A
 // failing read leaves its series off the page, warned once while it fails.
-func (m *Metrics) emitStore(e *measure.Emitter) {
+func (m *Metrics) emitStore(e *measure.Emitter, src *Sources) {
 	d := &m.d
-	if size, err := m.src.Store.Size(); m.readOK(&m.sizeFailing, "size", err) {
+	if size, err := src.Store.Size(); m.readOK(&m.sizeFailing, "size", err) {
 		e.Emit(d.storeSize, float64(size))
 	}
-	if free, err := m.src.Store.VolumeFree(); m.readOK(&m.freeFailing, "free space", err) {
+	if free, err := src.Store.VolumeFree(); m.readOK(&m.freeFailing, "free space", err) {
 		e.Emit(d.storeFree, float64(free))
 	}
-	e.Emit(d.writeFailures, float64(m.src.Store.WriteFailures()))
-	e.Emit(d.housekeepingDue, unixSeconds(m.src.Housekeeping()))
+	e.Emit(d.writeFailures, float64(src.Store.WriteFailures()))
+	e.Emit(d.housekeepingDue, unixSeconds(src.Housekeeping()))
 }
 
 // readOK reports err nil, warning once when a read of what starts

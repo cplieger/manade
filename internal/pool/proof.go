@@ -48,11 +48,13 @@ type host struct {
 	// judges only the runners whose POST was answered before it began.
 	seq uint64
 	// current reports st running the section this generation delivers the
-	// host; reachable, that the last pass read st and the runner list;
-	// judged, that a pass has tried it; waiting, that its reconcile loop
-	// waits on a call; settled, that its last pass adopted or removed
-	// every runner it listed that no record held.
-	current, reachable, judged, waiting, settled bool
+	// host; reachable, that the last pass read st and the runner list, or
+	// st alone from a host not up; up, that st came from a host up on a
+	// section, which answers its other calls; judged, that a pass has tried
+	// it; waiting, that its reconcile loop waits on a call; settled, that
+	// its last pass adopted or removed every runner it listed that no
+	// record held.
+	current, reachable, up, judged, waiting, settled bool
 }
 
 // serving reports whether the host takes new slots at now: reachable,
@@ -144,6 +146,10 @@ func (g *generation) judge(i int) {
 	h.ready = readiness(g.cfg, h.cfg.Name, st)
 	want := g.sections[h.cfg.Name]
 	h.current = want != "" && st.Section.State == hostapi.SectionRunning && st.Section.Hash == want
+	if !h.up {
+		// A host not up reports no limits to judge its capacity by.
+		return
+	}
 	hb := &g.l.hosts[i]
 	if hb.reported {
 		hb.budget.cpu, hb.budget.mem = st.Limits.MilliCPUs, max(0, st.Memory.Admissible)
@@ -166,7 +172,9 @@ func (g *generation) judge(i int) {
 func (g *generation) unreachable(i int, err error) {
 	h := g.hosts[i]
 	was := h.serving(g.now())
-	if h.reachable || !h.judged {
+	// A host not yet connected at a pass before any judged it is a start,
+	// not a loss.
+	if h.reachable || (!h.judged && !errors.Is(err, errDisconnected)) {
 		g.log.Warn("A host does not answer, so it takes no new jobs; its runners keep their reservations", "host", h.cfg.Name, "error", err)
 	}
 	h.reachable, h.judged = false, true
@@ -216,7 +224,7 @@ func (g *generation) runProver(ctx context.Context, i int) {
 func (g *generation) proveHost(ctx context.Context, i int) {
 	h := g.hosts[i]
 	g.mu.Lock()
-	if !h.reachable || h.st == nil {
+	if !h.reachable || !h.up || h.st == nil {
 		g.mu.Unlock()
 		return
 	}

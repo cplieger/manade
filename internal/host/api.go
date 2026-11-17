@@ -66,14 +66,11 @@ func (b *backend) Diag(ctx context.Context, name string) ([]byte, error) {
 	return b.s.runners.diag(ctx, name)
 }
 
-// Subscribe ends at once on a host that is not up yet, which has no runner.
-func (b *backend) Subscribe(ctx context.Context) <-chan hostapi.Runner {
-	if b.up() != nil {
-		ch := make(chan hostapi.Runner)
-		close(ch)
-		return ch
+func (b *backend) Subscribe(ctx context.Context) (<-chan hostapi.Runner, error) {
+	if err := b.up(); err != nil {
+		return nil, err
 	}
-	return b.s.runners.subscribe(ctx)
+	return b.s.runners.subscribe(ctx), nil
 }
 
 func (b *backend) Probe(ctx context.Context) (hostapi.ProbeReport, error) {

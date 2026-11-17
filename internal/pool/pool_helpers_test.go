@@ -269,10 +269,18 @@ func (m *smodel) step(in *bytesIn) {
 		m.settle()
 	case 7:
 		h.set(func(f *fakeHost) {
-			if in.n(2) == 0 {
+			switch in.n(3) {
+			case 0:
 				f.down = !f.down
-			} else {
+			case 1:
 				f.disconnected = !f.disconnected
+			default:
+				// A host booting its section answers its status alone.
+				if f.notUp == nil {
+					f.notUp = hostapi.ErrStarting
+				} else {
+					f.notUp = nil
+				}
 			}
 		})
 	case 8:
@@ -459,7 +467,7 @@ func (m *smodel) restart() {
 func (m *smodel) heal() {
 	for _, h := range m.r.hosts {
 		h.set(func(f *fakeHost) {
-			f.down, f.disconnected, f.refuse, f.failStart, f.timeouts = false, false, false, false, 0
+			f.down, f.disconnected, f.refuse, f.failStart, f.timeouts, f.notUp = false, false, false, false, 0, nil
 			f.section = sectionHash(m.r.rev)
 			clear(f.notReady)
 		})

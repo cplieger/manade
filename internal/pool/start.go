@@ -128,7 +128,7 @@ func (g *generation) post(ctx context.Context, b *book, r *runner) {
 	g.mu.Unlock()
 	ans, err := g.api(hi).CreateRunner(ctx, req)
 	var notReady *hostapi.NotReadyError
-	refused := errors.As(err, &notReady) || errors.Is(err, hostapi.ErrUnknownProfile) || errors.Is(err, hostapi.ErrProfileRefused)
+	refused := errors.As(err, &notReady) || errors.Is(err, hostapi.ErrUnknownProfile) || errors.Is(err, hostapi.ErrProfileRefused) || notUp(err)
 	g.mu.Lock()
 	r.posting = false
 	held := b.runners[r.name] == r

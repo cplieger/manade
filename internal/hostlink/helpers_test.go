@@ -49,7 +49,7 @@ func (*backend) PutSection(context.Context, *hostapi.Section) (hostapi.SectionAn
 
 func (*backend) Restarting() <-chan struct{} { return nil }
 
-func (b *backend) Subscribe(ctx context.Context) <-chan hostapi.Runner {
+func (b *backend) Subscribe(ctx context.Context) (<-chan hostapi.Runner, error) {
 	out := make(chan hostapi.Runner)
 	go func() {
 		defer close(out)
@@ -66,7 +66,7 @@ func (b *backend) Subscribe(ctx context.Context) <-chan hostapi.Runner {
 			}
 		}
 	}()
-	return out
+	return out, nil
 }
 
 func (b *backend) Probe(ctx context.Context) (hostapi.ProbeReport, error) {
