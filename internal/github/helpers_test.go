@@ -21,7 +21,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cplieger/forgeapi/v2"
+	"github.com/cplieger/forgeapi/v3"
 	"github.com/cplieger/go/slogx/capture"
 	"github.com/cplieger/manade/internal/config"
 	"go.yaml.in/yaml/v4"

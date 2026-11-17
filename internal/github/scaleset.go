@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/actions/scaleset"
-	"github.com/cplieger/forgeapi/v2/creds"
+	"github.com/cplieger/forgeapi/v3/creds"
 	"github.com/cplieger/go/textsafe"
 	"github.com/cplieger/manade/internal/config"
 )

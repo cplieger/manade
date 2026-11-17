@@ -7,8 +7,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/cplieger/forgeapi/v2"
-	"github.com/cplieger/forgeapi/v2/creds"
+	"github.com/cplieger/forgeapi/v3"
+	"github.com/cplieger/forgeapi/v3/creds"
 	"github.com/cplieger/manade/internal/config"
 )
 
