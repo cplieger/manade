@@ -88,7 +88,7 @@ func TestAHostServesOnlyTheSectionOfTheCurrentRevision(t *testing.T) {
 func TestAFailedEnsureBootsTheGenerationAndIsRetried(t *testing.T) {
 	t.Parallel()
 	cfg := oneHost()
-	r := &rig{t: t, now: epoch, cfg: cfg, gh: newFakeGitHub(cfg), log: &logBuf{}, rev: 1, settler: &fakeSettler{}, records: newRecords(), runs: newFakeRuns(), hostLog: newFakeHostLog()}
+	r := &rig{t: t, now: epoch, cfg: cfg, gh: newFakeGitHub(cfg), log: &logBuf{}, rev: 1, settler: &fakeSettler{}, records: newRecords(), sessions: &fakeSessions{t: t}, runs: newFakeRuns(), hostLog: newFakeHostLog()}
 	r.gh.ensureFail = true
 	r.side = sideOf(r.gh)
 	r.hosts = []*fakeHost{newFakeHost(cfg, "default", sectionHash(1))}

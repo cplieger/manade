@@ -32,9 +32,6 @@ type sset struct {
 	scope, profile           string
 	queue, assigned, running []*sjob
 	pending                  []github.Event
-	// openedID is the scale set whose session the model opened, 0 before
-	// one: GitHub opens a session for each scale set ID.
-	openedID int
 }
 
 func (s *sset) stats() github.Stats {
@@ -53,7 +50,8 @@ type smodel struct {
 	added, lost int
 }
 
-// newModel boots a quiet rig with every allowed scale set opened.
+// newModel boots a quiet rig with every session its registry opened
+// handed its statistics.
 func newModel(r *rig) *smodel {
 	m := &smodel{r: r, jobOf: map[string]*sjob{}}
 	for _, b := range r.p.l.books {
@@ -65,15 +63,27 @@ func newModel(r *rig) *smodel {
 
 func (m *smodel) book(s *sset) *book { return m.r.book(s.scope, s.profile) }
 
-// open hands each scale set's new session its statistics; a scale set
-// the generation does not hold yet has no session.
+// open hands each session the registry opened its statistics, as
+// GitHub's answer to its create does.
 func (m *smodel) open() {
 	for _, s := range m.sets {
-		if b := m.book(s); b != nil {
-			m.r.reg.Opened(b.ss, s.stats())
-			s.openedID = b.ss.ID
-		}
+		m.session(s)
 	}
+}
+
+// session answers the session GitHub lets s's current scale set poll on,
+// nil when the registry opened none, handing a new one its statistics.
+func (m *smodel) session(s *sset) *fakeSession {
+	b := m.book(s)
+	if b == nil {
+		return nil
+	}
+	fs := m.r.sessions.usable(b.ss)
+	if fs != nil && !fs.opened {
+		m.r.reg.Opened(b.ss, s.stats())
+		fs.opened = true
+	}
+	return fs
 }
 
 // routed reports that new jobs reach s: its scope is served and not
@@ -119,21 +129,14 @@ func (m *smodel) scopes() map[string]bool {
 	return out
 }
 
-// poll runs one poll of s: GitHub assigns up to n queued jobs the figure
-// allows, oldest first, and sends every pending message.
-func (m *smodel) poll(s *sset, n int) {
+// poll runs one poll of s on the session the registry opened for it, and
+// reports whether there was one: GitHub assigns up to n queued jobs the
+// figure allows, oldest first, and sends every pending message.
+func (m *smodel) poll(s *sset, n int) bool {
+	if m.session(s) == nil {
+		return false
+	}
 	b := m.book(s)
-	if b == nil {
-		s.openedID = 0
-		return
-	}
-	if m.r.p.sets[b].lost {
-		return
-	}
-	if s.openedID != b.ss.ID {
-		m.r.reg.Opened(b.ss, s.stats())
-		s.openedID = b.ss.ID
-	}
 	figure := m.r.reg.Capacity(b.ss, m.r.now)
 	if figure < 0 {
 		m.r.t.Fatalf("%v reports a figure of %d", b.ss, figure)
@@ -148,6 +151,7 @@ func (m *smodel) poll(s *sset, n int) {
 	s.pending = nil
 	st := s.stats()
 	m.r.reg.Polled(b.ss, &github.Poll{Started: m.r.now, Ended: m.r.now, Stats: &st, Events: events, Idle: len(events) == 0})
+	return true
 }
 
 // containers answers every running container across the hosts, by name.
@@ -308,7 +312,7 @@ func (m *smodel) step(in *bytesIn) {
 		case 1:
 			m.r.gh.set(func(g *fakeGitHub) { g.ensureFail = !g.ensureFail })
 		default:
-			m.lose(s)
+			m.lose(s, in.n(2) == 0)
 		}
 	case 11:
 		if in.n(3) == 0 {
@@ -321,32 +325,37 @@ func (m *smodel) step(in *bytesIn) {
 	}
 }
 
-// lose has GitHub drop s's scale set, as it purges one no session polled
-// for a day: its assigned jobs wait in the queue again, the pool's next
-// session create answers not found, and an ensure creates the scale set
-// anew under another ID.
-func (m *smodel) lose(s *sset) {
+// lose has s's session create answered not found, so its session reports
+// the scale set lost and ends. Unless kept, GitHub dropped it, as it purges
+// one no session polled for a day: its assigned jobs wait in the queue
+// again and an ensure creates the scale set anew under another ID. A kept
+// one is found again under its own ID.
+func (m *smodel) lose(s *sset, kept bool) {
 	b := m.book(s)
-	if b == nil || m.r.p.sets[b].lost {
+	fs := m.session(s)
+	if fs == nil {
 		return
 	}
-	m.lost++
-	s.queue = append(slices.Clone(s.assigned), s.queue...)
-	s.assigned = nil
-	s.pending = slices.DeleteFunc(s.pending, func(e github.Event) bool { return e.Kind == github.Assigned })
-	m.r.gh.set(func(g *fakeGitHub) { g.ids[setKey{s.scope, s.profile}] = 1000 + m.lost })
+	if !kept {
+		m.lost++
+		s.queue = append(slices.Clone(s.assigned), s.queue...)
+		s.assigned = nil
+		s.pending = slices.DeleteFunc(s.pending, func(e github.Event) bool { return e.Kind == github.Assigned })
+		m.r.gh.set(func(g *fakeGitHub) { g.ids[setKey{s.scope, s.profile}] = 1000 + m.lost })
+	}
 	m.r.reg.Lost(b.ss)
+	m.r.sessions.finish(fs)
 }
 
 // reconfigure commits a new settings revision: a profile resized within
 // every host it lists, a profile's max_runners, hosts or their order, a
 // host's capacity above every profile it serves, the head reserve, a
 // scope turned off or back on, a profile leaving a scope or coming back
-// to it, a new scope, or the same settings again. A host may be left
-// running its previous section.
+// to it, a new scope, a new credential on the same GitHub, or the same
+// settings again. A host may be left running its previous section.
 func (m *smodel) reconfigure(in *bytesIn) {
 	cfg := cloneConfig(m.r.cfg)
-	switch in.n(9) {
+	switch in.n(10) {
 	case 0:
 		pr := &cfg.Profiles[in.n(len(cfg.Profiles))]
 		cpus, mem := int64(1<<40), int64(1<<40)
@@ -391,6 +400,8 @@ func (m *smodel) reconfigure(in *bytesIn) {
 		m.retire(cfg, m.sets[in.n(len(m.sets))])
 	case 7:
 		m.addScope(cfg)
+	case 8:
+		m.r.side = sideOf(m.r.gh)
 	}
 	var lagging []string
 	if in.n(4) == 0 {
@@ -516,7 +527,9 @@ func (m *smodel) stuck() map[*sset]string {
 // every lost job and the unassignable holds lapse, then runs passes in
 // which each running job ends, the pool reconciles, each scale set polls
 // and the runners take their jobs. From the second pass on no assignment
-// may wait beside room for two passes, and within passes every job runs.
+// may wait beside room for two passes, the pool's count of assignments
+// with no runner started must match GitHub's (counted), and within passes
+// every job runs.
 func (m *smodel) drain(passes int) {
 	m.heal()
 	m.reap()
@@ -525,6 +538,7 @@ func (m *smodel) drain(passes int) {
 	}
 	m.advance(skipMax + lostFor)
 	var before map[*sset]string
+	stale := map[*sset]int{}
 	for pass := range passes {
 		for _, name := range slices.Sorted(maps.Keys(m.jobOf)) {
 			m.finish(name)
@@ -532,11 +546,23 @@ func (m *smodel) drain(passes int) {
 		m.r.pass()
 		m.settle()
 		m.sweep()
+		polled := map[*sset]bool{}
 		for _, s := range m.sets {
-			m.poll(s, len(s.queue))
+			polled[s] = m.poll(s, len(s.queue))
+		}
+		if pass > 0 {
+			m.counted(pass, polled, stale)
 		}
 		m.r.starts()
 		m.take()
+		// A poll that assigns nothing reads GitHub's counts with the
+		// runners that took their jobs running.
+		if pass > 0 {
+			for _, s := range m.sets {
+				polled[s] = m.poll(s, 0)
+			}
+			m.counted(pass, polled, nil)
+		}
 		m.advance(30 * time.Second)
 		now := m.stuck()
 		for s, why := range now {
@@ -555,6 +581,34 @@ func (m *smodel) drain(passes int) {
 		left = append(left, fmt.Sprintf("%s/%s queued %d assigned %d running %d", s.scope, s.profile, len(s.queue), len(s.assigned), len(s.running)))
 	}
 	m.r.t.Fatalf("jobs left after %d passes: %s", passes, strings.Join(left, "; "))
+}
+
+// counted fails the run when the pool's snapshot disagrees with GitHub on
+// a scale set's assignments with no runner started right after its poll
+// (polled), or, given stale, still counts some for a set that did not poll
+// two passes after GitHub's count of it reached none (stale counts those
+// passes).
+func (m *smodel) counted(pass int, polled map[*sset]bool, stale map[*sset]int) {
+	snap := map[setKey]int{}
+	for _, c := range m.r.reg.Snapshot().Sets {
+		if c.ID != 0 {
+			snap[setKey{c.Scope, c.Profile}] = c.AssignedUnstarted
+		}
+	}
+	for _, s := range m.sets {
+		got, ok := snap[setKey{s.scope, s.profile}]
+		switch {
+		case polled[s] && got != len(s.assigned):
+			m.r.t.Fatalf("pass %d: %s/%s counts %d assignments with no runner started right after a poll, GitHub %d", pass, s.scope, s.profile, got, len(s.assigned))
+		case stale == nil:
+		case !polled[s] && ok && got > 0 && len(s.assigned) == 0:
+			if stale[s]++; stale[s] > 2 {
+				m.r.t.Fatalf("pass %d: %s/%s still counts %d assignments with no runner started two passes after GitHub's count reached none", pass, s.scope, s.profile, got)
+			}
+		default:
+			delete(stale, s)
+		}
+	}
 }
 
 // unstarted fails the run when, once every job has run and each scale set

@@ -771,11 +771,13 @@ type rig struct {
 	links   *fakeLinks
 	settler *fakeSettler
 	records *fakeRecords
-	// runs and hostLog outlive a restart, as the store does.
-	runs    *fakeRuns
-	hostLog *fakeHostLog
-	hosts   []*fakeHost
-	rev     uint64
+	// runs, hostLog and sessions outlive a restart, as the store and
+	// GitHub do.
+	sessions *fakeSessions
+	runs     *fakeRuns
+	hostLog  *fakeHostLog
+	hosts    []*fakeHost
+	rev      uint64
 }
 
 func newRig(t testing.TB, cfg *config.Config) *rig { return buildRig(t, cfg, &logBuf{}) }
@@ -785,7 +787,10 @@ func quietRig(t testing.TB, cfg *config.Config) *rig { return buildRig(t, cfg, &
 
 func buildRig(t testing.TB, cfg *config.Config, log *logBuf) *rig {
 	gh := newFakeGitHub(cfg)
-	r := &rig{t: t, now: epoch, cfg: cfg, gh: gh, side: sideOf(gh), log: log, rev: 1, settler: &fakeSettler{}, records: newRecords(), runs: newFakeRuns(), hostLog: newFakeHostLog()}
+	r := &rig{
+		t: t, now: epoch, cfg: cfg, gh: gh, side: sideOf(gh), log: log, rev: 1, settler: &fakeSettler{}, records: newRecords(),
+		sessions: &fakeSessions{t: t}, runs: newFakeRuns(), hostLog: newFakeHostLog(),
+	}
 	for i := range cfg.Hosts {
 		r.hosts = append(r.hosts, newFakeHost(cfg, cfg.Hosts[i].Name, sectionHash(r.rev)))
 	}
@@ -810,15 +815,18 @@ func (r *rig) settings() *Settings {
 }
 
 // restart is a new control-plane process over the same hosts and GitHub:
-// a new registry boots its first generation, reads every scope's
-// visibility and proves every host.
+// the old process's sessions end with it, and a new registry boots its
+// first generation, reads every scope's visibility, proves every host and
+// opens its sessions.
 func (r *rig) restart() {
+	r.sessions.endAll()
 	r.m = newFakeMetrics()
 	r.reg = NewRegistry(r.settings(), &Deps{
 		Links: r.links, Metrics: r.m, Runs: r.runs, Hosts: r.hostLog, Settle: r.settler, Records: r.records, Routes: r.records,
 		Log: slog.New(slog.NewTextHandler(r.log, &slog.HandlerOptions{Level: slog.LevelDebug})),
 	})
 	r.reg.now = func() time.Time { return r.now }
+	r.reg.spawn = r.sessions.spawn
 	r.reg.record(context.Background(), nil)
 	r.install(r.reg.take())
 }
@@ -840,10 +848,12 @@ func (r *rig) apply(cfg *config.Config, lagging ...string) {
 	r.install(r.settings())
 }
 
+// install installs s as Run does, then opens the sessions it serves.
 func (r *rig) install(s *Settings) {
 	r.p = r.reg.install(context.Background(), s)
 	r.p.visibility(context.Background())
 	r.prove()
+	r.reg.sync()
 }
 
 // prove runs every host's pending proof.
@@ -860,7 +870,9 @@ func (r *rig) prove() {
 // pass runs the ensures due, the visibility reads due, each host's pass
 // in turn, the pool-wide step, the proofs the passes asked for, and the starts.
 func (r *rig) pass() {
-	r.p.retryEnsure(context.Background())
+	if r.p.retryEnsure(context.Background()) {
+		r.reg.sync()
+	}
 	r.p.visibility(context.Background())
 	for i := range r.p.hosts {
 		r.p.passHost(context.Background(), i)
@@ -925,3 +937,105 @@ func (l *logBuf) String() string {
 }
 
 var _ io.Writer = (*logBuf)(nil)
+
+// fakeSessions is GitHub's message sessions as the rig's registry opens
+// them. GitHub holds one session per scale set: a create while another
+// holds it is refused until that one ends, and a close ends a moment
+// after it is asked for.
+type fakeSessions struct {
+	t    testing.TB
+	live []*fakeSession
+	mu   sync.Mutex
+}
+
+// fakeSession is one session the registry opened; opened is whether the
+// pool has its statistics yet, which only the model reads and writes.
+type fakeSession struct {
+	w       want
+	done    chan struct{}
+	end     sync.Once
+	closing bool
+	ended   bool
+	opened  bool
+}
+
+// closeDelay is how long a session's close takes to land at GitHub.
+const closeDelay = 100 * time.Microsecond
+
+// spawn opens w's session as the registry's spawn does. A session under
+// another credential still holding the scale set fails the test: the
+// registry closes every session, and waits for each, before one opens
+// under a new credential.
+func (f *fakeSessions) spawn(w want) *session {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, o := range f.live {
+		if !o.ended && o.w.gh != w.gh && o.w.ss.Scope == w.ss.Scope && o.w.ss.ID == w.ss.ID {
+			f.t.Fatalf("%v opened under a new credential while the old credential's session still held it", w.ss)
+		}
+	}
+	fs := &fakeSession{w: w, done: make(chan struct{})}
+	f.live = append(f.live, fs)
+	return &session{want: w, done: fs.done, cancel: func() {
+		f.mu.Lock()
+		fs.closing = true
+		f.mu.Unlock()
+		go func() {
+			time.Sleep(closeDelay)
+			f.finish(fs)
+		}()
+	}}
+}
+
+// finish ends fs: GitHub no longer holds its claim.
+func (f *fakeSessions) finish(fs *fakeSession) {
+	fs.end.Do(func() {
+		f.mu.Lock()
+		fs.ended = true
+		f.live = slices.DeleteFunc(f.live, func(o *fakeSession) bool { return o == fs })
+		f.mu.Unlock()
+		close(fs.done)
+	})
+}
+
+// endAll ends every session, as a process that stops does.
+func (f *fakeSessions) endAll() {
+	f.mu.Lock()
+	live := slices.Clone(f.live)
+	f.mu.Unlock()
+	for _, fs := range live {
+		f.finish(fs)
+	}
+}
+
+// usable answers the session the registry holds open for ss, nil for
+// none, once GitHub lets it poll: no other session still holds the scale
+// set. A closing holder's close is waited out, as a create retried past it
+// succeeds.
+func (f *fakeSessions) usable(ss github.ScaleSet) *fakeSession {
+	f.mu.Lock()
+	var mine *fakeSession
+	for _, o := range f.live {
+		if !o.ended && !o.closing && o.w.ss == ss {
+			mine = o
+		}
+	}
+	var closing []*fakeSession
+	for _, o := range f.live {
+		if o == mine || o.ended || o.w.ss.Scope != ss.Scope || o.w.ss.ID != ss.ID {
+			continue
+		}
+		if !o.closing {
+			mine = nil
+		}
+		closing = append(closing, o)
+	}
+	f.mu.Unlock()
+	if mine == nil {
+		return nil
+	}
+	for _, o := range closing {
+		<-o.done
+	}
+	return mine
+}
