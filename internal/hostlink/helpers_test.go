@@ -41,8 +41,6 @@ func (*backend) DeleteRunner(context.Context, string, bool) ([]byte, error) { re
 
 func (*backend) Logs(context.Context, string, int) ([]byte, error) { return nil, nil }
 
-func (*backend) Diag(context.Context, string) ([]byte, error) { return nil, nil }
-
 func (*backend) PutSection(context.Context, *hostapi.Section) (hostapi.SectionAnswer, error) {
 	return hostapi.SectionAnswer{Applies: hostapi.SectionApplied}, nil
 }

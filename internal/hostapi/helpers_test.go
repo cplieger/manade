@@ -67,8 +67,6 @@ func (f *fakeBackend) DeleteRunner(_ context.Context, name string, diag bool) ([
 
 func (f *fakeBackend) Logs(context.Context, string, int) ([]byte, error) { return f.logs, f.err }
 
-func (f *fakeBackend) Diag(context.Context, string) ([]byte, error) { return f.diag, f.err }
-
 func (f *fakeBackend) Subscribe(ctx context.Context) (<-chan Runner, error) {
 	if f.subscribeErr != nil {
 		return nil, f.subscribeErr

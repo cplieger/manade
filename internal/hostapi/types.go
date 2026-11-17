@@ -34,9 +34,9 @@ const (
 	// eventsBound ends an events stream, after which the client reconnects
 	// and lists again.
 	eventsBound = time.Hour
-	// Heartbeat is how often an events stream writes a line when no runner
+	// heartbeatEvery is how often an events stream writes a line when no runner
 	// changes, so a client can tell an idle stream from a dead link.
-	Heartbeat = 30 * time.Second
+	heartbeatEvery = 30 * time.Second
 )
 
 // clientSlack is how much longer the client waits than the server's bound,
@@ -52,9 +52,9 @@ const (
 	SectionLimit = 1 << 20
 	// jitLimit caps a JIT config; GitHub's are a few KiB of base64.
 	jitLimit = 48 << 10
-	// LogTailDefault and LogTailMax bound a log tail's lines.
-	LogTailDefault = 50
-	LogTailMax     = 1000
+	// logTailDefault and logTailMax bound a log tail's lines.
+	logTailDefault = 50
+	logTailMax     = 1000
 	// logLimit caps a log tail's bytes; docker.LogKeep owns the value.
 	logLimit = docker.LogKeep
 	// DiagLimit caps a runner's _diag tar.
@@ -500,7 +500,7 @@ type EventType string
 // The event types.
 const (
 	EventRunner    EventType = "runner"
-	EventHeartbeat EventType = "heartbeat"
+	eventHeartbeat EventType = "heartbeat"
 	// EventRestarting is the stream's last line: the host restarts to apply
 	// its section, and its connection ends.
 	EventRestarting EventType = "restarting"

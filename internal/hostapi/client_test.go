@@ -88,12 +88,6 @@ func TestClientRoundTrips(t *testing.T) {
 			t.Errorf("logs = %q, %v", got, err)
 		}
 	})
-	t.Run("diag", func(t *testing.T) {
-		got, err := c.Diag(t.Context(), "r1")
-		if err != nil || string(got) != "tar" {
-			t.Errorf("diag = %q, %v", got, err)
-		}
-	})
 	t.Run("probe", func(t *testing.T) {
 		rep, err := c.Probe(t.Context(), time.Minute)
 		if err != nil || !rep.Proven || rep.InstanceID != "inst-1" {
@@ -104,7 +98,7 @@ func TestClientRoundTrips(t *testing.T) {
 		got := make(chan *Event, 8)
 		done := make(chan error, 1)
 		go func() { done <- c.Events(t.Context(), func(ev *Event) { got <- ev }) }()
-		if ev := <-got; ev.Type != EventHeartbeat || ev.InstanceID != "inst-1" {
+		if ev := <-got; ev.Type != eventHeartbeat || ev.InstanceID != "inst-1" {
 			t.Errorf("first event = %+v", ev)
 		}
 		b.changes <- Runner{Name: "r1", State: StateRunning}
@@ -153,7 +147,7 @@ func TestClientTypedErrors(t *testing.T) {
 	t.Run("other failures", func(t *testing.T) {
 		c := linkClient(t, &fakeBackend{err: errors.New("daemon gone")})
 		_, err := c.Runners(t.Context())
-		e, ok := errors.AsType[*APIError](err)
+		e, ok := errors.AsType[*apiError](err)
 		if !ok || e.Status != http.StatusInternalServerError || e.Code != codeInternal || !strings.Contains(e.Message, "daemon gone") {
 			t.Errorf("err = %#v", err)
 		}

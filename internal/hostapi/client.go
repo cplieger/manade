@@ -18,15 +18,15 @@ import (
 	"github.com/cplieger/go/textsafe"
 )
 
-// APIError is an error answer the client has no sentinel for.
-type APIError struct {
+// apiError is an error answer the client has no sentinel for.
+type apiError struct {
 	Op      string
 	Code    string
 	Message string
 	Status  int
 }
 
-func (e *APIError) Error() string {
+func (e *apiError) Error() string {
 	return "host API " + e.Op + ": status " + strconv.Itoa(e.Status) + " (" + e.Code + "): " + e.Message
 }
 
@@ -95,12 +95,6 @@ func (c *Client) Logs(ctx context.Context, name string, tail int) ([]byte, error
 	return b, err
 }
 
-// Diag answers the runner's _diag tar, or fails with ErrUnknownRunner.
-func (c *Client) Diag(ctx context.Context, name string) ([]byte, error) {
-	b, _, err := c.callBytes(ctx, "runner diag", callBound, http.MethodGet, "/v1/runners/"+url.PathEscape(name)+"/diag", DiagLimit)
-	return b, err
-}
-
 // Probe runs the host's egress probe. deadline is the host's reported
 // ProbeDeadline; a run that passes it fails with ErrProbeTimeout.
 func (c *Client) Probe(ctx context.Context, deadline time.Duration) (ProbeReport, error) {
@@ -135,8 +129,8 @@ func (c *Client) PutSection(ctx context.Context, section *Section) (SectionAnswe
 func (c *Client) Events(ctx context.Context, fn func(*Event)) error {
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
-	errSilent := fmt.Errorf("host API events: no line for %s", 3*Heartbeat)
-	watchdog := time.AfterFunc(3*Heartbeat, func() { cancel(errSilent) })
+	errSilent := fmt.Errorf("host API events: no line for %s", 3*heartbeatEvery)
+	watchdog := time.AfterFunc(3*heartbeatEvery, func() { cancel(errSilent) })
 	defer watchdog.Stop()
 	body, _, err := c.send(ctx, c.stream, "events", http.MethodGet, "/v1/events", nil)
 	if err != nil {
@@ -146,7 +140,7 @@ func (c *Client) Events(ctx context.Context, fn func(*Event)) error {
 	sc := bufio.NewScanner(body)
 	sc.Buffer(make([]byte, 0, 4096), eventLimit)
 	for sc.Scan() {
-		watchdog.Reset(3 * Heartbeat)
+		watchdog.Reset(3 * heartbeatEvery)
 		var ev Event
 		if err := json.Unmarshal(sc.Bytes(), &ev); err != nil {
 			return fmt.Errorf("host API events: %w", err)
@@ -242,7 +236,7 @@ func answerError(op string, resp *http.Response) error {
 		err = json.Unmarshal(b, &body)
 	}
 	if err != nil || body.Code == "" {
-		return &APIError{Op: op, Status: resp.StatusCode, Code: codeInternal, Message: http.StatusText(resp.StatusCode)}
+		return &apiError{Op: op, Status: resp.StatusCode, Code: codeInternal, Message: http.StatusText(resp.StatusCode)}
 	}
 	msg, _ := textsafe.SanitizeSingleLineCapped(body.Message, errorTextLimit, "…")
 	switch body.Code {
@@ -273,5 +267,5 @@ func answerError(op string, resp *http.Response) error {
 		}
 		return out
 	}
-	return &APIError{Op: op, Status: resp.StatusCode, Code: body.Code, Message: msg}
+	return &apiError{Op: op, Status: resp.StatusCode, Code: body.Code, Message: msg}
 }

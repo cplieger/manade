@@ -1353,22 +1353,6 @@ func (r *runnerSet) logs(ctx context.Context, name string, tail int) ([]byte, er
 	return []byte(strings.Join(lines, "\n") + "\n"), nil
 }
 
-// diag answers runner name's _diag tar, empty when it has none.
-func (r *runnerSet) diag(ctx context.Context, name string) ([]byte, error) {
-	ctr, err := r.container(ctx, name)
-	if err != nil {
-		return nil, err
-	}
-	r.mu.Lock()
-	rr := r.records[name]
-	r.mu.Unlock()
-	var buf bytes.Buffer
-	if _, err := r.daemon.CopyArchive(ctx, ctr.ID, r.diagDir(&ctr, rr), &buf, hostapi.DiagLimit); err != nil {
-		return nil, err
-	}
-	return buf.Bytes(), nil
-}
-
 // container is runner name's labelled container, or ErrUnknownRunner.
 func (r *runnerSet) container(ctx context.Context, name string) (docker.Container, error) {
 	ctr, found, err := r.daemon.InspectContainer(ctx, name)

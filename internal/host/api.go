@@ -59,13 +59,6 @@ func (b *backend) Logs(ctx context.Context, name string, tail int) ([]byte, erro
 	return b.s.runners.logs(ctx, name, tail)
 }
 
-func (b *backend) Diag(ctx context.Context, name string) ([]byte, error) {
-	if err := b.up(); err != nil {
-		return nil, err
-	}
-	return b.s.runners.diag(ctx, name)
-}
-
 func (b *backend) Subscribe(ctx context.Context) (<-chan hostapi.Runner, error) {
 	if err := b.up(); err != nil {
 		return nil, err
