@@ -26,12 +26,15 @@ type stamp struct {
 var stampKey = []byte("store")
 
 // meta holds one row per fact, each decoded by the code that owns it, so a
-// write of one fact leaves every other byte for byte.
-var schema, meta = declare()
+// write of one fact leaves every other byte for byte. scaleSets holds the
+// github namespace's record of every scale set the pool ensured.
+var schema, meta, scaleSets = declare(bolttable.NewSchema(schemaName))
 
-func declare() (*bolttable.Schema, *bolttable.Table[[]byte, json.RawMessage]) {
-	s := bolttable.NewSchema(schemaName)
-	m := bolttable.Must(bolttable.Define(bolttable.Must(s.Namespace("meta")), prefixMeta, "meta",
+// declare declares every namespace of this build in s.
+func declare(s *bolttable.Schema) (sch *bolttable.Schema, m *bolttable.Table[[]byte, json.RawMessage], ss *bolttable.Table[[]byte, ScaleSet]) {
+	m = bolttable.Must(bolttable.Define(bolttable.Must(s.Namespace("meta")), prefixMeta, "meta",
 		bolttable.BytesKey{}, bolttable.JSON[json.RawMessage](1), bolttable.TableOptions{}))
-	return s, m
+	ss = bolttable.Must(bolttable.Define(bolttable.Must(s.Namespace("github")), prefixScaleSets, "scalesets",
+		bolttable.BytesKey{}, bolttable.JSON[ScaleSet](1), bolttable.TableOptions{}))
+	return s, m, ss
 }

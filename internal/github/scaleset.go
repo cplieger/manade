@@ -205,7 +205,7 @@ func (s *ScaleSets) ensure(ctx context.Context, c *scaleset.Client, scope *confi
 	var out []ScaleSet
 	for i := range s.cfg.Profiles {
 		p := &s.cfg.Profiles[i]
-		if !p.Allowed(scope.Key) {
+		if !p.Serves(scope.Key) {
 			continue
 		}
 		want := scaleset.RunnerScaleSet{
@@ -257,8 +257,13 @@ func (s *ScaleSets) JIT(ctx context.Context, ss ScaleSet, name string) (JIT, err
 // RemoveRunner deletes registration id from scope; one already gone counts
 // as removed. It answers ErrRunnerBusy while the runner holds a job, and any
 // other failure, counted as a scale set error, keeps the container.
-func (s *ScaleSets) RemoveRunner(ctx context.Context, scope string, id int64) error {
-	c, err := s.client(ctx, s.byKey[scope])
+func (s *ScaleSets) RemoveRunner(ctx context.Context, scope *config.Scope, id int64) error {
+	sc := s.byKey[scope.Key]
+	if sc == nil {
+		// A scope the settings dropped, whose runner still deregisters.
+		sc = &scopeClient{scope: scope}
+	}
+	c, err := s.client(ctx, sc)
 	if err != nil {
 		return err
 	}
@@ -269,7 +274,7 @@ func (s *ScaleSets) RemoveRunner(ctx context.Context, scope string, id int64) er
 		return ErrRunnerBusy
 	default:
 		s.rest.failure(ctx, OpScaleSet)
-		return failed("removing a runner in "+scope, err)
+		return failed("removing a runner in "+scope.Key, err)
 	}
 }
 

@@ -180,6 +180,7 @@ func (l *ledger) polled(b *book, p *github.Poll) {
 		slots = max(slots, b.flight.figure)
 	}
 	b.asg.apply(p)
+	b.asg.at = p.Ended
 	b.asg.fitKept(slots)
 	n := b.mark(p.Events)
 	if n > 0 {

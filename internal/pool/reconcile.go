@@ -172,6 +172,7 @@ func (g *generation) step(ctx context.Context) {
 	g.gate()
 	g.mu.Unlock()
 	g.d.Metrics.Pass(g.health().Reconciling)
+	g.settle()
 	uctx, cancel := context.WithTimeout(ctx, reconcileEvery)
 	defer cancel()
 	g.unregisterPending(uctx)
@@ -229,7 +230,7 @@ func (g *generation) reconcileHost(ctx context.Context, i int) {
 		settled = ok && settled
 	}
 	g.mu.Lock()
-	was := h.serving()
+	was := h.serving(g.now())
 	h.settled = settled
 	g.served(i, was)
 	g.mu.Unlock()
@@ -413,7 +414,8 @@ func (g *generation) planUnheld(i int, b *book, lr *hostapi.Runner, inst string,
 
 // judgeRunning decides what a pass does to a running runner r holds;
 // g.mu is held. A stale runner was built for a profile spec a later
-// generation changed, so it takes no new job.
+// generation changed, and one on a drained host may take no new job, so
+// either is retired once idle.
 func (g *generation) judgeRunning(b *book, r *runner, spare bool) *action {
 	if r.state == starting {
 		r.state = idle
@@ -428,7 +430,8 @@ func (g *generation) judgeRunning(b *book, r *runner, spare bool) *action {
 		return &action{kind: actExpire, b: b, r: r}
 	case r.state == busy:
 		return nil
-	case r.closing == ExitIdle || spare || r.stale || g.stopping || g.sets[b].scope.public || now.Sub(r.created) > pr.IdleTimeout:
+	case r.closing == ExitIdle || spare || r.stale || g.stopping || g.sets[b].scope.public || !g.hosts[r.host].cfg.Accepting ||
+		now.Sub(r.created) > pr.IdleTimeout:
 		return &action{kind: actRetire, b: b, r: r}
 	}
 	return nil
@@ -623,7 +626,7 @@ func (g *generation) closeRecord(ctx context.Context, b *book, r *runner, reason
 // says holds a job is busy, and any other failure keeps both for the next
 // pass.
 func (g *generation) retire(ctx context.Context, a *action) {
-	switch err := g.d.GitHub.RemoveRunner(ctx, a.b.ss.Scope, a.r.id); {
+	switch err := g.d.GitHub.RemoveRunner(ctx, g.sets[a.b].scope.cfg, a.r.id); {
 	case errors.Is(err, github.ErrRunnerBusy):
 		g.mu.Lock()
 		a.r.state, a.r.closing = busy, ""

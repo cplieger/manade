@@ -143,7 +143,7 @@ func (g *generation) queued(ended time.Time, qs []github.Queue) {
 		if !q.Complete {
 			continue
 		}
-		sc.jobs = q.Jobs
+		sc.jobs, sc.readAt = q.Jobs, ended
 		for _, b := range g.l.books {
 			if g.sets[b].scope != sc {
 				continue

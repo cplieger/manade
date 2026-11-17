@@ -6,20 +6,20 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/cplieger/manade/internal/config"
 	"github.com/cplieger/manade/internal/github"
 	"github.com/cplieger/manade/internal/hostapi"
 )
 
 // adopt takes a runner host i lists that no record holds: a previous
-// process's, one whose scale set the settings no longer hold, or a stray a
-// generation change left to be judged. An ended or failed one is removed;
-// one still being started is held as starting; a running one GitHub says
-// is busy is held with the limits the host built it with, and an idle one
-// is deregistered and removed. It reports false while a runner that may
+// process's, one whose scale set or scope the settings no longer hold, or
+// a stray a generation change left to be judged. An ended or failed one is
+// removed, one still being started is held as starting, and a running one
+// is judged by adoptRunning. It reports false while a runner that may
 // hold a job is left with no reservation.
 func (g *generation) adopt(ctx context.Context, i int, a *action) bool {
 	lr := &a.lr
-	sc := g.scopes[lr.Scope]
+	sc := g.scopeConfig(lr.Scope)
 	switch lr.State {
 	case hostapi.StateExited, hostapi.StateFailed:
 		if !g.remove(ctx, i, lr.Name) {
@@ -42,8 +42,22 @@ func (g *generation) adopt(ctx context.Context, i int, a *action) bool {
 			"host", g.hosts[i].cfg.Name, "scope", lr.Scope, "profile", lr.Profile, "runner", lr.Name)
 		return true
 	}
-	gr, found, err := g.d.REST.Runner(ctx, sc.cfg, lr.RunnerID)
+	return g.adoptRunning(ctx, i, a, sc)
+}
+
+// adoptRunning judges a running runner no record holds, in scope sc: busy
+// is held with the limits its host built it with, and idle is deregistered
+// and removed, since a scale set with no session gets it no job. One of a
+// dropped scope GitHub does not answer for keeps its reservation until it
+// ends or passes its lifetime, so no host waits on a scope it cannot read.
+func (g *generation) adoptRunning(ctx context.Context, i int, a *action, sc *config.Scope) bool {
+	lr := &a.lr
+	dropped := g.scopes[lr.Scope] == nil
+	gr, found, err := g.d.REST.Runner(ctx, sc, lr.RunnerID)
 	switch {
+	case err != nil && dropped:
+		g.hold(i, a, busy)
+		return true
 	case err != nil:
 		if ctx.Err() == nil {
 			g.log.Warn("Reading a runner no record holds failed, so the pass retries it", "host", g.hosts[i].cfg.Name, "scope", lr.Scope, "runner", lr.Name, "error", err)
@@ -55,10 +69,13 @@ func (g *generation) adopt(ctx context.Context, i int, a *action) bool {
 		g.hold(i, a, busy)
 		return true
 	}
-	switch err := g.d.GitHub.RemoveRunner(ctx, lr.Scope, lr.RunnerID); {
+	switch err := g.d.GitHub.RemoveRunner(ctx, sc, lr.RunnerID); {
 	case err == nil:
 		return g.remove(ctx, i, lr.Name)
 	case errors.Is(err, github.ErrRunnerBusy):
+		g.hold(i, a, busy)
+		return true
+	case dropped:
 		g.hold(i, a, busy)
 		return true
 	default:
@@ -81,7 +98,7 @@ func (g *generation) hold(i int, a *action, state runnerState) {
 		if st, held := g.l.strays[lr.Name]; held {
 			created = st.created
 		}
-		g.l.hold(lr.Name, &stray{res: r, host: i, profile: g.profileIndex(lr.Profile), created: created})
+		g.l.hold(lr.Name, &stray{res: r, host: i, profile: g.profileIndex(lr.Profile), created: created, scope: lr.Scope})
 		g.l.settle(g.now())
 		return
 	}
@@ -104,11 +121,8 @@ func (g *generation) endStray(ctx context.Context, i int, lr *hostapi.Runner) {
 	}
 	g.mu.Lock()
 	g.l.release(lr.Name, g.now())
-	_, known := g.scopes[lr.Scope]
 	g.mu.Unlock()
-	if known {
-		g.unregister(ctx, lr.Scope, lr.Name, lr.RunnerID)
-	}
+	g.unregister(ctx, lr.Scope, lr.Name, lr.RunnerID)
 }
 
 // limits is the reservation of a runner built with lim on host i: its

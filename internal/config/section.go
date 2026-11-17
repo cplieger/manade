@@ -26,8 +26,8 @@ type docSection struct {
 // to host self, with the parser every write path runs, against self's
 // ceiling. A section names
 // hosts.<self.Name> alone, the profiles that host serves with no host
-// list, images.refresh and pool.host_address; capacity, a profile's host
-// order and the pool's state are the pool's, never a host's. It answers the
+// list, images.refresh and pool.host_address; capacity, a drain, a
+// profile's host order and the pool's state are the pool's, never a host's. It answers the
 // model holding that one host, each profile listing it, or FieldErrors.
 func ParseSection(self *Self, settings []byte) (*Config, error) {
 	var d docSection
@@ -68,6 +68,9 @@ func (d *docSection) host(name string, refresh time.Duration, p *problems) (Host
 	path := hostPath(name)
 	if dh.Capacity != nil {
 		p.addf(path+".capacity", "refused: capacity is the pool's setting, never part of a host's section")
+	}
+	if dh.Accepting != "" {
+		p.addf(path+".accepting", "refused: a drain is the pool's setting, never part of a host's section")
 	}
 	return dh.parse(name, path, refresh, p), true
 }

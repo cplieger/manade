@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cplieger/manade/internal/config"
 	"github.com/cplieger/manade/internal/github"
 	"github.com/cplieger/manade/internal/hostapi"
 )
@@ -34,7 +35,7 @@ type sset struct {
 }
 
 func (s *sset) stats() github.Stats {
-	return github.Stats{Assigned: len(s.assigned) + len(s.running), Running: len(s.running)}
+	return github.Stats{Available: len(s.queue), Assigned: len(s.assigned) + len(s.running), Running: len(s.running)}
 }
 
 func (s *sset) jobs() int { return len(s.queue) + len(s.assigned) + len(s.running) }
@@ -44,6 +45,8 @@ type smodel struct {
 	jobOf map[string]*sjob
 	sets  []*sset
 	runID int64
+	// added counts the scopes the run added.
+	added int
 }
 
 // newModel boots a quiet rig with every allowed scale set opened.
@@ -68,7 +71,20 @@ func (m *smodel) open() {
 	}
 }
 
+// routed reports that new jobs reach s: its scope is served and not
+// stopping, and its profile may take the scope's new jobs. A scale set
+// being stopped gets no new job, as the runner variable's delete or
+// rewrite before the stop makes sure (§9.4).
+func (m *smodel) routed(s *sset) bool {
+	i := slices.IndexFunc(m.r.cfg.Scopes, func(sc config.Scope) bool { return sc.Key == s.scope })
+	pr, ok := m.r.cfg.Profile(s.profile)
+	return i >= 0 && !m.r.cfg.Scopes[i].Stopping && ok && pr.Allowed(s.scope) && !pr.Deleting && !slices.Contains(pr.Retiring, s.scope)
+}
+
 func (m *smodel) queue(s *sset, n int) {
+	if !m.routed(s) {
+		return
+	}
 	for range n {
 		m.runID++
 		s.queue = append(s.queue, &sjob{created: m.r.now, run: m.runID})
@@ -240,6 +256,7 @@ func (m *smodel) step(in *bytesIn) {
 		}
 	case 6:
 		m.r.pass()
+		m.settle()
 	case 7:
 		h.set(func(f *fakeHost) {
 			if in.n(2) == 0 {
@@ -285,14 +302,15 @@ func (m *smodel) step(in *bytesIn) {
 	}
 }
 
-// reconfigure commits a new settings revision that keeps every scale set:
-// a profile resized within every host it lists, a profile's max_runners,
-// hosts or their order, a host's capacity above every profile it serves,
-// the head reserve, or the same settings again. A host may be left
+// reconfigure commits a new settings revision: a profile resized within
+// every host it lists, a profile's max_runners, hosts or their order, a
+// host's capacity above every profile it serves, the head reserve, a
+// scope turned off or back on, a profile leaving a scope or coming back
+// to it, a new scope, or the same settings again. A host may be left
 // running its previous section.
 func (m *smodel) reconfigure(in *bytesIn) {
 	cfg := cloneConfig(m.r.cfg)
-	switch in.n(6) {
+	switch in.n(9) {
 	case 0:
 		pr := &cfg.Profiles[in.n(len(cfg.Profiles))]
 		cpus, mem := int64(1<<40), int64(1<<40)
@@ -328,12 +346,79 @@ func (m *smodel) reconfigure(in *bytesIn) {
 		h.Capacity.MaxRunners = []int{0, 0, 2, 4}[in.n(4)]
 	case 4:
 		cfg.HeadReserveAfter = time.Duration(in.n(4)) * time.Minute
+	case 5:
+		if len(cfg.Scopes) > 0 {
+			sc := &cfg.Scopes[in.n(len(cfg.Scopes))]
+			sc.Stopping = !sc.Stopping
+		}
+	case 6:
+		m.retire(cfg, m.sets[in.n(len(m.sets))])
+	case 7:
+		m.addScope(cfg)
 	}
 	var lagging []string
 	if in.n(4) == 0 {
 		lagging = append(lagging, m.r.hosts[in.n(len(m.r.hosts))].name)
 	}
 	m.r.apply(cfg, lagging...)
+}
+
+// retire has s's profile leave s's scope, or come back to it when it is
+// leaving already.
+func (*smodel) retire(cfg *config.Config, s *sset) {
+	pr, ok := cfg.Profile(s.profile)
+	switch {
+	case !ok || !pr.Serves(s.scope) || !slices.ContainsFunc(cfg.Scopes, func(sc config.Scope) bool { return sc.Key == s.scope }):
+	case slices.Contains(pr.Retiring, s.scope):
+		pr.Retiring = slices.DeleteFunc(slices.Clone(pr.Retiring), func(k string) bool { return k == s.scope })
+	default:
+		pr.Retiring = append(slices.Clone(pr.Retiring), s.scope)
+	}
+}
+
+// addScope serves a new repository scope with every profile that serves
+// it, each a scale set GitHub models from then on.
+func (m *smodel) addScope(cfg *config.Config) {
+	m.added++
+	key := fmt.Sprintf("acme/n%d", m.added)
+	cfg.Scopes = append(cfg.Scopes, config.Scope{Key: key, Owner: "acme", Repo: fmt.Sprintf("n%d", m.added), Kind: config.ScopeRepo})
+	for i := range cfg.Profiles {
+		if cfg.Profiles[i].Serves(key) {
+			m.sets = append(m.sets, &sset{scope: key, profile: cfg.Profiles[i].Name})
+		}
+	}
+}
+
+// settle commits what the settings owner does with each stop the pool
+// handed over at the revision in force: the scope written off, or the
+// retiring entry cleared with the scope taken from the profile. A stop of
+// an older revision is dropped.
+func (m *smodel) settle() {
+	cfg, ended := cloneConfig(m.r.cfg), false
+	for _, call := range m.r.settler.take() {
+		if call.rev != m.r.rev {
+			continue
+		}
+		for _, st := range call.ended {
+			ended = true
+			if st.Profile == "" {
+				cfg.Scopes = slices.DeleteFunc(cfg.Scopes, func(sc config.Scope) bool { return sc.Key == st.Scope })
+				continue
+			}
+			pr, _ := cfg.Profile(st.Profile)
+			pr.Retiring = slices.DeleteFunc(slices.Clone(pr.Retiring), func(k string) bool { return k == st.Scope })
+			if pr.Scopes == nil {
+				pr.Scopes = []string{}
+				for _, sc := range cfg.Scopes {
+					pr.Scopes = append(pr.Scopes, sc.Key)
+				}
+			}
+			pr.Scopes = slices.DeleteFunc(slices.Clone(pr.Scopes), func(k string) bool { return k == st.Scope })
+		}
+	}
+	if ended {
+		m.r.apply(cfg)
+	}
 }
 
 // restart is a new control-plane process over the same hosts and GitHub.
@@ -409,6 +494,7 @@ func (m *smodel) drain(passes int) {
 			m.finish(name)
 		}
 		m.r.pass()
+		m.settle()
 		m.sweep()
 		for _, s := range m.sets {
 			m.poll(s, len(s.queue))

@@ -1,6 +1,7 @@
 package pool
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -55,11 +56,15 @@ type fakeHost struct {
 	runs map[string]*hostapi.Runner
 	// probe answers each POST /v1/probe; nil proves the host.
 	probe func(ctx context.Context) (hostapi.ProbeReport, error)
-	// notReady holds, by profile name, a readiness other than ready.
+	// notReady holds, by profile name, a readiness other than ready, and
+	// reasons the reason the host gives for it.
 	notReady map[string]bool
+	reasons  map[string]hostapi.Reason
 	name     string
-	// section is the hash of the section the host runs.
+	// section is the hash of the section the host runs, in state, "" for
+	// running it.
 	section string
+	state   hostapi.SectionState
 	deleted []string
 	inst    int
 	// hold, while set, holds every DELETE until it closes; held takes a
@@ -76,7 +81,7 @@ type fakeHost struct {
 }
 
 func newFakeHost(cfg *config.Config, name, section string) *fakeHost {
-	return &fakeHost{cfg: cfg, name: name, section: section, runs: map[string]*hostapi.Runner{}, notReady: map[string]bool{}}
+	return &fakeHost{cfg: cfg, name: name, section: section, runs: map[string]*hostapi.Runner{}, notReady: map[string]bool{}, reasons: map[string]hostapi.Reason{}}
 }
 
 func (f *fakeHost) instance() string { return fmt.Sprintf("%s-%d", f.name, f.inst) }
@@ -90,7 +95,7 @@ func (f *fakeHost) Status(context.Context) (hostapi.Status, error) {
 	h, _ := f.cfg.Host(f.name)
 	st := hostapi.Status{
 		InstanceID: f.instance(), PolicyHash: "policy",
-		Section:       hostapi.SectionStatus{State: hostapi.SectionRunning, Hash: f.section},
+		Section:       hostapi.SectionStatus{State: cmp.Or(f.state, hostapi.SectionRunning), Hash: f.section},
 		Limits:        hostapi.HostLimits{CPUMode: hostapi.CPUQuota, MilliCPUs: max(h.Capacity.MilliCPUs, 64000), Memory: 1 << 50},
 		Memory:        hostapi.MemoryStatus{Limit: 1 << 50, Admissible: 1 << 49, Reserve: 1 << 28},
 		Data:          hostapi.DataStatus{Size: 1 << 50, Free: 1 << 49},
@@ -98,7 +103,7 @@ func (f *fakeHost) Status(context.Context) (hostapi.Status, error) {
 	}
 	for i := range f.cfg.Profiles {
 		if pr := &f.cfg.Profiles[i]; slices.Contains(pr.Hosts, f.name) {
-			st.Profiles = append(st.Profiles, hostapi.ProfileStatus{Name: pr.Name, Ready: !f.notReady[pr.Name]})
+			st.Profiles = append(st.Profiles, hostapi.ProfileStatus{Name: pr.Name, Ready: !f.notReady[pr.Name], Reason: f.reasons[pr.Name]})
 		}
 	}
 	return st, nil
@@ -279,7 +284,7 @@ func (g *fakeGitHub) Ensure(_ context.Context, sc *config.Scope) ([]github.Scale
 	}
 	var out []github.ScaleSet
 	for i := range g.cfg.Profiles {
-		if pr := &g.cfg.Profiles[i]; pr.Allowed(sc.Key) {
+		if pr := &g.cfg.Profiles[i]; pr.Serves(sc.Key) {
 			out = append(out, github.ScaleSet{Scope: sc.Key, Profile: pr.Name, ID: i + 1})
 		}
 	}
@@ -299,7 +304,7 @@ func (g *fakeGitHub) JIT(context.Context, github.ScaleSet, string) (github.JIT, 
 	return github.JIT{Config: "jit", RunnerID: g.next}, nil
 }
 
-func (g *fakeGitHub) RemoveRunner(_ context.Context, _ string, id int64) error {
+func (g *fakeGitHub) RemoveRunner(_ context.Context, _ *config.Scope, id int64) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.busy[id] {
@@ -412,21 +417,79 @@ func (m *fakeMetrics) Generation(rev uint64) {
 	m.generations = append(m.generations, rev)
 }
 
+// fakeSettler keeps each Settle call; the test decides what the settings
+// owner commits.
+type fakeSettler struct {
+	calls []settleCall
+	mu    sync.Mutex
+}
+
+type settleCall struct {
+	ended []Stop
+	rev   uint64
+}
+
+func (s *fakeSettler) Settle(rev uint64, ended []Stop) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls = append(s.calls, settleCall{rev: rev, ended: ended})
+}
+
+// take answers the calls since the last take.
+func (s *fakeSettler) take() []settleCall {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := s.calls
+	s.calls = nil
+	return out
+}
+
+// fakeRecords is the store's scale-set record, which outlives a restart.
+type fakeRecords struct {
+	sets map[setKey]github.ScaleSet
+	// fail refuses every read and write.
+	fail bool
+	mu   sync.Mutex
+}
+
+func (f *fakeRecords) ScaleSets(context.Context) ([]github.ScaleSet, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.fail {
+		return nil, errors.New("fake: the store refused the read")
+	}
+	return slices.Collect(maps.Values(f.sets)), nil
+}
+
+func (f *fakeRecords) RecordScaleSets(_ context.Context, sets []github.ScaleSet, _ time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.fail {
+		return errors.New("fake: the store refused the write")
+	}
+	for _, ss := range sets {
+		f.sets[keyOf(ss)] = ss
+	}
+	return nil
+}
+
 // rig is a pool over fake hosts and a fake GitHub, on a clock the test
 // moves, with a log the test can read. Its generations are installed in
 // line and run no loops, so each step runs where the test calls it.
 type rig struct {
-	t     testing.TB
-	now   time.Time
-	cfg   *config.Config
-	reg   *Registry
-	p     *generation
-	gh    *fakeGitHub
-	m     *fakeMetrics
-	log   *logBuf
-	links *fakeLinks
-	hosts []*fakeHost
-	rev   uint64
+	t       testing.TB
+	now     time.Time
+	cfg     *config.Config
+	reg     *Registry
+	p       *generation
+	gh      *fakeGitHub
+	m       *fakeMetrics
+	log     *logBuf
+	links   *fakeLinks
+	settler *fakeSettler
+	records *fakeRecords
+	hosts   []*fakeHost
+	rev     uint64
 }
 
 func newRig(t testing.TB, cfg *config.Config) *rig { return buildRig(t, cfg, &logBuf{}) }
@@ -435,7 +498,7 @@ func newRig(t testing.TB, cfg *config.Config) *rig { return buildRig(t, cfg, &lo
 func quietRig(t testing.TB, cfg *config.Config) *rig { return buildRig(t, cfg, &logBuf{discard: true}) }
 
 func buildRig(t testing.TB, cfg *config.Config, log *logBuf) *rig {
-	r := &rig{t: t, now: epoch, cfg: cfg, gh: newFakeGitHub(cfg), log: log, rev: 1}
+	r := &rig{t: t, now: epoch, cfg: cfg, gh: newFakeGitHub(cfg), log: log, rev: 1, settler: &fakeSettler{}, records: &fakeRecords{sets: map[setKey]github.ScaleSet{}}}
 	for i := range cfg.Hosts {
 		r.hosts = append(r.hosts, newFakeHost(cfg, cfg.Hosts[i].Name, sectionHash(r.rev)))
 	}
@@ -462,10 +525,11 @@ func (r *rig) settings() *Settings {
 func (r *rig) restart() {
 	r.m = newFakeMetrics()
 	r.reg = NewRegistry(r.settings(), &Deps{
-		GitHub: r.gh, REST: r.gh, Sweep: r.gh, Links: r.links, Metrics: r.m,
+		GitHub: r.gh, REST: r.gh, Sweep: r.gh, Links: r.links, Metrics: r.m, Settle: r.settler, Records: r.records,
 		Log: slog.New(slog.NewTextHandler(r.log, &slog.HandlerOptions{Level: slog.LevelDebug})),
 	})
 	r.reg.now = func() time.Time { return r.now }
+	r.reg.record(context.Background(), nil)
 	r.install(r.reg.take())
 }
 

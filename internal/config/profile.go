@@ -198,7 +198,20 @@ func (p *Profile) Allowed(key string) bool {
 // usable reports whether new jobs of the scope with key may be routed to the
 // profile: allowed, not leaving the scope and not being deleted.
 func (p *Profile) usable(key string) bool {
-	return p.Allowed(key) && !p.Deleting && !slices.ContainsFunc(p.Retiring, func(s string) bool { return strings.EqualFold(s, key) })
+	return p.Allowed(key) && !p.Deleting && !p.leaving(key)
+}
+
+// leaving reports a retiring entry for the scope with key.
+func (p *Profile) leaving(key string) bool {
+	return slices.ContainsFunc(p.Retiring, func(s string) bool { return strings.EqualFold(s, key) })
+}
+
+// Serves reports whether the scope with key keeps a scale set of the
+// profile: one it may use, or one it is leaving, whose queued and assigned
+// jobs still run. A profile being deleted serves only the scopes its
+// retiring entries name.
+func (p *Profile) Serves(key string) bool {
+	return p.leaving(key) || p.Allowed(key) && !p.Deleting
 }
 
 // Grants names each elevated field the profile sets away from its default,

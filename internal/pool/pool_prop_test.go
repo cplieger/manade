@@ -219,6 +219,11 @@ func FuzzPool_noJobIsStuckThroughTheStartPath(f *testing.F) {
 		for _, s := range m.sets {
 			total += s.jobs()
 		}
-		m.drain(8 + 2*total)
+		// A profile capped at one runner runs its jobs one after another,
+		// three passes each in the model: the poll that assigns the job,
+		// the poll whose statistics predate its runner's end (the model
+		// sends Started and Completed a poll late), and the visibility
+		// read its 1-minute proof needs again after 60 s of 30-s passes.
+		m.drain(8 + 3*total)
 	})
 }

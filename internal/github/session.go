@@ -29,8 +29,10 @@ const (
 // through which a test cuts only the call its fake holds.
 var createCut, pollCut = context.WithTimeout, context.WithTimeout
 
-// Stats are a scale set's statistics as GitHub last reported them.
-type Stats struct{ Assigned, Running int }
+// Stats are a scale set's statistics as GitHub last reported them:
+// Available counts its queued jobs no runner acquired yet, and Assigned
+// those assigned to it, Running among them.
+type Stats struct{ Available, Assigned, Running int }
 
 // EventKind is a job message's kind.
 type EventKind int
@@ -340,7 +342,7 @@ func statsOf(st *scaleset.RunnerScaleSetStatistic) *Stats {
 	if st == nil {
 		return nil
 	}
-	return &Stats{Assigned: st.TotalAssignedJobs, Running: st.TotalRunningJobs}
+	return &Stats{Available: st.TotalAvailableJobs, Assigned: st.TotalAssignedJobs, Running: st.TotalRunningJobs}
 }
 
 func event(k EventKind, b *scaleset.JobMessageBase, runner, result string) Event {

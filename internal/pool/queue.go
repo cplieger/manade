@@ -25,12 +25,16 @@ type allocation struct {
 	grants [][]int
 	// standing holds, by book, the host of its standing slot, -1 for none.
 	standing []int
+	// funded holds, by book and rank, each ranked job the walk funded: a
+	// reservation covers it, or it was granted a slot.
+	funded map[[2]int]bool
 	// held reports, by host, that the head reserve keeps it for the books
-	// in claimant; need is what they still want there, and free each
-	// host's budget left before any grant.
+	// in claimant; need is what they still want there, free each host's
+	// budget left before any grant, and left what the walk left of it.
 	held      []bool
 	need      []res
 	free      []res
+	left      []res
 	claimant  []bool
 	headFound bool
 }
@@ -52,7 +56,7 @@ func (l *ledger) allocate(now time.Time) allocation {
 	n := len(l.books)
 	a := allocation{
 		grants: make([][]int, n), standing: make([]int, n), claimant: make([]bool, n),
-		held: make([]bool, len(l.hosts)), need: make([]res, len(l.hosts)), free: l.free(),
+		held: make([]bool, len(l.hosts)), need: make([]res, len(l.hosts)), free: l.free(), funded: map[[2]int]bool{},
 	}
 	for i := range a.standing {
 		a.standing[i] = -1
@@ -66,6 +70,7 @@ func (l *ledger) allocate(now time.Time) allocation {
 		l.fundJob(&w, j, now)
 	}
 	l.offerStanding(&w, now)
+	a.left = w.free
 	return a
 }
 
@@ -99,6 +104,7 @@ func (l *ledger) fundJob(w *walk, j queued, now time.Time) {
 	a, b := w.a, l.books[j.book]
 	under := l.underCap(b.profile, w.used)
 	if j.i < w.covered[j.book] {
+		a.funded[[2]int{j.book, j.i}] = true
 		if !a.headFound && under {
 			a.headSince, a.headFound = j.at, true
 		}
@@ -111,6 +117,7 @@ func (l *ledger) fundJob(w *walk, j queued, now time.Time) {
 	if ok {
 		w.take(l, b.profile, h)
 		a.grants[j.book] = append(a.grants[j.book], h)
+		a.funded[[2]int{j.book, j.i}] = true
 	}
 	if a.headFound {
 		return

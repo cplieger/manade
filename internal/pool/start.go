@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/cplieger/manade/internal/config"
 	"github.com/cplieger/manade/internal/github"
 	"github.com/cplieger/manade/internal/hostapi"
 )
@@ -164,23 +165,48 @@ func (g *generation) unregister(ctx context.Context, scope, name string, id int6
 	if id <= 0 {
 		return
 	}
+	cfg := g.scopeConfig(scope)
+	if cfg == nil {
+		return
+	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
 	defer cancel()
-	err := g.d.GitHub.RemoveRunner(ctx, scope, id)
+	err := g.d.GitHub.RemoveRunner(ctx, cfg, id)
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	sc := g.scopes[scope]
-	if sc == nil {
-		return
-	}
+	owed := g.removals(scope)
 	if err == nil {
-		delete(sc.unregister, name)
+		delete(owed, name)
 		return
 	}
-	if _, again := sc.unregister[name]; !again && !errors.Is(err, github.ErrRunnerBusy) {
+	if _, again := owed[name]; !again && !errors.Is(err, github.ErrRunnerBusy) {
 		g.log.Warn("Removing a runner's registration failed, so each pass retries it", "scope", scope, "runner", name, "error", err)
 	}
-	sc.unregister[name] = id
+	owed[name] = id
+}
+
+// removals is the registration removals owed in the scope with key, by
+// runner name: the scope's own, or for a scope the settings no longer
+// hold, the generation's departed record of it; g.mu is held.
+func (g *generation) removals(key string) map[string]int64 {
+	if sc := g.scopes[key]; sc != nil {
+		return sc.unregister
+	}
+	if g.departed[key] == nil {
+		g.departed[key] = map[string]int64{}
+	}
+	return g.departed[key]
+}
+
+// scopeConfig is the settings' scope with key, or a dropped one an earlier
+// generation held, which its runners deregister under; nil for one no
+// generation of this process held. It reads only what takeOver set before
+// the generation runs, so it takes no lock.
+func (g *generation) scopeConfig(key string) *config.Scope {
+	if sc := g.scopes[key]; sc != nil {
+		return sc.cfg
+	}
+	return g.gone[key]
 }
 
 // unregisterPending retries every registration removal still owed.
@@ -193,6 +219,11 @@ func (g *generation) unregisterPending(ctx context.Context) {
 	g.mu.Lock()
 	for key, sc := range g.scopes {
 		for name, id := range sc.unregister {
+			due = append(due, owed{key, name, id})
+		}
+	}
+	for key, names := range g.departed {
+		for name, id := range names {
 			due = append(due, owed{key, name, id})
 		}
 	}

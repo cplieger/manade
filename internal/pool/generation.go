@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"log/slog"
+	"maps"
 	"reflect"
 	"slices"
 	"sync"
@@ -25,25 +26,33 @@ const (
 // ledger and queue, its per-host loops and its start worker. Its records
 // pass to the next generation, which boots through the same path.
 type generation struct {
-	// rechecked is when the last pass over every scope began.
-	rechecked time.Time
-	reg       *Registry
-	d         *Deps
-	cfg       *config.Config
-	sections  map[string]string
-	sets      map[*book]*set
-	now       func() time.Time
-	kick      chan struct{}
-	verify    chan struct{}
-	scopes    map[string]*scope
-	l         *ledger
-	log       *slog.Logger
+	// rechecked is when the last pass over every scope began; born, when
+	// the generation was built.
+	rechecked, born time.Time
+	reg             *Registry
+	d               *Deps
+	cfg             *config.Config
+	sections        map[string]string
+	sets            map[*book]*set
+	now             func() time.Time
+	kick            chan struct{}
+	verify          chan struct{}
+	scopes          map[string]*scope
+	l               *ledger
+	log             *slog.Logger
 	// stopLoops ends the loops at their next pass boundary; nil until start.
 	stopLoops context.CancelFunc
-	hosts     []*host
-	wg        sync.WaitGroup
-	rev       uint64
-	mu        sync.Mutex
+	// settled holds each stop handed to the settler.
+	settled map[setKey]bool
+	// departed holds, by scope key, the registration removals owed in
+	// scopes the settings no longer hold, and gone those scopes' settings
+	// while a stray or a removal names them.
+	departed map[string]map[string]int64
+	gone     map[string]*config.Scope
+	hosts    []*host
+	wg       sync.WaitGroup
+	rev      uint64
+	mu       sync.Mutex
 	// booting holds health at starting until the first generation's boot
 	// pass has adopted every runner its hosts list.
 	booting, stopping bool
@@ -54,7 +63,7 @@ func newGeneration(r *Registry, s *Settings) *generation {
 	g := &generation{
 		reg: r, d: &r.d, cfg: cfg, sections: s.Sections, rev: s.Revision, log: r.d.Log, now: r.now,
 		l: newLedger(cfg), booting: true, kick: make(chan struct{}, 1), verify: make(chan struct{}, 1),
-		scopes: map[string]*scope{}, sets: map[*book]*set{},
+		scopes: map[string]*scope{}, sets: map[*book]*set{}, settled: map[setKey]bool{}, departed: map[string]map[string]int64{}, gone: map[string]*config.Scope{}, born: r.now(),
 	}
 	for i := range cfg.Hosts {
 		g.hosts = append(g.hosts, &host{cfg: &cfg.Hosts[i], want: make(chan struct{}, 1), wake: make(chan struct{}, 1)})
@@ -71,8 +80,9 @@ type scope struct {
 	// proof is when a read last proved the scope private; read is when its
 	// last visibility read began, and failed when its reads began failing,
 	// zero while they succeed. above is when a poll last reported capacity
-	// above its assignments, which keeps the proof refreshed.
-	proof, read, failed, above time.Time
+	// above its assignments, which keeps the proof refreshed. readAt is
+	// when the last complete read of its queued jobs ended.
+	proof, read, failed, above, readAt time.Time
 	// ensureErr is why the scope's scale sets could not be ensured, nil
 	// once they are; the ensure loop retries it.
 	ensureErr error
@@ -113,14 +123,14 @@ type set struct {
 }
 
 // keepSets records old's scale sets whose scope and profile g's settings
-// still serve: a scale set is GitHub's record of a profile's name in a
+// still serve (config.Profile.Serves): a scale set is GitHub's record of a profile's name in a
 // scope, which no other setting changes, so it needs no ensure again.
 func (g *generation) keepSets(old *generation) {
 	old.mu.Lock()
 	defer old.mu.Unlock()
 	for _, b := range old.l.books {
 		pr, ok := g.cfg.Profile(b.ss.Profile)
-		if g.scopes[b.ss.Scope] != nil && ok && pr.Allowed(b.ss.Scope) {
+		if g.scopes[b.ss.Scope] != nil && ok && pr.Serves(b.ss.Scope) {
 			g.addSet(b.ss)
 		}
 	}
@@ -138,10 +148,10 @@ func (g *generation) ensure(ctx context.Context) {
 	}
 }
 
-// lacksSets reports a profile allowed in sc with no scale set recorded.
+// lacksSets reports a profile serving sc with no scale set recorded.
 func (g *generation) lacksSets(sc *scope) bool {
 	for i := range g.cfg.Profiles {
-		if g.cfg.Profiles[i].Allowed(sc.cfg.Key) && g.bookOf(sc.cfg.Key, g.cfg.Profiles[i].Name) == nil {
+		if g.cfg.Profiles[i].Serves(sc.cfg.Key) && g.bookOf(sc.cfg.Key, g.cfg.Profiles[i].Name) == nil {
 			return true
 		}
 	}
@@ -153,6 +163,9 @@ func (g *generation) ensureScope(ctx context.Context, sc *scope) {
 	ectx, cancel := context.WithTimeout(ctx, ensureTimeout)
 	sets, err := g.d.GitHub.Ensure(ectx, sc.cfg)
 	cancel()
+	if err == nil {
+		g.reg.record(ctx, sets)
+	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if err != nil {
@@ -172,7 +185,8 @@ func (g *generation) ensureScope(ctx context.Context, sc *scope) {
 }
 
 // runEnsure retries each scope whose ensure failed every ensureRetry until
-// ctx ends, and opens the sessions the scale sets it found need.
+// ctx ends, and opens the sessions the scale sets it found need; it reads
+// the scale-set record too while no read has succeeded.
 func (g *generation) runEnsure(ctx context.Context) {
 	t := time.NewTicker(ensureRetry)
 	defer t.Stop()
@@ -182,6 +196,7 @@ func (g *generation) runEnsure(ctx context.Context) {
 			return
 		case <-t.C:
 		}
+		g.reg.record(ctx, nil)
 		if g.retryEnsure(ctx) && ctx.Err() == nil {
 			g.reg.sync()
 		}
@@ -259,6 +274,7 @@ func (g *generation) takeOver(old *generation) {
 			sc.carry(o)
 		}
 	}
+	g.takeRemovals(old)
 	at := make([]int, len(old.hosts))
 	for j, oh := range old.hosts {
 		at[j] = slices.IndexFunc(g.hosts, func(h *host) bool { return h.cfg.Name == oh.cfg.Name })
@@ -272,12 +288,51 @@ func (g *generation) takeOver(old *generation) {
 	for name, st := range old.l.strays {
 		g.takeStray(old, name, &st, at)
 	}
+	g.keepGone(old)
 	for i := range g.hosts {
 		if g.hosts[i].st != nil {
 			g.judge(i)
 		}
 	}
 	g.gate()
+}
+
+// takeRemovals carries the registration removals old owed: into the scope
+// g still holds, or as departed for one it dropped; both locks are held.
+func (g *generation) takeRemovals(old *generation) {
+	for key, names := range old.departed {
+		if sc := g.scopes[key]; sc != nil {
+			maps.Copy(sc.unregister, names)
+		} else {
+			g.departed[key] = names
+		}
+	}
+	for key, o := range old.scopes {
+		if g.scopes[key] == nil && len(o.unregister) > 0 {
+			g.departed[key] = o.unregister
+		}
+	}
+}
+
+// keepGone keeps the settings of each scope g drops that a stray or an
+// owed removal still names; both locks are held and the strays taken.
+func (g *generation) keepGone(old *generation) {
+	named := map[string]bool{}
+	for _, st := range g.l.strays {
+		named[st.scope] = true
+	}
+	for key := range g.departed {
+		named[key] = true
+	}
+	for key := range named {
+		switch {
+		case g.scopes[key] != nil:
+		case old.scopes[key] != nil:
+			g.gone[key] = old.scopes[key].cfg
+		case old.gone[key] != nil:
+			g.gone[key] = old.gone[key]
+		}
+	}
 }
 
 // takeStray carries old's stray name into g where its host remains, its
@@ -310,7 +365,7 @@ func (g *generation) takeBook(old *generation, ob *book, at []int) {
 		switch {
 		case h < 0:
 		case nb == nil:
-			g.l.hold(name, &stray{created: r.created, res: r.res, host: h, profile: g.profileIndex(ob.ss.Profile), recheck: true})
+			g.l.hold(name, &stray{created: r.created, res: r.res, host: h, profile: g.profileIndex(ob.ss.Profile), scope: ob.ss.Scope, recheck: true})
 		default:
 			c := *r
 			c.host, c.stale = h, r.stale || !same
@@ -340,7 +395,7 @@ func sameSpec(a, b *config.Profile) bool {
 
 // carry takes old's state for the same scope key.
 func (sc *scope) carry(o *scope) {
-	sc.proof, sc.read, sc.failed, sc.above = o.proof, o.read, o.failed, o.above
+	sc.proof, sc.read, sc.failed, sc.above, sc.readAt = o.proof, o.read, o.failed, o.above, o.readAt
 	sc.unregister, sc.jobs = o.unregister, o.jobs
 	sc.partial, sc.public, sc.wanted = o.partial, o.public, o.wanted
 }
@@ -367,15 +422,16 @@ func (g *generation) gate() {
 		b.serve = !g.stopping && !s.scope.public && !s.held
 		b.fundable = b.serve && s.scope.private() && !s.scope.partial
 	}
+	now := g.now()
 	for i, h := range g.hosts {
 		hb := &g.l.hosts[i]
 		hb.reachable = h.reachable
-		hb.serving = h.serving()
+		hb.serving = h.serving(now)
 		for pr := range hb.ready {
 			hb.ready[pr] = h.reachable && h.ready != nil && h.ready[pr]
 		}
 	}
-	g.l.settle(g.now())
+	g.l.settle(now)
 }
 
 // poke wakes the start worker.

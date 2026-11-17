@@ -17,11 +17,14 @@ const setLayout = `scopes:
   - repo: acme/app
   - org: acme
     runner_group: CI
+    default_profile: small
 profiles:
   small: {}
   big: {scopes: [acme/app]}
   wide: {scopes: [acme/app]}
   fresh: {scopes: [acme/app]}
+  going: {deleting: true, retiring: [acme]}
+  gone: {deleting: true}
 `
 
 // ids maps each scale set's profile to its ID.
@@ -67,8 +70,8 @@ func TestEnsure(t *testing.T) {
 		}
 	})
 	t.Run("orgScopeUsesItsRunnerGroup", func(t *testing.T) {
-		if got := ids(org); got["small"] != 3 || len(got) != 1 {
-			t.Errorf("scale sets = %v, want only small, found in group 7; the others are not allowed there", got)
+		if got := ids(org); got["small"] != 3 || got["going"] != 102 || len(got) != 2 {
+			t.Errorf("scale sets = %v, want small found in group 7 and going, which is leaving acme, created; the others are not allowed there", got)
 		}
 	})
 	t.Run("createdAndUpdatedToOneLabel", func(t *testing.T) {
@@ -136,12 +139,13 @@ func TestJIT(t *testing.T) {
 func TestRemoveRunner(t *testing.T) {
 	f := newFake(t)
 	cfg, gh := load(t, false, setLayout)
-	b := newBroker(t, f, "acme/app")
+	b := newBroker(t, f, "acme/app", "acme/old")
 	s, _, m, _ := newTestScaleSets(t, f, cfg, gh, &clock{t: time.Now()})
 	b.do(func(b *broker) {
 		b.remove[2] = http.StatusNotFound
 		b.remove[3] = http.StatusBadRequest
 		b.remove[4] = http.StatusForbidden
+		b.remove[5] = http.StatusBadRequest
 	})
 	for _, tc := range []struct {
 		want   error
@@ -149,14 +153,21 @@ func TestRemoveRunner(t *testing.T) {
 		id     int64
 		errors float64
 		fails  bool
+		// dropped names a scope the settings no longer hold.
+		dropped bool
 	}{
 		{name: "removed", id: 1},
+		{name: "droppedScope", id: 5, dropped: true, want: ErrRunnerBusy},
 		{name: "alreadyGone", id: 2},
 		{name: "busy", id: 3, want: ErrRunnerBusy},
 		{name: "refused", id: 4, fails: true, errors: 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			err := s.RemoveRunner(t.Context(), "acme/app", tc.id)
+			sc := scope(t, cfg, "acme/app")
+			if tc.dropped {
+				sc = &config.Scope{Key: "acme/old", Owner: "acme", Repo: "old", Kind: config.ScopeRepo}
+			}
+			err := s.RemoveRunner(t.Context(), sc, tc.id)
 			switch {
 			case tc.fails && (err == nil || errors.Is(err, ErrRunnerBusy)):
 				t.Errorf("RemoveRunner = %v, want a failure that keeps the container", err)

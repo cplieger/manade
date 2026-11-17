@@ -4,6 +4,8 @@ import (
 	"cmp"
 	"context"
 	"log/slog"
+	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -35,7 +37,7 @@ type scaleSets interface {
 	Ensure(ctx context.Context, scope *config.Scope) ([]github.ScaleSet, error)
 	Listen(ctx context.Context, ss github.ScaleSet, h github.Handler)
 	JIT(ctx context.Context, ss github.ScaleSet, name string) (github.JIT, error)
-	RemoveRunner(ctx context.Context, scope string, id int64) error
+	RemoveRunner(ctx context.Context, scope *config.Scope, id int64) error
 	Recheck(ctx context.Context) error
 }
 
@@ -43,6 +45,15 @@ type scaleSets interface {
 type restAPI interface {
 	Private(ctx context.Context, s *config.Scope) (bool, error)
 	Runner(ctx context.Context, s *config.Scope, id int64) (github.Runner, bool, error)
+}
+
+// scaleSetRecords is the store's record of every scale set the pool
+// ensured, which tells its own retired scale sets from another system's.
+type scaleSetRecords interface {
+	ScaleSets(ctx context.Context) ([]github.ScaleSet, error)
+	// RecordScaleSets writes each of sets, replacing the record of the same
+	// scope and profile, in one transaction.
+	RecordScaleSets(ctx context.Context, sets []github.ScaleSet, at time.Time) error
 }
 
 // sweeper reads the queued jobs of cfg's repository scopes until ctx ends.
@@ -59,13 +70,16 @@ type Settings struct {
 	Revision uint64
 }
 
-// Deps is what the pool drives. Log may be nil for slog.Default.
+// Deps is what the pool drives; every field but Log, which may be nil for
+// slog.Default, is required.
 type Deps struct {
 	GitHub  scaleSets
 	REST    restAPI
 	Sweep   sweeper
 	Links   Links
 	Metrics Recorder
+	Settle  settler
+	Records scaleSetRecords
 	Log     *slog.Logger
 }
 
@@ -81,14 +95,17 @@ type Registry struct {
 	pending *Settings
 	// sessions holds each open scale-set session by scope and profile.
 	sessions map[setKey]*session
+	// recorded holds the store's scale-set records once read, nil before.
+	recorded map[setKey]github.ScaleSet
 	changed  chan struct{}
 	now      func() time.Time
 	swg      sync.WaitGroup
 	// mu guards cur: a handler call holds it for reading, so no call lands
 	// in a generation after its successor copied it. smu guards spawn and
-	// sessions, and is never held while a generation's lock is taken.
-	mu       sync.RWMutex
-	smu, pmu sync.Mutex
+	// sessions, and is never held while a generation's lock is taken. rmu
+	// guards recorded and serializes its writes.
+	mu            sync.RWMutex
+	smu, pmu, rmu sync.Mutex
 }
 
 // setKey names a scale set by scope and profile.
@@ -119,6 +136,7 @@ func (r *Registry) Run(ctx context.Context) {
 	sessions, endSessions := context.WithCancel(calls)
 	defer endSessions()
 	r.listenUnder(sessions)
+	r.record(calls, nil)
 	r.install(calls, r.take()).run(calls)
 	r.sync()
 	for {
@@ -293,3 +311,59 @@ func (r *Registry) Snapshot() Snapshot {
 	}
 	return g.snapshot()
 }
+
+// record writes the scale sets an ensure found or created into the
+// store's record, reading the record first if no read has succeeded. A
+// failed read or write is logged and retried at the next ensure.
+func (r *Registry) record(ctx context.Context, sets []github.ScaleSet) {
+	r.rmu.Lock()
+	defer r.rmu.Unlock()
+	if r.recorded == nil {
+		got, err := r.d.Records.ScaleSets(ctx)
+		if err != nil {
+			r.d.Log.Warn("Reading the recorded scale sets failed, so none reads as orphaned until a read succeeds", "error", err)
+			return
+		}
+		r.recorded = map[setKey]github.ScaleSet{}
+		for _, ss := range got {
+			r.recorded[keyOf(ss)] = ss
+		}
+	}
+	var fresh []github.ScaleSet
+	for _, ss := range sets {
+		if r.recorded[keyOf(ss)] != ss {
+			fresh = append(fresh, ss)
+		}
+	}
+	if len(fresh) == 0 {
+		return
+	}
+	if err := r.d.Records.RecordScaleSets(ctx, fresh, r.now()); err != nil {
+		r.d.Log.Warn("Recording ensured scale sets failed, so the next ensure records them", "error", err)
+		return
+	}
+	for _, ss := range fresh {
+		r.recorded[keyOf(ss)] = ss
+	}
+}
+
+// orphaned answers the recorded scale sets cfg would not ensure (§9.3),
+// sorted by scope and profile; none before the record is read.
+func (r *Registry) orphaned(cfg *config.Config) []github.ScaleSet {
+	r.rmu.Lock()
+	defer r.rmu.Unlock()
+	var out []github.ScaleSet
+	for _, ss := range r.recorded {
+		pr, ok := cfg.Profile(ss.Profile)
+		if !slices.ContainsFunc(cfg.Scopes, func(s config.Scope) bool { return strings.EqualFold(s.Key, ss.Scope) }) || !ok || !pr.Serves(ss.Scope) {
+			out = append(out, ss)
+		}
+	}
+	slices.SortFunc(out, func(a, b github.ScaleSet) int {
+		return cmp.Or(cmp.Compare(a.Scope, b.Scope), cmp.Compare(a.Profile, b.Profile))
+	})
+	return out
+}
+
+// keyOf names a scale set's record: its scope, without case, and profile.
+func keyOf(ss github.ScaleSet) setKey { return setKey{strings.ToLower(ss.Scope), ss.Profile} }

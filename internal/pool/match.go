@@ -2,6 +2,7 @@ package pool
 
 import (
 	"slices"
+	"time"
 
 	"github.com/cplieger/manade/internal/github"
 )
@@ -22,7 +23,10 @@ type assignments struct {
 	named map[jobKey]struct{}
 	// kept holds the last poll's reassignment cancels, whose slots stay
 	// reserved until the next poll returns.
-	kept  map[jobKey]struct{}
+	kept map[jobKey]struct{}
+	// at is when the last poll answered: GitHub sends a message with each
+	// change of stats, so an idle answer leaves them current then.
+	at    time.Time
 	stats github.Stats
 	// unbacked is how many assignments the previous process left that the
 	// budget has not funded yet; they hold no reservation until owed funds

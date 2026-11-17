@@ -43,7 +43,7 @@ type profileSpec struct {
 func testConfig(hosts []hostSpec, profiles []profileSpec) *config.Config {
 	cfg := &config.Config{HeadReserveAfter: 2 * time.Minute}
 	for _, h := range hosts {
-		cfg.Hosts = append(cfg.Hosts, config.Host{Name: h.name, Capacity: config.Capacity{
+		cfg.Hosts = append(cfg.Hosts, config.Host{Name: h.name, Accepting: true, Capacity: config.Capacity{
 			MilliCPUs: h.cpus * 1000, Memory: h.mem * gib, Disk: h.disk * gib, MaxRunners: h.max,
 		}})
 	}

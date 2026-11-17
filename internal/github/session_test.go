@@ -75,12 +75,12 @@ func (lf *listenFixture) run(t *testing.T, n int, at func(n int)) {
 func TestListenPollsAndAcks(t *testing.T) {
 	lf := newListen(t)
 	lf.h.capacity = 7
-	lf.b.initial = Stats{Assigned: 3, Running: 1}
+	lf.b.initial = Stats{Available: 2, Assigned: 3, Running: 1}
 	batch := make([]string, 50)
 	for i := range batch {
 		batch[i] = job("JobAssigned", int64(1000+i), "build "+strconv.Itoa(i), "", "")
 	}
-	lf.b.push(1, Stats{Assigned: 50, Running: 1}, batch...)
+	lf.b.push(1, Stats{Available: 7, Assigned: 50, Running: 1}, batch...)
 	lf.b.push(1, Stats{Assigned: 49, Running: 2},
 		job("JobStarted", 1000, "build 0", "manade-small-1", ""),
 		job("JobCompleted", 1001, "build 1", "manade-small-0", "succeeded"),
@@ -94,7 +94,7 @@ func TestListenPollsAndAcks(t *testing.T) {
 	h, b := lf.h, lf.b
 
 	t.Run("openedBeforeTheFirstPoll", func(t *testing.T) {
-		if len(h.opened) != 1 || h.opened[0] != (Stats{Assigned: 3, Running: 1}) {
+		if len(h.opened) != 1 || h.opened[0] != (Stats{Available: 2, Assigned: 3, Running: 1}) {
 			t.Errorf("opened = %+v, want the session's initial statistics once", h.opened)
 		}
 		if len(h.log) < 2 || h.log[0] != "opened" || h.log[1] != "capacity" {
@@ -103,7 +103,7 @@ func TestListenPollsAndAcks(t *testing.T) {
 	})
 	t.Run("batchOfFifty", func(t *testing.T) {
 		p := h.polls[0]
-		if p.Idle || p.Stats == nil || *p.Stats != (Stats{Assigned: 50, Running: 1}) || len(p.Events) != 50 {
+		if p.Idle || p.Stats == nil || *p.Stats != (Stats{Available: 7, Assigned: 50, Running: 1}) || len(p.Events) != 50 {
 			t.Fatalf("first poll = idle %v, stats %+v, %d events; want the batch of 50 with its statistics", p.Idle, p.Stats, len(p.Events))
 		}
 		e := p.Events[49]

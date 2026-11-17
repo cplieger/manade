@@ -65,7 +65,9 @@ type ledger struct {
 // whose max_runners it counts against.
 type stray struct {
 	// created is when this process took it; its lifetime counts from there.
-	created       time.Time
+	created time.Time
+	// scope is the key of the scope it registered in.
+	scope         string
 	res           res
 	host, profile int
 	// recheck marks a record a generation change left with no scale set:

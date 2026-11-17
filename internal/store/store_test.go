@@ -48,13 +48,12 @@ func stats(t *testing.T, s *Store) bolttable.Stats {
 	return st
 }
 
-// writeFile leaves a file at path as another build would: rows in meta, and
-// in a namespace named later when later holds any.
+// writeFile leaves a file at path as a later build would: every namespace
+// this build declares, rows in meta, and a namespace named later when later
+// holds any.
 func writeFile(t *testing.T, path string, rows, later map[string]string) {
 	t.Helper()
-	s := bolttable.NewSchema(schemaName)
-	m := bolttable.Must(bolttable.Define(bolttable.Must(s.Namespace("meta")), prefixMeta, "meta",
-		bolttable.BytesKey{}, bolttable.JSON[json.RawMessage](1), bolttable.TableOptions{}))
+	s, m, _ := declare(bolttable.NewSchema(schemaName))
 	var l *bolttable.Table[[]byte, json.RawMessage]
 	if later != nil {
 		l = bolttable.Must(bolttable.Define(bolttable.Must(s.Namespace("later")), 0xef, "rows",
@@ -161,7 +160,7 @@ func freePages(t *testing.T, path string) {
 	}
 }
 
-func TestOpenDeclaresOnlyMeta(t *testing.T) {
+func TestOpenDeclaresItsNamespaces(t *testing.T) {
 	s := mustOpen(t, testPath(t), "v1.0.0-dev.1")
 	defer mustClose(t, s)
 	got := map[string][]string{}
@@ -170,7 +169,7 @@ func TestOpenDeclaresOnlyMeta(t *testing.T) {
 			got[ns.Name] = append(got[ns.Name], tb.Name)
 		}
 	}
-	if want := map[string][]string{"meta": {"meta"}}; !maps.EqualFunc(got, want, slices.Equal) {
+	if want := map[string][]string{"github": {"scalesets"}, "meta": {"meta"}}; !maps.EqualFunc(got, want, slices.Equal) {
 		t.Errorf("namespaces = %v, want %v", got, want)
 	}
 }

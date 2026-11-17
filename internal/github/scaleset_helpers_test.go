@@ -113,8 +113,8 @@ func (b *broker) push(set int, st Stats, events ...string) {
 	b.nextMsg++
 	body, _ := json.Marshal("[" + strings.Join(events, ",") + "]")
 	b.queue[set] = append(b.queue[set], fmt.Sprintf(
-		`{"messageId":%d,"messageType":"RunnerScaleSetJobMessages","body":%s,"statistics":{"totalAssignedJobs":%d,"totalRunningJobs":%d}}`,
-		b.nextMsg, body, st.Assigned, st.Running,
+		`{"messageId":%d,"messageType":"RunnerScaleSetJobMessages","body":%s,"statistics":{"totalAvailableJobs":%d,"totalAssignedJobs":%d,"totalRunningJobs":%d}}`,
+		b.nextMsg, body, st.Available, st.Assigned, st.Running,
 	))
 }
 
@@ -250,8 +250,8 @@ func (b *broker) session(w http.ResponseWriter, r *http.Request, set int) {
 		return
 	}
 	_, _ = fmt.Fprintf(w, `{"sessionId":"00000000-0000-4000-8000-%012d","ownerName":"manade","messageQueueUrl":"%s/queue/%d",`+
-		`"messageQueueAccessToken":"queue-access","statistics":{"totalAssignedJobs":%d,"totalRunningJobs":%d}}`,
-		b.creates, b.f.srv.URL, set, b.initial.Assigned, b.initial.Running)
+		`"messageQueueAccessToken":"queue-access","statistics":{"totalAvailableJobs":%d,"totalAssignedJobs":%d,"totalRunningJobs":%d}}`,
+		b.creates, b.f.srv.URL, set, b.initial.Available, b.initial.Assigned, b.initial.Running)
 }
 
 func (b *broker) poll(w http.ResponseWriter, r *http.Request, set int) {

@@ -8,25 +8,39 @@ import (
 )
 
 // Snapshot is the pool's state at one moment, the source of its read
-// series.
+// series and of the API's live reads.
 type Snapshot struct {
 	// HeadSince is when the oldest claim on the queue began waiting, zero
 	// with none.
 	HeadSince time.Time
 	Sets      []SetCounts
 	Hosts     []HostCounts
+	// Waiting is every waiting job with its reason (§10.5).
+	Waiting []Waiting
+	// Stops is every stopping state of the settings (§9.4).
+	Stops []Stop
+	// Orphaned is every recorded scale set the settings would not ensure
+	// (§9.3), sorted by scope and profile.
+	Orphaned []Orphan
 	// Revision is the settings revision the generation serves.
 	Revision uint64
 }
 
-// SetCounts sorts one scale set's jobs: assigned with no runner started
-// (D9's backstop), or waiting, each waiting job queued, unassignable, held
-// by an unserved scale set, or with no host to take it. A profile not
-// allowed in a scope has no scale set there, so its jobs count as
-// NotAllowed under the scope and profile alone.
+// SetCounts is one scale set's assignments with no runner started (D9's
+// backstop) and its queued jobs the last read listed. A profile with no
+// scale set in a scope has ID 0: one not serving the scope, or one whose
+// ensure has not succeeded.
 type SetCounts struct {
 	github.ScaleSet
-	AssignedUnstarted, Queued, Unassignable, NotServing, NoHost, NotAllowed int
+	AssignedUnstarted, Queued int
+}
+
+// Orphan is a recorded scale set the settings would not ensure, with the
+// queued jobs of its profile the last read of its scope listed: none once
+// the settings hold no such scope, whose jobs no read sees.
+type Orphan struct {
+	github.ScaleSet
+	Queued int
 }
 
 // Resources is a reservation in the settings' units.
@@ -50,12 +64,15 @@ func (g *generation) snapshot() Snapshot {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	now := g.now()
-	snap := Snapshot{Revision: g.rev}
-	if a := g.l.allocate(now); a.headFound {
+	snap := Snapshot{Revision: g.rev, Stops: g.stops(), Orphaned: g.orphans(g.reg.orphaned(g.cfg))}
+	a := g.l.allocate(now)
+	if a.headFound {
 		snap.HeadSince = a.headSince
 	}
+	snap.Waiting = g.waiting(now, &a)
 	for _, b := range g.l.books {
-		snap.Sets = append(snap.Sets, g.l.jobCounts(b, now))
+		st := b.asg.stats
+		snap.Sets = append(snap.Sets, SetCounts{ScaleSet: b.ss, AssignedUnstarted: max(0, st.Assigned-st.Running), Queued: len(b.asg.waiting(b.jobs))})
 	}
 	snap.Sets = append(snap.Sets, g.unserved()...)
 	free := g.l.free()
@@ -68,25 +85,6 @@ func (g *generation) snapshot() Snapshot {
 		})
 	}
 	return snap
-}
-
-// jobCounts sorts b's jobs as of now.
-func (l *ledger) jobCounts(b *book, now time.Time) SetCounts {
-	st := b.asg.stats
-	c := SetCounts{ScaleSet: b.ss, AssignedUnstarted: max(0, st.Assigned-st.Running)}
-	for _, j := range b.asg.waiting(b.jobs) {
-		switch {
-		case now.Before(b.skipped[jobKey{j.Name, j.RunID}].until):
-			c.Unassignable++
-		case !b.fundable:
-			c.NotServing++
-		case !l.anyEligible(b.profile):
-			c.NoHost++
-		default:
-			c.Queued++
-		}
-	}
-	return c
 }
 
 // runnerCounts counts, by state, the runners of each scale set whose
@@ -117,23 +115,31 @@ func (l *ledger) runnerCounts(h int) []RunnerCounts {
 	return out
 }
 
+// orphans counts the queued jobs of each orphaned scale set the scope's
+// last read lists; g.mu is held.
+func (g *generation) orphans(sets []github.ScaleSet) []Orphan {
+	out := make([]Orphan, 0, len(sets))
+	for _, ss := range sets {
+		o := Orphan{ScaleSet: ss}
+		if sc := g.scopeOf(ss.Scope); sc != nil {
+			o.Queued = len(sc.jobsOf(ss.Profile))
+		}
+		out = append(out, o)
+	}
+	return out
+}
+
 // unserved counts the queued jobs of profiles with no scale set in their
-// scope: not allowed there, or allowed and not yet ensured; g.mu is held.
+// scope; g.mu is held.
 func (g *generation) unserved() []SetCounts {
 	var out []SetCounts
 	for i := range g.cfg.Scopes {
 		sc := g.scopes[g.cfg.Scopes[i].Key]
 		for j := range g.cfg.Profiles {
 			pr := &g.cfg.Profiles[j]
-			n := len(sc.jobsOf(pr.Name))
-			if n == 0 || g.bookOf(sc.cfg.Key, pr.Name) != nil {
-				continue
+			if n := len(sc.jobsOf(pr.Name)); n > 0 && g.bookOf(sc.cfg.Key, pr.Name) == nil {
+				out = append(out, SetCounts{Scope: sc.cfg.Key, Profile: pr.Name, Queued: n})
 			}
-			c := SetCounts{Scope: sc.cfg.Key, Profile: pr.Name, NotServing: n}
-			if !pr.Allowed(sc.cfg.Key) {
-				c.NotServing, c.NotAllowed = 0, n
-			}
-			out = append(out, c)
 		}
 	}
 	return out

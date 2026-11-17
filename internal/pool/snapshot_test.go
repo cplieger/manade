@@ -1,6 +1,7 @@
 package pool
 
 import (
+	"slices"
 	"testing"
 	"time"
 
@@ -41,11 +42,13 @@ func TestSnapshot(t *testing.T) {
 			t.Errorf("set %+v, want %+v", snap.Sets[0], want)
 		}
 	})
-	t.Run("a waiting job no host can take counts as no_host", func(t *testing.T) {
-		r.hosts[0].set(func(f *fakeHost) { f.down = true })
-		r.pass()
-		if c := r.reg.Snapshot().Sets[0]; c.NoHost != 1 || c.Queued != 0 {
-			t.Errorf("set %+v with its only host down, want the waiting job as no_host", c)
+	t.Run("each waiting job with its reason", func(t *testing.T) {
+		var got []JobReason
+		for _, w := range snap.Waiting {
+			got = append(got, w.Reason)
+		}
+		if want := []JobReason{JobStarting, JobAwaitingAssignment}; !slices.Equal(got, want) {
+			t.Errorf("reasons %v, want the assignment starting and the job funded", got)
 		}
 	})
 }
