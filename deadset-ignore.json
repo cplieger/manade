@@ -2,78 +2,6 @@
   "description": "Staging entries for symbols whose production reader is not built yet. Each reason names the code that will read the symbol; that change deletes the entry, and a stale entry fails the run.",
   "ignore": [
     {
-      "code": "DS1301",
-      "symbol": "go://github.com/cplieger/manade/internal/config#Config.HeadReserveAfter",
-      "path": "internal/config/config.go",
-      "reason": "staging: the control plane's job queue reads the head reservation delay; delete this entry when it does"
-    },
-    {
-      "code": "DS1501",
-      "symbol": "go://github.com/cplieger/manade/internal/config#ScopeRepo",
-      "path": "internal/config/document.go",
-      "reason": "staging: the control plane's scale-set registration reads each scope's target from it; delete this entry when it does"
-    },
-    {
-      "code": "DS1501",
-      "symbol": "go://github.com/cplieger/manade/internal/config#ScopeOrg",
-      "path": "internal/config/document.go",
-      "reason": "staging: the control plane's scale-set registration reads each scope's target from it; delete this entry when it does"
-    },
-    {
-      "code": "DS1501",
-      "symbol": "go://github.com/cplieger/manade/internal/config#ScopeEnterprise",
-      "path": "internal/config/document.go",
-      "reason": "staging: the control plane's scale-set registration reads each scope's target from it; delete this entry when it does"
-    },
-    {
-      "code": "DS1301",
-      "symbol": "go://github.com/cplieger/manade/internal/config#Scope.Owner",
-      "path": "internal/config/document.go",
-      "reason": "staging: the control plane's scale-set registration reads each scope's target from it; delete this entry when it does"
-    },
-    {
-      "code": "DS1301",
-      "symbol": "go://github.com/cplieger/manade/internal/config#Scope.Repo",
-      "path": "internal/config/document.go",
-      "reason": "staging: the control plane's scale-set registration reads each scope's target from it; delete this entry when it does"
-    },
-    {
-      "code": "DS1301",
-      "symbol": "go://github.com/cplieger/manade/internal/config#Scope.RunnerGroup",
-      "path": "internal/config/document.go",
-      "reason": "staging: the control plane's scale-set registration reads each scope's target from it; delete this entry when it does"
-    },
-    {
-      "code": "DS1301",
-      "symbol": "go://github.com/cplieger/manade/internal/config#Scope.InstallationID",
-      "path": "internal/config/document.go",
-      "reason": "staging: the control plane's scale-set registration reads each scope's target from it; delete this entry when it does"
-    },
-    {
-      "code": "DS1102",
-      "symbol": "go://github.com/cplieger/manade/internal/hostapi#APIError",
-      "path": "internal/hostapi/client.go",
-      "reason": "staging: the pool (design section 19 batch 3) calls each host's API over its link and reads its answers; delete this entry there"
-    },
-    {
-      "code": "DS1002",
-      "symbol": "go://github.com/cplieger/manade/internal/hostapi#decodeAnswer",
-      "path": "internal/hostapi/client.go",
-      "reason": "staging: the pool (design section 19 batch 3) calls each host's API over its link and reads its answers; delete this entry there"
-    },
-    {
-      "code": "DS1002",
-      "symbol": "go://github.com/cplieger/manade/internal/hostapi#answerError",
-      "path": "internal/hostapi/client.go",
-      "reason": "staging: the pool (design section 19 batch 3) calls each host's API over its link and reads its answers; delete this entry there"
-    },
-    {
-      "code": "DS1501",
-      "symbol": "go://github.com/cplieger/manade/internal/hostapi#ErrProbeTimeout",
-      "path": "internal/hostapi/server.go",
-      "reason": "staging: the pool (design section 19 batch 3) calls each host's API over its link and reads its answers; delete this entry there"
-    },
-    {
       "code": "DS1501",
       "symbol": "go://github.com/cplieger/manade/internal/hostapi#Heartbeat",
       "path": "internal/hostapi/types.go",
@@ -92,24 +20,6 @@
       "reason": "staging: the pool (design section 19 batch 3) calls each host's API over its link and reads its answers; delete this entry there"
     },
     {
-      "code": "DS1002",
-      "symbol": "go://github.com/cplieger/manade/internal/hostapi#answerLimit",
-      "path": "internal/hostapi/types.go",
-      "reason": "staging: the pool (design section 19 batch 3) calls each host's API over its link and reads its answers; delete this entry there"
-    },
-    {
-      "code": "DS1002",
-      "symbol": "go://github.com/cplieger/manade/internal/hostapi#eventLimit",
-      "path": "internal/hostapi/types.go",
-      "reason": "staging: the pool (design section 19 batch 3) calls each host's API over its link and reads its answers; delete this entry there"
-    },
-    {
-      "code": "DS1501",
-      "symbol": "go://github.com/cplieger/manade/internal/hostapi#EventRunner",
-      "path": "internal/hostapi/types.go",
-      "reason": "staging: the pool (design section 19 batch 3) calls each host's API over its link and reads its answers; delete this entry there"
-    },
-    {
       "code": "DS1501",
       "symbol": "go://github.com/cplieger/manade/internal/hostapi#EventHeartbeat",
       "path": "internal/hostapi/types.go",
@@ -123,67 +33,7 @@
     },
     {
       "code": "DS1102",
-      "symbol": "go://github.com/cplieger/manade/internal/hostapi#Client.Status",
-      "path": "internal/hostapi/client.go",
-      "reason": "staging: the pool (design section 19 batch 3) calls each host's API over its link and reads its answers; delete this entry there"
-    },
-    {
-      "code": "DS1102",
-      "symbol": "go://github.com/cplieger/manade/internal/hostapi#Client.CreateRunner",
-      "path": "internal/hostapi/client.go",
-      "reason": "staging: the pool (design section 19 batch 3) calls each host's API over its link and reads its answers; delete this entry there"
-    },
-    {
-      "code": "DS1102",
-      "symbol": "go://github.com/cplieger/manade/internal/hostapi#Client.Runners",
-      "path": "internal/hostapi/client.go",
-      "reason": "staging: the pool (design section 19 batch 3) calls each host's API over its link and reads its answers; delete this entry there"
-    },
-    {
-      "code": "DS1102",
-      "symbol": "go://github.com/cplieger/manade/internal/hostapi#Client.DeleteRunner",
-      "path": "internal/hostapi/client.go",
-      "reason": "staging: the pool (design section 19 batch 3) calls each host's API over its link and reads its answers; delete this entry there"
-    },
-    {
-      "code": "DS1102",
-      "symbol": "go://github.com/cplieger/manade/internal/hostapi#Client.Logs",
-      "path": "internal/hostapi/client.go",
-      "reason": "staging: the pool (design section 19 batch 3) calls each host's API over its link and reads its answers; delete this entry there"
-    },
-    {
-      "code": "DS1102",
       "symbol": "go://github.com/cplieger/manade/internal/hostapi#Client.Diag",
-      "path": "internal/hostapi/client.go",
-      "reason": "staging: the pool (design section 19 batch 3) calls each host's API over its link and reads its answers; delete this entry there"
-    },
-    {
-      "code": "DS1102",
-      "symbol": "go://github.com/cplieger/manade/internal/hostapi#Client.Probe",
-      "path": "internal/hostapi/client.go",
-      "reason": "staging: the pool (design section 19 batch 3) calls each host's API over its link and reads its answers; delete this entry there"
-    },
-    {
-      "code": "DS1102",
-      "symbol": "go://github.com/cplieger/manade/internal/hostapi#Client.Events",
-      "path": "internal/hostapi/client.go",
-      "reason": "staging: the pool (design section 19 batch 3) calls each host's API over its link and reads its answers; delete this entry there"
-    },
-    {
-      "code": "DS1002",
-      "symbol": "go://github.com/cplieger/manade/internal/hostapi#Client.callJSON",
-      "path": "internal/hostapi/client.go",
-      "reason": "staging: the pool (design section 19 batch 3) calls each host's API over its link and reads its answers; delete this entry there"
-    },
-    {
-      "code": "DS1002",
-      "symbol": "go://github.com/cplieger/manade/internal/hostapi#Client.callBytes",
-      "path": "internal/hostapi/client.go",
-      "reason": "staging: the pool (design section 19 batch 3) calls each host's API over its link and reads its answers; delete this entry there"
-    },
-    {
-      "code": "DS1002",
-      "symbol": "go://github.com/cplieger/manade/internal/hostapi#Client.send",
       "path": "internal/hostapi/client.go",
       "reason": "staging: the pool (design section 19 batch 3) calls each host's API over its link and reads its answers; delete this entry there"
     },
@@ -200,28 +50,10 @@
       "reason": "staging: an enrolled host's dial targets (enrolment, design section 19 batch 4) fill and re-resolve the exception sets; delete this entry there"
     },
     {
-      "code": "DS1301",
-      "symbol": "go://github.com/cplieger/manade/internal/config#Capacity.MaxRunners",
-      "path": "internal/config/host.go",
-      "reason": "staging: the pool's admission (design section 19 batch 3) caps each host's runners with it; delete this entry there"
-    },
-    {
       "code": "DS1102",
       "symbol": "go://github.com/cplieger/manade/internal/hostapi#Client.PutSection",
       "path": "internal/hostapi/client.go",
       "reason": "staging: the applier (the batch that adopts the settings store, design section 21 b4-7) delivers each host its section; delete this entry there"
-    },
-    {
-      "code": "DS1301",
-      "symbol": "go://github.com/cplieger/manade/internal/hostlink#Link.API",
-      "path": "internal/hostlink/server.go",
-      "reason": "staging: the pool (design section 19 batch 3) calls each host's API over its link and reads its answers; delete this entry there"
-    },
-    {
-      "code": "DS1102",
-      "symbol": "go://github.com/cplieger/manade/internal/hostlink#Server.Link",
-      "path": "internal/hostlink/server.go",
-      "reason": "staging: the pool (design section 19 batch 3) calls each host's API over its link and reads its answers; delete this entry there"
     },
     {
       "code": "DS1102",
@@ -270,6 +102,174 @@
       "symbol": "go://github.com/cplieger/manade/internal/egress#ReplaceTarget",
       "path": "internal/egress/refresh.go",
       "reason": "staging: an enrolled host's dial targets (enrolment, design section 19 batch 4) fill and re-resolve the exception sets; delete this entry there"
+    },
+    {
+      "code": "DS1301",
+      "symbol": "go://github.com/cplieger/manade/internal/pool#Waiting.Created",
+      "path": "internal/pool/reasons.go",
+      "reason": "staging: the API's job queue resource (GET /api/queue), which words each waiting job's reason from these facts, reads it; delete this entry when it does"
+    },
+    {
+      "code": "DS1301",
+      "symbol": "go://github.com/cplieger/manade/internal/pool#Waiting.HeldBy",
+      "path": "internal/pool/reasons.go",
+      "reason": "staging: the API's job queue resource (GET /api/queue), which words each waiting job's reason from these facts, reads it; delete this entry when it does"
+    },
+    {
+      "code": "DS1301",
+      "symbol": "go://github.com/cplieger/manade/internal/pool#Waiting.Runners",
+      "path": "internal/pool/reasons.go",
+      "reason": "staging: the API's job queue resource (GET /api/queue), which words each waiting job's reason from these facts, reads it; delete this entry when it does"
+    },
+    {
+      "code": "DS1301",
+      "symbol": "go://github.com/cplieger/manade/internal/pool#Waiting.Limit",
+      "path": "internal/pool/reasons.go",
+      "reason": "staging: the API's job queue resource (GET /api/queue), which words each waiting job's reason from these facts, reads it; delete this entry when it does"
+    },
+    {
+      "code": "DS1301",
+      "symbol": "go://github.com/cplieger/manade/internal/pool#HostWait.Host",
+      "path": "internal/pool/reasons.go",
+      "reason": "staging: the API's job queue resource (GET /api/queue), which words each waiting job's reason from these facts, reads it; delete this entry when it does"
+    },
+    {
+      "code": "DS1301",
+      "symbol": "go://github.com/cplieger/manade/internal/pool#HostWait.Detail",
+      "path": "internal/pool/reasons.go",
+      "reason": "staging: the API's job queue resource (GET /api/queue), which words each waiting job's reason from these facts, reads it; delete this entry when it does"
+    },
+    {
+      "code": "DS1301",
+      "symbol": "go://github.com/cplieger/manade/internal/pool#HostWait.Runners",
+      "path": "internal/pool/reasons.go",
+      "reason": "staging: the API's job queue resource (GET /api/queue), which words each waiting job's reason from these facts, reads it; delete this entry when it does"
+    },
+    {
+      "code": "DS1301",
+      "symbol": "go://github.com/cplieger/manade/internal/pool#HostWait.Limit",
+      "path": "internal/pool/reasons.go",
+      "reason": "staging: the API's job queue resource (GET /api/queue), which words each waiting job's reason from these facts, reads it; delete this entry when it does"
+    },
+    {
+      "code": "DS1102",
+      "symbol": "go://github.com/cplieger/manade/internal/pool#Registry.Apply",
+      "path": "internal/pool/registry.go",
+      "reason": "staging: the settings store's applier, which hands the pool each committed revision, reads it; delete this entry when it does"
+    },
+    {
+      "code": "DS1301",
+      "symbol": "go://github.com/cplieger/manade/internal/pool#RouteStatus.Scope",
+      "path": "internal/pool/routing.go",
+      "reason": "staging: the Settings screens' API (their repository, profile and GitHub rows), reads it; delete this entry when it does"
+    },
+    {
+      "code": "DS1301",
+      "symbol": "go://github.com/cplieger/manade/internal/pool#RouteStatus.Value",
+      "path": "internal/pool/routing.go",
+      "reason": "staging: the Settings screens' API (their repository, profile and GitHub rows), reads it; delete this entry when it does"
+    },
+    {
+      "code": "DS1301",
+      "symbol": "go://github.com/cplieger/manade/internal/pool#RouteStatus.Found",
+      "path": "internal/pool/routing.go",
+      "reason": "staging: the Settings screens' API (their repository, profile and GitHub rows), reads it; delete this entry when it does"
+    },
+    {
+      "code": "DS1301",
+      "symbol": "go://github.com/cplieger/manade/internal/pool#Snapshot.Stops",
+      "path": "internal/pool/snapshot.go",
+      "reason": "staging: the Settings screens' API and Stop now's confirmation, which names the jobs a stop leaves queued, reads it; delete this entry when it does"
+    },
+    {
+      "code": "DS1301",
+      "symbol": "go://github.com/cplieger/manade/internal/pool#Snapshot.Routes",
+      "path": "internal/pool/snapshot.go",
+      "reason": "staging: the Settings screens' API (their repository, profile and GitHub rows), reads it; delete this entry when it does"
+    },
+    {
+      "code": "DS1301",
+      "symbol": "go://github.com/cplieger/manade/internal/pool#Snapshot.Revision",
+      "path": "internal/pool/snapshot.go",
+      "reason": "staging: the API's conditions resource, which names the settings revision the pool serves, reads it; delete this entry when it does"
+    },
+    {
+      "code": "DS1301",
+      "symbol": "go://github.com/cplieger/manade/internal/pool#Orphan.Queued",
+      "path": "internal/pool/snapshot.go",
+      "reason": "staging: Settings → GitHub's orphaned scale sets table, which refuses Delete while jobs are queued, reads it; delete this entry when it does"
+    },
+    {
+      "code": "DS1301",
+      "symbol": "go://github.com/cplieger/manade/internal/pool#ScopeStatus.Held",
+      "path": "internal/pool/snapshot.go",
+      "reason": "staging: the Settings screens' API (their repository, profile and GitHub rows), reads it; delete this entry when it does"
+    },
+    {
+      "code": "DS1301",
+      "symbol": "go://github.com/cplieger/manade/internal/pool#HeldSet.Profile",
+      "path": "internal/pool/snapshot.go",
+      "reason": "staging: the Settings screens' API (their repository, profile and GitHub rows), reads it; delete this entry when it does"
+    },
+    {
+      "code": "DS1301",
+      "symbol": "go://github.com/cplieger/manade/internal/pool#HeldSet.Owner",
+      "path": "internal/pool/snapshot.go",
+      "reason": "staging: the Settings screens' API (their repository, profile and GitHub rows), reads it; delete this entry when it does"
+    },
+    {
+      "code": "DS1301",
+      "symbol": "go://github.com/cplieger/manade/internal/pool#RunnerCounts.ScaleSet",
+      "path": "internal/pool/snapshot.go",
+      "reason": "staging: the API's hosts resource (GET /api/hosts), which counts each host's runners by scale set, reads it; delete this entry when it does"
+    },
+    {
+      "code": "DS1301",
+      "symbol": "go://github.com/cplieger/manade/internal/pool#Stop.Jobs",
+      "path": "internal/pool/stops.go",
+      "reason": "staging: Stop now's confirmation, which names the jobs a stop leaves queued, reads it; delete this entry when it does"
+    },
+    {
+      "code": "DS1301",
+      "symbol": "go://github.com/cplieger/manade/internal/pool#Stop.Queued",
+      "path": "internal/pool/stops.go",
+      "reason": "staging: Stop now's confirmation, which names the jobs a stop leaves queued, reads it; delete this entry when it does"
+    },
+    {
+      "code": "DS1301",
+      "symbol": "go://github.com/cplieger/manade/internal/pool#Stop.Assigned",
+      "path": "internal/pool/stops.go",
+      "reason": "staging: Stop now's confirmation, which names the jobs a stop leaves queued, reads it; delete this entry when it does"
+    },
+    {
+      "code": "DS1102",
+      "symbol": "go://github.com/cplieger/manade/internal/store#HistoryTx.Runs",
+      "path": "internal/store/history.go",
+      "reason": "staging: the API's run history (GET /api/runs) reads it; delete this entry when it does"
+    },
+    {
+      "code": "DS1102",
+      "symbol": "go://github.com/cplieger/manade/internal/store#HistoryTx.HostEvents",
+      "path": "internal/store/hosts.go",
+      "reason": "staging: the host page's state history (GET /api/stats/host-states) reads it; delete this entry when it does"
+    },
+    {
+      "code": "DS1102",
+      "symbol": "go://github.com/cplieger/manade/internal/store#HistoryTx.Probes",
+      "path": "internal/store/hosts.go",
+      "reason": "staging: the API's hosts resource (GET /api/hosts), which shows each host's last probes, reads it; delete this entry when it does"
+    },
+    {
+      "code": "DS1002",
+      "symbol": "go://github.com/cplieger/manade/internal/store#hostEventsByHost",
+      "path": "internal/store/schema.go",
+      "reason": "staging: HistoryTx.HostEvents, for the host page's state history, reads it; delete this entry when it does"
+    },
+    {
+      "code": "DS1002",
+      "symbol": "go://github.com/cplieger/manade/internal/store#probesByHost",
+      "path": "internal/store/schema.go",
+      "reason": "staging: HistoryTx.Probes, for the API's hosts resource, reads it; delete this entry when it does"
     }
   ]
 }

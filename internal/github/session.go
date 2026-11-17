@@ -100,7 +100,7 @@ type Handler interface {
 type ended int
 
 const (
-	booting  ended = iota // no session yet: a conflict may be a crashed predecessor's claim
+	_        ended = iota // no session yet: a conflict may be a crashed predecessor's claim
 	closed                // closed: a conflict is another process
 	unclosed              // the close failed: a conflict may be this session's own claim
 )

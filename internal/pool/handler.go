@@ -135,10 +135,6 @@ func (g *generation) lost(ss github.ScaleSet) {
 	wake(g.reensure)
 }
 
-// serving reports whether sc is served: scopeDetail names no reason it is
-// not; g.mu is held.
-func (g *generation) serving(sc *scope) bool { return g.scopeDetail(sc) == "" }
-
 // scopeDetail names why sc is not served, the first that holds, or none;
 // g.mu is held.
 func (g *generation) scopeDetail(sc *scope) string {
