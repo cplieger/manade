@@ -70,7 +70,7 @@ func names(q Queue) string {
 
 func TestSweepListsQueuedJobsInsideStartedRuns(t *testing.T) {
 	f := newFake(t)
-	s, r, _ := newTestSweep(t, f)
+	s, _, _ := newTestSweep(t, f)
 	f.route(listIP, etagged(runs(1, 7)))
 	f.route(jobsPath(7), etagged(jobsPage(7,
 		[]string{"build", "in_progress", "small"},
@@ -89,9 +89,6 @@ func TestSweepListsQueuedJobsInsideStartedRuns(t *testing.T) {
 	}
 	if j := qs[0].Jobs[0]; j.RunID != 7 || j.Created.IsZero() {
 		t.Errorf("job = %+v, want run 7 with its created_at", j)
-	}
-	if got := sample(t, r.rec.(*recorder), `manade_queue_read_last_success_timestamp_seconds{scope="acme/app"}`); got != float64(s.now().Unix()) {
-		t.Errorf("queue read stamp = %v, want the sweep's time", got)
 	}
 }
 
@@ -168,9 +165,6 @@ func TestSweepFollowsLinkPages(t *testing.T) {
 		}
 		if got := sample(t, s.rest.rec.(*recorder), `manade_github_errors_total{op="queue"}`); got != 1 {
 			t.Errorf("queue errors = %v, want 1", got)
-		}
-		if got := sample(t, s.rest.rec.(*recorder), `manade_queue_read_last_success_timestamp_seconds{scope="acme/app"}`); got == float64(s.now().Unix()) {
-			t.Error("a lost page stamped the scope's queue read")
 		}
 	})
 	t.Run("linkOffOrigin", func(t *testing.T) {
@@ -486,4 +480,38 @@ func TestSweepRunSpacesSweeps(t *testing.T) {
 	if sweeps != 3 || len(*waits) != 3 || (*waits)[0] != minSpacing {
 		t.Errorf("sweeps = %d with waits %v, want each sweep followed by the 10-second spacing", sweeps, *waits)
 	}
+}
+
+// runOnce runs one sweep through Run and answers what it handed its sink.
+func runOnce(t *testing.T, s *testSweep) (ended time.Time, qs []Queue) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	s.Run(ctx, s.cfg, func() bool { return false }, func(e time.Time, q []Queue) {
+		ended, qs = e, q
+		cancel()
+	})
+	if len(qs) != 1 {
+		t.Fatalf("sweep = %+v, want acme/app's read", qs)
+	}
+	return ended, qs
+}
+
+func TestSweepNamesEachScopesNextRead(t *testing.T) {
+	t.Run("the next sweep", func(t *testing.T) {
+		s, _, _ := newTestSweep(t, newFake(t))
+		ended, qs := runOnce(t, s)
+		if want := ended.Add(minSpacing); !qs[0].Complete || !qs[0].Next.Equal(want) {
+			t.Errorf("read %+v, want a whole read next due at the next sweep's start %v", qs[0], want)
+		}
+	})
+	t.Run("the end of the credential's hold", func(t *testing.T) {
+		s, _, c := newTestSweep(t, newFake(t))
+		until := c.now().Add(20 * time.Minute)
+		s.quota(&s.cfg.Scopes[0]).until = until
+		_, qs := runOnce(t, s)
+		if qs[0].Complete || !qs[0].Next.Equal(until) {
+			t.Errorf("read %+v, want a held read next due when the hold ends, %v", qs[0], until)
+		}
+	})
 }

@@ -366,12 +366,12 @@ func TestAnUnreachableHostKeepsItsReservations(t *testing.T) {
 	if _, ok := r.record(r.small(), name); !ok {
 		t.Fatal("an unreachable host's runner lost its record")
 	}
-	if r.m.serving["default"] {
+	if r.serving("default") {
 		t.Error("an unreachable host serves")
 	}
 	r.hosts[0].set(func(f *fakeHost) { f.down = false })
 	r.pass()
-	if !r.m.serving["default"] {
+	if !r.serving("default") {
 		t.Error("the host does not serve once it answers and proves again")
 	}
 }
@@ -635,10 +635,8 @@ func TestHealthIgnoresWhetherAnyHostServes(t *testing.T) {
 	if !r.reg.Health().Healthy() {
 		t.Errorf("health %+v after a pass with no host serving, want healthy", r.reg.Health())
 	}
-	r.m.mu.Lock()
-	defer r.m.mu.Unlock()
-	if r.m.serving["default"] {
-		t.Error("the unreachable host is recorded as serving")
+	if r.serving("default") {
+		t.Error("the unreachable host reads as serving")
 	}
 }
 

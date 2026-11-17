@@ -261,7 +261,6 @@ func (s *ScaleSets) ensure(ctx context.Context, c *scaleset.Client, cfg *config.
 		s.rest.log.Warn("A scale set the config does not name is left in place; delete it by hand if no workflow uses it",
 			"scope", scope.Key, "scale_set", textsafe.SanitizeSingleLineBounded(set.Name, 64), "id", set.ID)
 	}
-	s.rest.rec.Orphaned(scope.Key, len(all))
 	return out, nil
 }
 

@@ -49,11 +49,14 @@ type QueuedJob struct {
 
 // Queue is one repo scope's read in a sweep. Complete is false when a page
 // was lost or the scope's reads are held back: Jobs is then part of the
-// scope's queue at most, and funds nothing new.
+// scope's queue at most, and funds nothing new. Next is when the sweep
+// reads the scope again: the next sweep's start, or the end of its
+// credential's hold when that is later.
 type Queue struct {
-	Scope    string
-	Jobs     []QueuedJob
-	Complete bool
+	Next, hold time.Time
+	Scope      string
+	Jobs       []QueuedJob
+	Complete   bool
 }
 
 // Sweep reads every repo scope's queued jobs, one request at a time, for
@@ -111,8 +114,15 @@ func NewSweep(r *REST) *Sweep {
 func (s *Sweep) Run(ctx context.Context, cfg *config.Config, hot func() bool, sink func(ended time.Time, qs []Queue)) {
 	for ctx.Err() == nil {
 		qs := s.sweep(ctx, cfg, hot())
-		sink(s.now(), qs)
-		if sleep(ctx, s.spacing()) != nil {
+		ended, wait := s.now(), s.spacing()
+		for i := range qs {
+			qs[i].Next = qs[i].hold
+			if next := ended.Add(wait); next.After(qs[i].Next) {
+				qs[i].Next = next
+			}
+		}
+		sink(ended, qs)
+		if sleep(ctx, wait) != nil {
 			return
 		}
 	}
@@ -131,6 +141,7 @@ func (s *Sweep) sweep(ctx context.Context, cfg *config.Config, hot bool) []Queue
 			q.Jobs, q.Complete = jobs, err == nil
 			s.settle(sc, err)
 		}
+		q.hold = s.quota(sc).until
 		out = append(out, q)
 	}
 	return out
@@ -169,8 +180,7 @@ func (s *Sweep) quota(sc *config.Scope) *quota {
 	return q
 }
 
-// settle logs a scope's failing reads as a standing state and stamps a
-// whole read.
+// settle logs a scope's failing reads as a standing state.
 func (s *Sweep) settle(sc *config.Scope, err error) {
 	since, failing := s.failing[sc.Key]
 	switch {
@@ -180,9 +190,6 @@ func (s *Sweep) settle(sc *config.Scope, err error) {
 	case err != nil && !failing && !errors.Is(err, context.Canceled):
 		s.log.Warn("Queue reads are failing, so the scope gets no new funding", "scope", sc.Key, "error", err)
 		s.failing[sc.Key] = s.now()
-	}
-	if err == nil {
-		s.rest.rec.QueueScopeRead(sc.Key, s.now())
 	}
 }
 

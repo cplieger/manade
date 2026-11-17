@@ -1,7 +1,5 @@
 package github
 
-import "time"
-
 // Recorder takes the client's measurements. Its methods must be safe for
 // concurrent use.
 type Recorder interface {
@@ -9,12 +7,6 @@ type Recorder interface {
 	GitHubError(op Op)
 	// QueueRead counts one queued-jobs list read by its outcome.
 	QueueRead(r ReadResult)
-	// QueueScopeRead stamps a sweep that read all of scope's lists.
-	QueueScopeRead(scope string, at time.Time)
-	// PollOK stamps a successful poll of ss.
-	PollOK(ss ScaleSet, at time.Time)
-	// Orphaned sets the scale sets in scope's runner group no profile names.
-	Orphaned(scope string, n int)
 }
 
 // Op names a GitHub call.
@@ -32,6 +24,9 @@ const (
 	OpVariable     Op = "variable"
 )
 
+// Ops is every Op.
+var Ops = []Op{OpSession, OpPoll, OpJIT, OpScaleSet, OpVisibility, OpInstallation, OpQueue, OpVariable}
+
 // ReadResult is one queued-jobs read's outcome. ReadUnchanged is a 304,
 // which costs no primary rate limit.
 type ReadResult string
@@ -42,3 +37,6 @@ const (
 	ReadUnchanged ReadResult = "unchanged"
 	ReadError     ReadResult = "error"
 )
+
+// ReadResults is every ReadResult.
+var ReadResults = []ReadResult{ReadChanged, ReadUnchanged, ReadError}

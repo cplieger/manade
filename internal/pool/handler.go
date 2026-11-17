@@ -63,6 +63,7 @@ func (g *generation) polled(ss github.ScaleSet, poll *github.Poll) {
 	}
 	g.gate()
 	g.watch(g.now())
+	s.polled = poll.Ended
 	g.l.polled(b, poll)
 	for i := range poll.Events {
 		e := &poll.Events[i]
@@ -117,7 +118,6 @@ func (g *generation) held(ss github.ScaleSet, held bool, owner string) {
 	if held {
 		g.l.dropFlight(b, g.now())
 	}
-	g.d.Metrics.ScopeServing(ss.Scope, g.serving(s.scope))
 }
 
 // lost records that GitHub no longer has the scale set: it reports
@@ -133,7 +133,6 @@ func (g *generation) lost(ss github.ScaleSet) {
 	s.lost, s.held, s.holder = true, false, ""
 	g.gate()
 	g.l.dropFlight(b, g.now())
-	g.d.Metrics.ScopeServing(ss.Scope, g.serving(s.scope))
 	wake(g.reensure)
 }
 
@@ -195,7 +194,7 @@ func (g *generation) queued(ended time.Time, qs []github.Queue) {
 		if !q.Complete {
 			continue
 		}
-		sc.jobs, sc.readAt = q.Jobs, ended
+		sc.jobs, sc.readAt, sc.readDue = q.Jobs, ended, q.Next
 		for _, b := range g.l.books {
 			if g.sets[b].scope != sc {
 				continue

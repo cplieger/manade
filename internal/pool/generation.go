@@ -97,8 +97,9 @@ type scope struct {
 	// last visibility read began, and failed when its reads began failing,
 	// zero while they succeed. above is when a poll last reported capacity
 	// above its assignments, which keeps the proof refreshed. readAt is
-	// when the last complete read of its queued jobs ended.
-	proof, read, failed, above, readAt time.Time
+	// when the last complete read of its queued jobs ended, and readDue
+	// when that read named the next.
+	proof, read, failed, above, readAt, readDue time.Time
 	// routed is when the scope's routing variable settled in this
 	// generation, zero until then; routeTry, when its last routing began.
 	routed, routeTry time.Time
@@ -135,8 +136,9 @@ func (sc *scope) jobsOf(profile string) []github.QueuedJob {
 // set is what the pool keeps of one scale set beside its book.
 type set struct {
 	scope *scope
-	// beat is the listener's last Beat.
-	beat time.Time
+	// beat is the listener's last Beat; polled, when its last good poll
+	// ended.
+	beat, polled time.Time
 	// retryAt holds starts back after a failed JIT config.
 	retryAt time.Time
 	// holder is the owner GitHub named for a held session.
@@ -418,7 +420,7 @@ func (g *generation) takeBook(old *generation, ob *book, at []int) {
 	if nb != nil {
 		nb.carry(ob, at, g.l.profiles[nb.profile].hosts)
 		s, os := g.sets[nb], old.sets[ob]
-		s.beat, s.retryAt, s.opened, s.held, s.lost, s.holder = os.beat, os.retryAt, os.opened, os.held, os.lost, os.holder
+		s.beat, s.polled, s.retryAt, s.opened, s.held, s.lost, s.holder = os.beat, os.polled, os.retryAt, os.opened, os.held, os.lost, os.holder
 		if s.lost {
 			wake(g.reensure)
 		}
@@ -459,7 +461,7 @@ func sameSpec(a, b *config.Profile) bool {
 
 // carry takes old's state for the same scope key.
 func (sc *scope) carry(o *scope) {
-	sc.proof, sc.read, sc.failed, sc.above, sc.readAt = o.proof, o.read, o.failed, o.above, o.readAt
+	sc.proof, sc.read, sc.failed, sc.above, sc.readAt, sc.readDue = o.proof, o.read, o.failed, o.above, o.readAt, o.readDue
 	sc.unregister, sc.jobs, sc.waits = o.unregister, o.jobs, o.waits
 	sc.partial, sc.public, sc.wanted, sc.route = o.partial, o.public, o.wanted, o.route
 }

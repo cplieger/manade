@@ -24,12 +24,15 @@ type host struct {
 	// host's reconcile loop for a pass the same way.
 	want, wake chan struct{}
 	// beat is when the host's reconcile loop last began or ended a pass
-	// or a call it waited on. provedAt is when the proof in proved passed,
-	// and probeUntil the deadline of the probe of probing.
-	beat, provedAt, probeUntil time.Time
-	// st is the last status read, nil until one answers.
-	st  *hostapi.Status
-	cfg *config.Host
+	// or a call it waited on, and passed when it last ended a pass.
+	// provedAt is when the proof in proved passed, and probeUntil the
+	// deadline of the probe of probing.
+	beat, passed, provedAt, probeUntil time.Time
+	// st is the last status read, nil until one answers; report is the
+	// last probe's report, nil until one answers.
+	st     *hostapi.Status
+	report *hostapi.ProbeReport
+	cfg    *config.Host
 	// fprint is st's proof fingerprint; tried is the fingerprint the last
 	// proof began at; probing, the one a proof in flight runs at; proved,
 	// the one the last passing proof ran at, "" when the last proof failed
@@ -95,7 +98,7 @@ func (h *host) reproofDue(now time.Time) bool {
 // proof, supervisor and sequence. The settings-derived verdicts are judged
 // again for the new settings.
 func (h *host) carry(o *host) {
-	h.st, h.beat, h.seq = o.st, o.beat, o.seq
+	h.st, h.report, h.beat, h.passed, h.seq = o.st, o.report, o.beat, o.passed, o.seq
 	h.proved, h.instance, h.fprint, h.tried, h.failure = o.proved, o.instance, o.fprint, o.tried, o.failure
 	h.provedAt, h.probing, h.probeUntil, h.failed = o.provedAt, o.probing, o.probeUntil, o.failed
 	h.reachable, h.judged, h.settled = o.reachable, o.judged, o.settled
@@ -130,7 +133,6 @@ func (g *generation) applyStatus(i int, st *hostapi.Status) {
 	if h.fprint = fingerprint(st); h.fprint != h.tried || h.reproofDue(g.now()) {
 		wake(h.want)
 	}
-	g.d.Metrics.HostStatus(h.cfg.Name, st)
 	g.d.Hosts.Status(h.cfg.Name, g.now(), st)
 	g.served(i, was)
 }
@@ -171,7 +173,6 @@ func (g *generation) unreachable(i int, err error) {
 	if !errors.Is(err, errDisconnected) {
 		g.d.Metrics.HostLinkError(h.cfg.Name)
 	}
-	g.d.Metrics.HostStatus(h.cfg.Name, nil)
 	g.served(i, was)
 }
 
@@ -179,11 +180,8 @@ func (g *generation) unreachable(i int, err error) {
 func (g *generation) served(i int, was bool) {
 	h := g.hosts[i]
 	g.noteState(i)
-	if now := h.serving(g.now()); now != was {
-		g.d.Metrics.HostServing(h.cfg.Name, now)
-		if now {
-			g.log.Info("A host serves jobs", "host", h.cfg.Name)
-		}
+	if now := h.serving(g.now()); now && !was {
+		g.log.Info("A host serves jobs", "host", h.cfg.Name)
 	}
 }
 
@@ -249,9 +247,10 @@ func (g *generation) proveHost(ctx context.Context, i int) {
 		}
 		h.proved, h.failed, h.failure = "", fp, why
 	}
-	g.d.Metrics.HostProved(h.cfg.Name, g.now(), rep, why == "")
 	if err != nil {
 		rep = nil
+	} else {
+		h.report = rep
 	}
 	g.d.Hosts.Proved(h.cfg.Name, now, rep, why)
 	g.served(i, was)

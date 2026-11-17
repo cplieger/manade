@@ -99,12 +99,6 @@ func TestEnsure(t *testing.T) {
 		if n := rec.CountLevel(slog.LevelWarn, "config does not name"); n != 1 {
 			t.Errorf("orphan WARN lines = %d, want 1", n)
 		}
-		if v := sample(t, m, `manade_scale_sets_orphaned{scope="acme/app"}`); v != 1 {
-			t.Errorf("orphaned{acme/app} = %v, want 1", v)
-		}
-		if v := sample(t, m, `manade_scale_sets_orphaned{scope="acme"}`); v != 0 {
-			t.Errorf("orphaned{acme} = %v, want 0", v)
-		}
 	})
 	t.Run("unknownGroupFails", func(t *testing.T) {
 		delete(b.groups, "CI")

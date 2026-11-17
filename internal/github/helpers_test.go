@@ -247,18 +247,6 @@ func (r *recorder) QueueRead(res ReadResult) {
 	r.set(`manade_rest_reads_total{result="`+string(res)+`"}`, 1, true)
 }
 
-func (r *recorder) QueueScopeRead(scope string, at time.Time) {
-	r.set(`manade_queue_read_last_success_timestamp_seconds{scope="`+scope+`"}`, float64(at.Unix()), false)
-}
-
-func (r *recorder) PollOK(ss ScaleSet, at time.Time) {
-	r.set(`manade_poll_last_success_timestamp_seconds{profile="`+ss.Profile+`",scope="`+ss.Scope+`"}`, float64(at.Unix()), false)
-}
-
-func (r *recorder) Orphaned(scope string, n int) {
-	r.set(`manade_scale_sets_orphaned{scope="`+scope+`"}`, float64(n), false)
-}
-
 var _ Recorder = (*recorder)(nil)
 
 // fillDefaults gives each scope with no default_profile the first profile

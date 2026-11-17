@@ -244,11 +244,10 @@ func TestAPassOfEveryHostRenewsEachHostsLease(t *testing.T) {
 	if h := r.reg.Health(); !h.Reconciling {
 		t.Errorf("health %+v right after a pass of every host, want Reconciling", h)
 	}
-	r.m.mu.Lock()
-	passes := r.m.passes
-	r.m.mu.Unlock()
-	if len(passes) == 0 || !passes[len(passes)-1] {
-		t.Errorf("Pass calls %v, want the pass's step to record a reconciling pass", passes)
+	for _, h := range r.reg.Snapshot().Hosts {
+		if !h.Reconciled.Equal(r.now) || !h.ReconcileDue.Equal(r.now.Add(ReconcileLease)) {
+			t.Errorf("host %s reconciled %v due %v, want the pass's end and its lease after it", h.Host, h.Reconciled, h.ReconcileDue)
+		}
 	}
 }
 

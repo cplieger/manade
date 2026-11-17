@@ -143,7 +143,7 @@ func (g *generation) pass(ctx context.Context) {
 	g.mu.Lock()
 	now := g.now()
 	for _, h := range g.hosts {
-		h.beat = now
+		h.beat, h.passed = now, now
 	}
 	g.mu.Unlock()
 	g.step(ctx)
@@ -159,6 +159,7 @@ func (g *generation) passHost(ctx context.Context, i int) {
 	g.reconcileHost(ctx, i)
 	g.mu.Lock()
 	h.beat = g.now()
+	h.passed = h.beat
 	g.gate()
 	g.mu.Unlock()
 	g.poke()
@@ -173,7 +174,6 @@ func (g *generation) step(ctx context.Context) {
 	g.gate()
 	g.watch(g.now())
 	g.mu.Unlock()
-	g.d.Metrics.Pass(g.health().Reconciling)
 	g.settle()
 	uctx, cancel := context.WithTimeout(ctx, reconcileEvery)
 	defer cancel()

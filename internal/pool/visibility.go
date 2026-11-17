@@ -109,7 +109,6 @@ func (g *generation) verdict(sc *scope, private bool, err error, at time.Time) {
 		sc.failed, sc.proof = time.Time{}, at
 	}
 	g.gate()
-	g.d.Metrics.ScopeServing(sc.cfg.Key, g.serving(sc))
 }
 
 // wantProof asks for sc's visibility to be read again; g.mu is held.

@@ -30,8 +30,8 @@ func TestAGenerationChangeKeepsABusyRunnerAndItsJob(t *testing.T) {
 	if r.gh.wasRemoved(rec.id) || len(r.hosts[0].running()) != 1 {
 		t.Error("a generation change removed a runner on a job")
 	}
-	if got := r.m.generations; len(got) != 2 || got[1] != 2 {
-		t.Errorf("generations recorded %v, want revisions 1 and 2", got)
+	if got := r.m.generations; len(got) != 2 || got[1].rev != 2 || got[1].cfg != cfg {
+		t.Errorf("generations recorded %v, want revisions 1 and 2 with their settings", got)
 	}
 }
 
@@ -121,12 +121,12 @@ func TestADisconnectedHostIsNotServedAndKeepsItsRunners(t *testing.T) {
 	if _, ok := r.record(r.small(), name); !ok {
 		t.Fatal("a disconnected host's runner lost its record")
 	}
-	if r.m.serving["default"] {
+	if r.serving("default") {
 		t.Error("a disconnected host serves")
 	}
 	r.hosts[0].set(func(f *fakeHost) { f.disconnected = false })
 	r.pass()
-	if !r.m.serving["default"] {
+	if !r.serving("default") {
 		t.Error("the host does not serve once it reconnects")
 	}
 }

@@ -271,8 +271,8 @@ func (r *Registry) install(ctx context.Context, s *Settings) *generation {
 	}
 	r.cur = g
 	r.mu.Unlock()
+	r.d.Metrics.Generation(s.Config, s.Revision, r.now())
 	g.boot(ctx)
-	r.d.Metrics.Generation(s.Revision)
 	return g
 }
 

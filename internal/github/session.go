@@ -314,7 +314,6 @@ func (l *listen) poll(ctx context.Context, start time.Time) {
 		l.failing = time.Time{}
 	}
 	l.last = start
-	l.s.rest.rec.PollOK(l.ss, end)
 	p := Poll{Started: start, Ended: end, Idle: msg == nil}
 	if msg == nil {
 		l.h.Polled(l.ss, &p)

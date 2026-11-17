@@ -3,8 +3,8 @@ package pool
 import (
 	"time"
 
+	"github.com/cplieger/manade/internal/config"
 	"github.com/cplieger/manade/internal/github"
-	"github.com/cplieger/manade/internal/hostapi"
 )
 
 // ExitReason is how a runner's record closed.
@@ -25,6 +25,9 @@ const (
 	ExitLifetime ExitReason = "lifetime"
 )
 
+// ExitReasons is every ExitReason.
+var ExitReasons = []ExitReason{ExitCompleted, ExitFailed, ExitOOM, ExitLost, ExitRemoved, ExitIdle, ExitLifetime}
+
 // JobResult is a JobCompleted's result.
 type JobResult string
 
@@ -36,25 +39,19 @@ const (
 	JobOther     JobResult = "other"
 )
 
-// Recorder takes the pool's measurements; host, scope and profile are the
-// settings' names. Its methods must be safe for concurrent use and return
-// at once.
+// JobResults is every JobResult.
+var JobResults = []JobResult{JobSucceeded, JobFailed, JobCanceled, JobOther}
+
+// Recorder takes the pool's events, the measurements a snapshot cannot
+// read later; host, scope and profile are the settings' names. Its methods
+// must be safe for concurrent use and return at once.
 type Recorder interface {
-	ScopeServing(scope string, serving bool)
 	RunnerStarted(host string, ss github.ScaleSet, ok bool)
 	RunnerExited(host string, ss github.ScaleSet, reason ExitReason)
 	JobAssigned(profile string, waited time.Duration)
 	JobFinished(profile string, r JobResult, ran time.Duration)
-	// HostStatus takes each status a pass read, nil while the host is
-	// disconnected or does not answer.
-	HostStatus(host string, st *hostapi.Status)
-	HostServing(host string, serving bool)
-	// HostProved takes a proof's report at the time it ended; a nil report
-	// is a proof that failed before the probe ran.
-	HostProved(host string, at time.Time, rep *hostapi.ProbeReport, ok bool)
 	HostLinkError(host string)
-	Pass(ok bool)
-	// Generation takes the settings revision of each generation that
-	// begins serving.
-	Generation(revision uint64)
+	// Generation takes each generation's settings before the generation
+	// boots, so the events it records name what those settings hold.
+	Generation(cfg *config.Config, revision uint64, at time.Time)
 }

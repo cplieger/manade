@@ -47,6 +47,12 @@ const (
 	JobTooLarge           JobReason = "too_large"
 )
 
+// JobReasons is every JobReason.
+var JobReasons = []JobReason{
+	JobStarting, JobAwaitingAssignment, JobUnassignable, JobScopeNotServed, JobProfileLimit, JobHeldForOlder,
+	JobWaitingForSlot, JobImagePulling, JobProving, JobHostNotReady, JobNoHostServing, JobTooLarge,
+}
+
 // The details beside a reason that names a cause of its own: a scope not
 // served, and a host's own not_ready or settings_not_applied. A section
 // state (hostapi.SectionState) or a profile's readiness reason

@@ -466,21 +466,23 @@ func (g *fakeGitHub) wasRemoved(id int64) bool {
 
 // fakeMetrics counts what the pool records.
 type fakeMetrics struct {
-	starts  map[string]int
-	exits   map[ExitReason]int
-	serving map[string]bool
-	proofs  map[string]int
-	// passes holds each Pass call's value; generations, each Generation's.
-	passes      []bool
-	generations []uint64
+	starts map[string]int
+	exits  map[ExitReason]int
+	// events holds each RunnerExited and Generation call in order;
+	// generations, each Generation's revision and settings.
+	events      []string
+	generations []generationCall
 	mu          sync.Mutex
 }
 
-func newFakeMetrics() *fakeMetrics {
-	return &fakeMetrics{starts: map[string]int{}, exits: map[ExitReason]int{}, serving: map[string]bool{}, proofs: map[string]int{}}
+type generationCall struct {
+	cfg *config.Config
+	rev uint64
 }
 
-func (*fakeMetrics) ScopeServing(string, bool) {}
+func newFakeMetrics() *fakeMetrics {
+	return &fakeMetrics{starts: map[string]int{}, exits: map[ExitReason]int{}}
+}
 
 func (m *fakeMetrics) RunnerStarted(_ string, _ github.ScaleSet, ok bool) {
 	m.mu.Lock()
@@ -488,40 +490,22 @@ func (m *fakeMetrics) RunnerStarted(_ string, _ github.ScaleSet, ok bool) {
 	m.starts[fmt.Sprint(ok)]++
 }
 
-func (m *fakeMetrics) RunnerExited(_ string, _ github.ScaleSet, reason ExitReason) {
+func (m *fakeMetrics) RunnerExited(_ string, ss github.ScaleSet, reason ExitReason) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.exits[reason]++
+	m.events = append(m.events, "exit "+ss.Profile+" "+string(reason))
 }
 
 func (*fakeMetrics) JobAssigned(string, time.Duration)            {}
 func (*fakeMetrics) JobFinished(string, JobResult, time.Duration) {}
-func (*fakeMetrics) HostStatus(string, *hostapi.Status)           {}
+func (*fakeMetrics) HostLinkError(string)                         {}
 
-func (m *fakeMetrics) HostServing(host string, serving bool) {
+func (m *fakeMetrics) Generation(cfg *config.Config, rev uint64, _ time.Time) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.serving[host] = serving
-}
-
-func (m *fakeMetrics) HostProved(host string, _ time.Time, _ *hostapi.ProbeReport, _ bool) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.proofs[host]++
-}
-
-func (*fakeMetrics) HostLinkError(string) {}
-
-func (m *fakeMetrics) Pass(reconciling bool) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.passes = append(m.passes, reconciling)
-}
-
-func (m *fakeMetrics) Generation(rev uint64) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.generations = append(m.generations, rev)
+	m.generations = append(m.generations, generationCall{cfg: cfg, rev: rev})
+	m.events = append(m.events, fmt.Sprint("generation ", rev))
 }
 
 // fakeSettler keeps each Settle call; the test decides what the settings
@@ -847,6 +831,21 @@ func (r *rig) starts() {
 }
 
 func (r *rig) book(scope, profile string) *book { return r.p.bookOf(scope, profile) }
+
+// view answers host's view in the current snapshot.
+func (r *rig) view(host string) HostView {
+	r.t.Helper()
+	for _, h := range r.reg.Snapshot().Hosts {
+		if h.Host == host {
+			return h
+		}
+	}
+	r.t.Fatalf("the snapshot has no host %s", host)
+	return HostView{}
+}
+
+// serving reports host serving in the current snapshot.
+func (r *rig) serving(host string) bool { return r.view(host).Serving }
 
 // poll runs one poll of b: its capacity, then an answer with events and
 // stats.

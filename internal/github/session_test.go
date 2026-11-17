@@ -158,11 +158,7 @@ func TestListenPollsAndAcks(t *testing.T) {
 			t.Error("a message was acked before the pool had it")
 		}
 	})
-	t.Run("pollRecorded", func(t *testing.T) {
-		got := sample(t, lf.m, `manade_poll_last_success_timestamp_seconds{profile="small",scope="acme/app"}`)
-		if want := float64(lf.c.now().Unix()); got != want {
-			t.Errorf("poll timestamp = %v, want %v", got, want)
-		}
+	t.Run("beats", func(t *testing.T) {
 		if h.beats != 7 {
 			t.Errorf("beats = %d, want 7: the create, 3 polls, 2 acks and the close", h.beats)
 		}
