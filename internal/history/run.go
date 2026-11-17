@@ -13,7 +13,7 @@ import (
 	"github.com/cplieger/manade/internal/store"
 )
 
-// The results a run row records (§5.3.1); GitHub's text beside other.
+// The results a run row records; GitHub's text beside other.
 const (
 	resultSucceeded = "succeeded"
 	resultFailed    = "failed"

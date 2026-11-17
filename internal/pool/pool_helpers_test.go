@@ -79,7 +79,7 @@ func (m *smodel) open() {
 // routed reports that new jobs reach s: its scope is served and not
 // stopping, and its profile may take the scope's new jobs. A scale set
 // being stopped gets no new job, as the runner variable's delete or
-// rewrite before the stop makes sure (§9.4).
+// rewrite before the stop makes sure.
 func (m *smodel) routed(s *sset) bool {
 	i := slices.IndexFunc(m.r.cfg.Scopes, func(sc config.Scope) bool { return sc.Key == s.scope })
 	pr, ok := m.r.cfg.Profile(s.profile)
@@ -559,7 +559,7 @@ func (m *smodel) drain(passes int) {
 
 // unstarted fails the run when, once every job has run and each scale set
 // has polled, the pool's snapshot still counts an assignment with no
-// runner started: manade_jobs_assigned_unstarted, D9's backstop.
+// runner started (manade_jobs_assigned_unstarted).
 func (m *smodel) unstarted() {
 	for _, s := range m.sets {
 		m.poll(s, 0)

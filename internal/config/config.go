@@ -30,7 +30,7 @@ type Config struct {
 	// PoolName is the GitHub session owner and the runner names' prefix.
 	PoolName string
 	// RunnerVariable names the repository or organization variable that
-	// routes a scope's jobs to its default profile (§9.4).
+	// routes a scope's jobs to its default profile.
 	RunnerVariable   string
 	Scopes           []Scope
 	Hosts            []Host

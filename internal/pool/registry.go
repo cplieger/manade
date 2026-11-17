@@ -250,10 +250,10 @@ func (r *Registry) current() *generation {
 // install builds the generation for s and makes it current. Under the
 // same credential it keeps the current generation's scale sets that s
 // still serves; a new credential ensures every scope again, which finds
-// the scale sets by name and proves it reaches each scope (§9.1). The
+// the scale sets by name and proves it reaches each scope. The
 // ensures come first; then the current generation stops at a pass
 // boundary and the new one takes over its records and boots through the
-// boot path (§10.6). The caller starts the new generation's loops.
+// boot path. The caller starts the new generation's loops.
 func (r *Registry) install(ctx context.Context, s *Settings) *generation {
 	r.pmu.Lock()
 	r.applying = r.now()
@@ -440,7 +440,7 @@ func (r *Registry) record(ctx context.Context, sets []github.ScaleSet) {
 }
 
 // prune reads each orphaned scale set under g's credential and drops the
-// record of one GitHub no longer has (§9.3). A served one's loss is found
+// record of one GitHub no longer has. A served one's loss is found
 // by its session; a failed read keeps the record and is logged once while
 // it fails.
 func (r *Registry) prune(ctx context.Context, g *generation) {
@@ -481,7 +481,7 @@ func (r *Registry) drop(ctx context.Context, ss github.ScaleSet) {
 	r.d.Log.Info("GitHub no longer has an orphaned scale set, so its record is dropped", "scope", ss.Scope, "profile", ss.Profile, "id", ss.ID)
 }
 
-// orphaned answers the recorded scale sets cfg would not ensure (§9.3),
+// orphaned answers the recorded scale sets cfg would not ensure,
 // sorted by scope and profile; none before the record is read.
 func (r *Registry) orphaned(cfg *config.Config) []github.ScaleSet {
 	r.rmu.Lock()

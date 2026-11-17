@@ -20,15 +20,15 @@ type Snapshot struct {
 	Hosts         []HostView
 	// Profiles is the settings' profile names, in settings order.
 	Profiles []string
-	// Waiting is every waiting job with its reason (§10.5).
+	// Waiting is every waiting job with its reason.
 	Waiting []Waiting
-	// Stops is every stopping state of the settings (§9.4).
+	// Stops is every stopping state of the settings.
 	Stops []Stop
-	// Orphaned is every recorded scale set the settings would not ensure
-	// (§9.3), sorted by scope and profile.
+	// Orphaned is every recorded scale set the settings would not ensure,
+	// sorted by scope and profile.
 	Orphaned []Orphan
 	// Routes is every repository and organization scope's routing
-	// variable (§9.4), in settings order.
+	// variable, in settings order.
 	Routes []RouteStatus
 	// Scopes is every scope's row, in settings order.
 	Scopes []ScopeStatus
@@ -38,8 +38,8 @@ type Snapshot struct {
 	Booted bool
 }
 
-// SetCounts is one scale set's assignments with no runner started (D9's
-// backstop), its queued jobs the last read listed and when its last good
+// SetCounts is one scale set's assignments with no runner started, its
+// queued jobs the last read listed and when its last good
 // poll ended, zero before one. A profile with no scale set in a scope has
 // ID 0: one not serving the scope, or one whose ensure has not succeeded.
 type SetCounts struct {
@@ -58,7 +58,7 @@ type Orphan struct {
 
 // ScopeStatus is one scope's row: served, or the scope_not_served detail
 // that keeps it from being served, with each scale set another pool holds
-// and the owner GitHub named for it (§9.3). A repository scope's ReadAt is
+// and the owner GitHub named for it. A repository scope's ReadAt is
 // when the last whole read of its queued jobs ended and ReadDue when that
 // read named the next, both zero before one.
 type ScopeStatus struct {

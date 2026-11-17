@@ -14,7 +14,7 @@ import (
 
 // ErrVariablesForbidden reports a credential that may not read or write the
 // scope's Actions variables: an App installed without Variables write, or a
-// token without it. The user sets the variable by hand (§9.4).
+// token without it. The user sets the variable by hand.
 var ErrVariablesForbidden = errors.New("github: the credential may not write the scope's Actions variables")
 
 // variablesURL is the Actions variables of s, a repository or an

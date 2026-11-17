@@ -34,7 +34,7 @@ func TestEnsureUnderASecondCredentialFindsTheScaleSetByName(t *testing.T) {
 	})
 }
 
-// Only a classic token reaches an enterprise's runner groups (§9.2), so an
+// Only a classic token reaches an enterprise's runner groups, so an
 // App refuses an enterprise scope before sending anything.
 func TestAppRefusesAnEnterpriseScopeUnsent(t *testing.T) {
 	f := newFake(t)

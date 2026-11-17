@@ -16,7 +16,7 @@ type cpParts struct {
 	pool                                func() pool.Health
 }
 
-// cpHealth is the control plane's /healthz (§12.3): one check per loop,
+// cpHealth is the control plane's /healthz: one check per loop,
 // each with its fixed reason. It reads starting until the store opens and
 // the first generation boots, and draining from BeginDrain on; until the
 // parts are set, every other check passes, so the starting reason stands

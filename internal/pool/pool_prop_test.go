@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-// No job is ever stuck (D9): whatever boots, budgets, assignments, exits,
+// No job is ever stuck: whatever boots, budgets, assignments, exits,
 // restarts of either role, unreachable, disconnected and full hosts,
 // refused starts, vanished images, failed ensures, scale sets GitHub
 // dropped and settings changes came before, once the faults end and the budget frees, no assignment

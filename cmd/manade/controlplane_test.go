@@ -233,8 +233,7 @@ func TestControlPlaneRefusesToStart(t *testing.T) {
 
 // The ops listener answers /healthz and /metrics alone, with no sign-in,
 // to the machine itself and to an ALLOWED_HOSTS name, and refuses a page
-// that rebinds a name of its own to the address (§5.2, §16 "Host
-// channel").
+// that rebinds a name of its own to the address.
 func TestControlPlaneOpsListener(t *testing.T) {
 	t.Setenv("DATA_DIR", t.TempDir())
 	t.Setenv("ALLOWED_HOSTS", "scrape.lan")

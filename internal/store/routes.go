@@ -8,7 +8,7 @@ import (
 	"github.com/cplieger/bolttable"
 )
 
-// Route is a scope's routing variable as the pool last wrote it (§9.4): its
+// Route is a scope's routing variable as the pool last wrote it: its
 // name and value, the value empty once the pool deleted it. A value GitHub
 // holds that differs from it was set by hand.
 type Route struct {

@@ -85,7 +85,7 @@ type hostBook struct {
 	// disk.
 	disk bool
 	// reported marks a host whose settings set no capacity: its budget is
-	// what its last status admits (§10.2), zero until one answers.
+	// what its last status admits, zero until one answers.
 	reported bool
 	// reachable reports that the host answers, so its runners' exits
 	// reach the ledger; serving, that it takes new slots: reachable,

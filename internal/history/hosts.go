@@ -14,7 +14,7 @@ import (
 	"github.com/cplieger/manade/internal/store"
 )
 
-// The bounds on what a host's text puts in a row (§21 b5-8): hosts on
+// The bounds on what a host's text puts in a row: hosts on
 // other machines are not trusted to keep it short.
 const (
 	textMax   = 512

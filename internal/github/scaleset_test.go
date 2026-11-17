@@ -263,7 +263,7 @@ func TestRecheckRebuildsAfterReinstall(t *testing.T) {
 }
 
 // A recorded scale set is gone once GitHub answers 404 for its ID or names
-// another set by it (§9.3); any other failure tells nothing.
+// another set by it; any other failure tells nothing.
 func TestExists(t *testing.T) {
 	f := newFake(t)
 	cfg, gh := load(t, false, setLayout)

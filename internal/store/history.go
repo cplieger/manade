@@ -8,7 +8,7 @@ import (
 	"github.com/cplieger/bolttable"
 )
 
-// Run is one job run's row (§5.3.1), keyed by GitHub's runner request ID,
+// Run is one job run's row, keyed by GitHub's runner request ID,
 // unique per job attempt. A zero time is one not recorded yet.
 type Run struct {
 	QueuedAt   time.Time `json:"queued_at,omitzero"`
@@ -39,7 +39,7 @@ type Run struct {
 	Result     string `json:"result,omitempty"`
 	ResultText string `json:"result_text,omitempty"`
 	Exit       string `json:"exit,omitempty"`
-	// WaitReason is §10.5's job reason the run waited under longest while
+	// WaitReason is the pool's job reason the run waited under longest while
 	// queued, empty when the pool saw it waiting under none.
 	WaitReason string `json:"wait_reason,omitempty"`
 	WaitMS     int64  `json:"wait_ms,omitempty"`
@@ -48,7 +48,7 @@ type Run struct {
 	ID         uint64 `json:"id"`
 }
 
-// Usage is what a run's runner used over its container's life (§5.3.1),
+// Usage is what a run's runner used over its container's life,
 // in whole milliseconds; PeakMemory is 0 when its host read none.
 type Usage struct {
 	CPUMS      int64 `json:"cpu_ms"`
@@ -65,7 +65,7 @@ func (r *Run) age() time.Time {
 	return r.SeenAt
 }
 
-// Blob is a run's evidence (§5.3.1): its log tail and _diag tar.
+// Blob is a run's evidence: its log tail and _diag tar.
 type Blob struct {
 	StoredAt time.Time `json:"stored_at"`
 	Log      string    `json:"log,omitempty"`

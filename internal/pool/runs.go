@@ -8,7 +8,7 @@ import (
 	"github.com/cplieger/manade/internal/hostapi"
 )
 
-// Runs takes what the run history records of each job (§5.3.1). Its
+// Runs takes what the run history records of each job. Its
 // methods are safe for concurrent use.
 type Runs interface {
 	// Job takes one job message of scale set ss; host holds the message's

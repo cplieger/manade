@@ -19,7 +19,7 @@ import (
 
 var at = time.Date(2026, 11, 17, 6, 0, 0, 0, time.UTC)
 
-// series is §12.1's table for the series this build declares, by area,
+// series is every series this build declares, by area,
 // with each family's exposition type.
 var series = map[string]measure.Type{
 	// Build
@@ -202,7 +202,7 @@ func TestEveryDeclarationRegisters(t *testing.T) {
 	}
 	for _, name := range slices.Sorted(maps.Keys(got)) {
 		if _, ok := series[name]; !ok {
-			t.Errorf("%s is declared and is not in §12.1's table", name)
+			t.Errorf("%s is declared and is not in the series table", name)
 		}
 	}
 }

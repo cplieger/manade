@@ -41,7 +41,7 @@ func TestScaleSetRecordsReplaceAndPersist(t *testing.T) {
 }
 
 // A record GitHub no longer has is dropped with its journal row in one
-// transaction (§9.3, §5.3), and a record an ensure moved to another ID
+// transaction, and a record an ensure moved to another ID
 // since is kept with no row.
 func TestDroppingAScaleSetRecordJournalsIt(t *testing.T) {
 	path := testPath(t)

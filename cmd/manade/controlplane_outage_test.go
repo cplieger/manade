@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/cplieger/bolttable"
 )
@@ -42,9 +43,10 @@ func writeStoreFile(t *testing.T, path, raw string, undeclared bool) {
 var outageOpsRe = regexp.MustCompile(`msg="The control plane's store cannot open.*\bops=(\S+)`)
 
 // A store file that cannot open holds the control plane in its outage:
-// /healthz answers 503 with the class's reason alone, the log names the
-// file, its class and its error, the file is left as it was, and a stop
-// exits 0 with the lock released.
+// /healthz answers 503 with the class's reason alone, and with the
+// shutdown's beside it through a stop, the log names the file, its class
+// and its error, the file is left as it was, and a stop exits 0 with the
+// lock released.
 func TestControlPlaneHoldsItsStoresOutage(t *testing.T) {
 	for _, tc := range []struct {
 		name, class, reason string
@@ -78,6 +80,13 @@ func TestControlPlaneHoldsItsStoresOutage(t *testing.T) {
 			t.Setenv("DATA_DIR", dir)
 			t.Setenv("OPS_LISTEN_ADDR", "127.0.0.1:0")
 			useSocket(t)
+			draining, release := make(chan struct{}), make(chan struct{})
+			old := drainHook
+			drainHook = func() {
+				close(draining)
+				<-release
+			}
+			t.Cleanup(func() { drainHook = old })
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
 			out := &syncBuffer{}
@@ -101,6 +110,16 @@ func TestControlPlaneHoldsItsStoresOutage(t *testing.T) {
 				t.Errorf("/metrics does not read booting:\n%s", body)
 			}
 			cancel()
+			select {
+			case <-draining:
+			case <-time.After(10 * time.Second):
+				t.Fatalf("the stop never read draining; log:\n%s", out.String())
+			}
+			status, body = get(t, "http://"+m[1]+"/healthz")
+			close(release)
+			if status != http.StatusServiceUnavailable || !strings.Contains(body, "the control plane is shutting down") || !strings.Contains(body, tc.reason) {
+				t.Errorf("/healthz through the stop = %d %s, want 503 naming the shutdown and %q", status, body, tc.reason)
+			}
 			if c := <-code; c != 0 {
 				t.Errorf("serveControlPlane = %d, want 0; log:\n%s", c, out.String())
 			}

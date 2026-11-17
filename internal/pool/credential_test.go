@@ -14,7 +14,7 @@ import (
 )
 
 // With no credential the settings boot a generation that serves no scope,
-// and naming one serves them at the next revision (D21's first run).
+// and naming one serves them at the next revision.
 func TestNoCredentialBootsAndACredentialServes(t *testing.T) {
 	r := newRig(t, oneHost())
 	r.side = nil
@@ -124,8 +124,7 @@ func (g *credentialGitHub) ensured() int {
 }
 
 // GitHub holds one session per scale set whatever the credential, so a
-// Replace that opened a session before the old one closed would get a 409
-// (§9.1, §10.6).
+// Replace that opened a session before the old one closed would get a 409.
 func TestCredentialChangeClosesEverySessionBeforeOneOpens(t *testing.T) {
 	cfg := poolConfig([]hostSpec{{name: "default", cpus: 8, mem: 32}},
 		[]profileSpec{{name: "small", hosts: []string{"default"}, cpus: 2, mem: 4}}, app, "acme/web")

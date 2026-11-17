@@ -401,7 +401,7 @@ func TestBuildReportsEveryPath(t *testing.T) {
 }
 
 // A key reaches the scope its settings entry named: what the pool reads a
-// scale set of a scope the settings dropped under (§9.3).
+// scale set of a scope the settings dropped under.
 func TestScopeOfAKeyIsItsParsedScope(t *testing.T) {
 	cfg := mustBuildJSON(t, &Config{}, object(
 		`"scopes": [{"repo": "acme/app", "default_profile": "p"}, {"org": "acme", "default_profile": "p"}, {"enterprise": "big", "default_profile": "p"}]`,

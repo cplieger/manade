@@ -9,7 +9,7 @@ import (
 )
 
 // writeLease is how long the store's writes may keep failing before it
-// reads unhealthy (§12.3), so one failed commit that the next write
+// reads unhealthy, so one failed commit that the next write
 // clears is no fault; a test seam.
 var writeLease = 2 * time.Minute
 

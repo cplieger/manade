@@ -251,6 +251,10 @@ func TestLogTailIsCapped(t *testing.T) {
 	if got := strings.Count(logTail([]byte(b.String())), "\n"); got != 200 {
 		t.Errorf("lines = %d, want 200", got)
 	}
+	unended := strings.Repeat("line\n", 200) + "last"
+	if got, want := logTail([]byte(unended)), strings.Repeat("line\n", 199)+"last"; got != want {
+		t.Errorf("201 lines with no final newline kept %d lines, want the last 200", lineCount(got))
+	}
 	long := strings.Repeat("y", 100<<10) + "\nend\n"
 	got := logTail([]byte(long))
 	if len(got) != 64<<10 || !strings.HasSuffix(got, "\nend\n") {

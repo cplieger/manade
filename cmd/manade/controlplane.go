@@ -38,7 +38,7 @@ func runControlPlane(args []string, stderr io.Writer) int {
 }
 
 // Test seams: drainHook runs once /healthz reads draining, before the
-// pool's shutdown is waited on.
+// shutdown goes on.
 var (
 	hostsSocket = hostlink.SocketPath
 	listenHosts = hostlink.ListenSocket
@@ -48,7 +48,7 @@ var (
 
 // firstBoot is the settings a first boot creates, the local host and the
 // default profile at their defaults, and the only settings the control
-// plane serves until the settings store holds a document (D21).
+// plane serves until the settings store holds a document.
 const firstBoot = `{"hosts": {"default": {}}, "profiles": {"default": {}}}`
 
 // serveControlPlane runs the control plane until ctx ends. The ops
@@ -139,6 +139,8 @@ func serveOpen(ctx context.Context, r *cpRun, st *store.Store, path string) int 
 		"file", path, "class", class, "error", err, "ops", r.ops.String())
 	r.health.outage(httpserver.OutageClass(class))
 	<-ctx.Done()
+	r.health.BeginDrain()
+	drainHook()
 	return 0
 }
 

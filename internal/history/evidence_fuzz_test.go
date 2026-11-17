@@ -19,7 +19,7 @@ func FuzzLogTail_safe(f *testing.F) {
 	f.Add([]byte("plain\ttext\nline two\n"))
 	f.Fuzz(func(t *testing.T, raw []byte) {
 		got := logTail(raw)
-		if !utf8.ValidString(got) || len(got) > tailBytes || strings.Count(got, "\n") > tailLines {
+		if !utf8.ValidString(got) || len(got) > tailBytes || lineCount(got) > tailLines {
 			t.Fatalf("logTail(%q) = %q: not valid UTF-8 or past its caps", raw, got)
 		}
 		for _, r := range got {
@@ -30,8 +30,13 @@ func FuzzLogTail_safe(f *testing.F) {
 		s := string(raw)
 		if utf8.Valid(raw) && !strings.ContainsFunc(s, func(r rune) bool {
 			return r == '\r' || (r != '\n' && r != '\t' && textsafe.IsUnsafeMultiLine(r))
-		}) && len(s) <= tailBytes && strings.Count(s, "\n") <= tailLines && got != s {
+		}) && len(s) <= tailBytes && lineCount(s) <= tailLines && got != s {
 			t.Fatalf("logTail(%q) = %q, want a clean log kept whole", raw, got)
 		}
 	})
+}
+
+// lineCount counts s's lines, a last one with no newline included.
+func lineCount(s string) int {
+	return strings.Count(s, "\n") + min(1, len(s)-strings.LastIndexByte(s, '\n')-1)
 }

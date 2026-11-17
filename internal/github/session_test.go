@@ -582,7 +582,7 @@ func TestListenCloseOutlastsNoJIT(t *testing.T) {
 }
 
 // GitHub names the holder of a scale set's session in its 409, and the
-// scope's row shows that owner (§9.3): one bounded line, or none when the
+// scope's row shows that owner: one bounded line, or none when the
 // message names no owner.
 func TestListenHeldNamesTheHolder(t *testing.T) {
 	for _, tc := range []struct {
@@ -614,7 +614,7 @@ func TestListenHeldNamesTheHolder(t *testing.T) {
 
 // A session create GitHub answers not found means it dropped the scale
 // set: Listen reports it lost once and returns, retrying nothing, so the
-// pool ensures it again under its name (§9.3).
+// pool ensures it again under its name.
 func TestListenReportsALostScaleSet(t *testing.T) {
 	lf := newListen(t)
 	lf.b.do(func(b *broker) { delete(b.sets, 1) })

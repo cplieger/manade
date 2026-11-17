@@ -22,14 +22,14 @@ const (
 var (
 	repoGrant = map[string]string{metadata: read, "administration": read, "actions": read}
 	orgGrant  = map[string]string{metadata: read, "organization_self_hosted_runners": read}
-	// The routing variable's grants (§9.2): its own, so the scope's grant
+	// The routing variable's grants: its own, so the scope's grant
 	// stays read-only. Write includes read.
 	repoVariableGrant = map[string]string{metadata: read, "actions_variables": "write"}
 	orgVariableGrant  = map[string]string{metadata: read, "organization_actions_variables": "write"}
 )
 
 // ErrEnterpriseNeedsToken refuses an enterprise scope under a GitHub App:
-// only a classic token reaches an enterprise's runner groups (§9.2).
+// only a classic token reaches an enterprise's runner groups.
 var ErrEnterpriseNeedsToken = errors.New("github: an enterprise scope needs a classic token, and the credential is a GitHub App")
 
 // sourceKey names a scope's token source: its key, its configured

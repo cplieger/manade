@@ -12,7 +12,7 @@ import (
 	"github.com/cplieger/manade/internal/pool"
 )
 
-// The checks' fixed reasons (§12.3).
+// The checks' fixed reasons.
 const (
 	reasonStarting    = "the control plane is starting: its store has not opened or its first pool generation has not booted"
 	reasonDraining    = "the control plane is shutting down"

@@ -6,7 +6,7 @@ import (
 	"github.com/cplieger/bolttable"
 )
 
-// Entry is one journal row (§5.3): a change to this file's state, an
+// Entry is one journal row: a change to this file's state, an
 // operator's or the pool's own, written in that change's transaction.
 // Action and Outcome are codes and Facts their values, which the client
 // words; a row holds no sentence.

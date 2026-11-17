@@ -7,7 +7,7 @@ import (
 	"github.com/cplieger/manade/internal/github"
 )
 
-// Stop is one stopping state of the settings (§9.4) as the pool reads it:
+// Stop is one stopping state of the settings as the pool reads it:
 // a scope turned off (Profile empty) or a profile leaving a scope, with its
 // scale sets' queued and assigned jobs, and for a repository scope the
 // queued jobs its last read named, which Stop now leaves queued. Ended

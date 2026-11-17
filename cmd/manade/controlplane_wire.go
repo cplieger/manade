@@ -88,7 +88,7 @@ func (r routeRecords) RecordRoute(ctx context.Context, rt pool.Route, at time.Ti
 }
 
 // settleLog logs each stop the pool read as ended: with no settings store
-// yet (D23), nothing can write the stop off, so the pool keeps it.
+// yet, nothing can write the stop off, so the pool keeps it.
 type settleLog struct{ log *slog.Logger }
 
 func (s settleLog) Settle(rev uint64, ended []pool.Stop) {

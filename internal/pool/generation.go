@@ -220,8 +220,7 @@ func (g *generation) ensureScope(ctx context.Context, sc *scope) {
 
 // found takes an ensure's answer for a scale set g holds; g.mu is held. A
 // new ID is a scale set GitHub created again: a runner registered on the
-// old one takes no job, so each is marked stale, and the listener's lease
-// starts again for the session the new ID opens.
+// old one takes no job, so each is marked stale.
 func (g *generation) found(b *book, ss github.ScaleSet) {
 	s := g.sets[b]
 	if b.ss.ID != ss.ID {

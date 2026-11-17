@@ -10,7 +10,7 @@ import (
 )
 
 // HostReason is why one host of a waiting job's profile gives it no runner
-// now, §10.5's closed set.
+// now, a closed set.
 type HostReason string
 
 // The host reasons, in the order the first that holds is taken.
@@ -27,7 +27,7 @@ const (
 	HostFull               HostReason = "full"
 )
 
-// JobReason is why a job waits, §10.5's closed set: the first that applies,
+// JobReason is why a job waits, a closed set: the first that applies,
 // so it reads as close to running as any of its hosts lets it.
 type JobReason string
 
@@ -47,7 +47,8 @@ const (
 	JobTooLarge           JobReason = "too_large"
 )
 
-// JobReasons is every JobReason.
+// JobReasons is every JobReason, nearest running first; a tie for the
+// reason a job waited under longest goes to the one nearer running.
 var JobReasons = []JobReason{
 	JobStarting, JobAwaitingAssignment, JobUnassignable, JobScopeNotServed, JobProfileLimit, JobHeldForOlder,
 	JobWaitingForSlot, JobImagePulling, JobProving, JobHostNotReady, JobNoHostServing, JobTooLarge,

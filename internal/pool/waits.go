@@ -22,17 +22,10 @@ type dwell struct {
 	reason JobReason
 }
 
-// jobReasons is §10.5's job-reason table in its order; a tie for the
-// longest goes to the row nearer running.
-var jobReasons = []JobReason{
-	JobStarting, JobAwaitingAssignment, JobUnassignable, JobScopeNotServed, JobProfileLimit, JobHeldForOlder,
-	JobWaitingForSlot, JobImagePulling, JobProving, JobHostNotReady, JobNoHostServing, JobTooLarge,
-}
-
 // longest answers the reason d waited under longest, empty for none.
 func (d *dwell) longest() JobReason {
 	var out JobReason
-	for _, r := range jobReasons {
+	for _, r := range JobReasons {
 		if t, ok := d.spent[r]; ok && (out == "" || t > d.spent[out]) {
 			out = r
 		}

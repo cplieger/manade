@@ -23,7 +23,7 @@ func scopeStatus(t *testing.T, snap *Snapshot, scope string) ScopeStatus {
 }
 
 // A lasting 409 leaves the scope not served with the holder GitHub named
-// on its row and beside each of its waiting jobs (§9.3).
+// on its row and beside each of its waiting jobs.
 func TestAHeldScopeNamesItsHolder(t *testing.T) {
 	t.Parallel()
 	r := quietRig(t, oneHost())
@@ -86,7 +86,7 @@ func TestAScopeRowReadsWhyItIsNotServed(t *testing.T) {
 // A session create answered not found makes the scope ensure its scale set
 // again under its name, record the new ID and want its session under it; a
 // runner registered on the lost scale set takes no job, so an idle one is
-// replaced (§9.3).
+// replaced.
 func TestALostScaleSetIsEnsuredAgainUnderItsNewID(t *testing.T) {
 	t.Parallel()
 	r := quietRig(t, oneHost())
@@ -200,7 +200,7 @@ func TestALostScaleSetFoundUnderItsIDReopensItsSession(t *testing.T) {
 // At the visibility check the pool drops, with its journal row, the record
 // of each orphaned scale set GitHub no longer has, reading one of a scope
 // the settings dropped under the scope its key names. A served one, one
-// GitHub still has and one whose read fails are kept (§9.3).
+// GitHub still has and one whose read fails are kept.
 func TestTheVisibilityCheckDropsRecordsGitHubNoLongerHas(t *testing.T) {
 	t.Parallel()
 	r := newRig(t, oneHost())

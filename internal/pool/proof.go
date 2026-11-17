@@ -64,7 +64,7 @@ func (h *host) serving(now time.Time) bool {
 	return h.reachable && h.settled && h.cfg.Accepting && h.admit == nil && h.current && h.proof(now) == proofHeld
 }
 
-// proofState is where a host's proof of its status stands (§10.5).
+// proofState is where a host's proof of its status stands.
 type proofState int
 
 const (

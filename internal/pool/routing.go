@@ -60,7 +60,7 @@ type RouteStatus struct {
 // routing sets, rewrites or deletes the routing variable of each scope due:
 // every repository and organization scope once per generation, a failed
 // one routeRetry after its last try, and all of them when all is set, the
-// visibility check's pass (§9.4). A scope's stop ends only on counts read
+// visibility check's pass. A scope's stop ends only on counts read
 // after its variable settled.
 func (g *generation) routing(ctx context.Context, all bool, now time.Time) {
 	recs, err := g.reg.routes(ctx)

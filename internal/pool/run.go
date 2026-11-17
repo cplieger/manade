@@ -92,7 +92,7 @@ func (g *generation) shutdown(endSessions func()) {
 	}
 }
 
-// Health is the pool's part of the control plane's health (§12.3).
+// Health is the pool's part of the control plane's health.
 // Booted holds once the first generation's boot pass has run; Passing
 // while the current generation's pass loop ended a pass within passLease;
 // Reconciling while each connected host's reconcile loop waits on a call

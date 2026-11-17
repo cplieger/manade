@@ -12,7 +12,7 @@ import (
 const varPath = "/repos/acme/app/actions/variables"
 
 // The routing variable is written under its own grant naming the one
-// repository, while the scope's own grant stays read-only (§9.2).
+// repository, while the scope's own grant stays read-only.
 func TestVariableWriteMintsItsOwnGrant(t *testing.T) {
 	f := newFake(t)
 	cfg, gh := load(t, true, appLayout)

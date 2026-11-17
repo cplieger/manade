@@ -64,7 +64,7 @@ func reasonOf(t *testing.T, r *rig) Waiting {
 	return waitingRun(t, &snap, 1)
 }
 
-// Each row of §10.5's host-reason table, read through the job whose one
+// Each host reason, read through the job whose one
 // host it is, which also reads that job's reason.
 func TestEachHostReasonAndTheJobReasonItGives(t *testing.T) {
 	t.Parallel()

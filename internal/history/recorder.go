@@ -1,4 +1,4 @@
-// Package history is the history (§5.3): the Recorder writes each job's
+// Package history is the history: the Recorder writes each job's
 // run row and each host's events and probes as the pool reports them, and
 // the Housekeeper keeps their retention.
 package history
@@ -26,7 +26,7 @@ const queueSize = 4096
 const drainTimeout = 5 * time.Second
 
 // queueLease is how long the queue may stay unemptied before the recorder
-// reads unhealthy (§12.3).
+// reads unhealthy.
 const queueLease = 2 * time.Minute
 
 // jobMsg is one job message waiting for its write.

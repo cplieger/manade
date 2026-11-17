@@ -6,7 +6,7 @@ import (
 	"github.com/cplieger/manade/internal/hostapi"
 )
 
-// HostHistory takes what the history records of each host (§21 b5-8): its
+// HostHistory takes what the history records of each host: its
 // state as the pool serves it, each status a pass read and each proof. Its
 // methods return at once and are safe for concurrent use.
 type HostHistory interface {
@@ -21,7 +21,7 @@ type HostHistory interface {
 }
 
 // HostState is a host's state as the pool serves it: ready, or the first
-// host reason of §10.5 that stands for the whole host.
+// HostReason that stands for the whole host.
 type HostState string
 
 // HostReady is a host that serves.

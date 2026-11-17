@@ -6,7 +6,7 @@ import (
 	"github.com/cplieger/go/textsafe"
 )
 
-// The log tail a run keeps (§5.3.1).
+// The log tail a run keeps.
 const (
 	tailLines = 200
 	tailBytes = 64 << 10
@@ -17,9 +17,12 @@ const (
 // tailLines lines and tailBytes bytes.
 func logTail(raw []byte) string {
 	s := clean(stripEscapes(string(raw)))
-	if n := strings.Count(s, "\n"); n > tailLines {
-		lines := strings.SplitAfter(s, "\n")
-		s = strings.Join(lines[len(lines)-tailLines-1:], "")
+	lines := strings.SplitAfter(s, "\n")
+	if lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	if len(lines) > tailLines {
+		s = strings.Join(lines[len(lines)-tailLines:], "")
 	}
 	return textsafe.CapBytesTail(s, tailBytes)
 }

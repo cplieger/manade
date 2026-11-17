@@ -16,7 +16,8 @@ import (
 )
 
 // DefaultOpsAddr is OPS_LISTEN_ADDR's default, the port after the product's
-// 7463 and the hosts' 7464 that is free on the lists §5.2 checks.
+// 7463 and the hosts' 7464 that the fleet's port table, IANA and
+// Prometheus's default port allocations all leave free.
 const DefaultOpsAddr = ":7465"
 
 // ControlPlane is the control plane's environment.

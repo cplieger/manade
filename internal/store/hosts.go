@@ -7,7 +7,7 @@ import (
 	"github.com/cplieger/bolttable"
 )
 
-// The host events' kinds (§21 b5-8).
+// The host events' kinds.
 const (
 	// HostEventState is a change of the host's state as the pool serves
 	// it; a gap when State is empty.

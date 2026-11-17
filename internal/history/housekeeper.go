@@ -13,7 +13,7 @@ import (
 	"github.com/cplieger/manade/internal/store"
 )
 
-// Retention the settings do not decide (§5.3).
+// Retention the settings do not decide.
 const (
 	keepEvery      = time.Hour
 	exitsFor       = 24 * time.Hour
@@ -23,7 +23,7 @@ const (
 )
 
 // keepLease is how long the housekeeper may go without a finished run
-// before it reads unhealthy (§12.3): two of its hourly runs.
+// before it reads unhealthy: two of its hourly runs.
 const keepLease = 2 * keepEvery
 
 // Housekeeper applies the history's retention.

@@ -10,7 +10,7 @@ import (
 )
 
 // A connected host that is not up answers its status and refuses every
-// other call (§6.4, §7.1): the pool records that status, reads the host as
+// other call: the pool records that status, reads the host as
 // waiting for its section, and counts no link failure, warns of nothing and
 // probes nothing until the host is up.
 func TestAHostThatIsNotUpWaitsForItsSection(t *testing.T) {

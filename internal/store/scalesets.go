@@ -9,7 +9,7 @@ import (
 	"github.com/cplieger/bolttable"
 )
 
-// ScaleSet is the record of one scale set the pool ensured (§9.3): its
+// ScaleSet is the record of one scale set the pool ensured: its
 // scope and profile, which name it, GitHub's ID for it and when the pool
 // last ensured it.
 type ScaleSet struct {

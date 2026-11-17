@@ -38,7 +38,7 @@ func TestLoadControlPlaneDefaults(t *testing.T) {
 }
 
 // OPS_LISTEN_ADDR is edge-trimmed and an empty value is the default, so
-// the ops listener cannot be turned off (§5.2).
+// the ops listener cannot be turned off.
 func TestLoadControlPlaneOpsAddr(t *testing.T) {
 	for value, want := range map[string]string{"127.0.0.1:9000": "127.0.0.1:9000", " :9000\u200b\n": ":9000", "  ": ":7465"} {
 		t.Run(strings.TrimSpace(value), func(t *testing.T) {
