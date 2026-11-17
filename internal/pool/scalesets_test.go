@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/cplieger/manade/internal/config"
 	"github.com/cplieger/manade/internal/github"
@@ -194,6 +195,36 @@ func TestALostScaleSetFoundUnderItsIDReopensItsSession(t *testing.T) {
 	waitFor(t, "the session reopened after the loss", func() bool { return len(gh.opened()) == 2 })
 	if got := gh.opened(); !slices.Equal(got, []int{1, 1}) {
 		t.Errorf("sessions opened under %v, want the same scale set reopened", got)
+	}
+}
+
+// A scale set an ensure finds under a new ID, GitHub having created it
+// again, has its open session closed and one opened under the new ID, so
+// no session keeps polling the scale set GitHub deleted.
+func TestASessionFollowsItsScaleSetToANewID(t *testing.T) {
+	t.Parallel()
+	r := quietRig(t, oneHost())
+	old := r.small().ss
+	if r.sessions.usable(old) == nil {
+		t.Fatalf("no session open on %+v before the ensure", old)
+	}
+	next := cloneConfig(r.cfg)
+	next.Profiles = append(next.Profiles, config.Profile{Name: "large", Hosts: []string{"default"}, MilliCPUs: 4000, Memory: 8 * gib, MaxLifetime: 2 * time.Hour, IdleTimeout: idleFor})
+	r.gh.set(func(g *fakeGitHub) { g.ids[setKey{app, "small"}] = 50 })
+	r.apply(next)
+	moved := r.small().ss
+	if moved.ID != 50 {
+		t.Fatalf("scale set %+v after the ensure, want the new ID 50", moved)
+	}
+	r.sessions.mu.Lock()
+	for _, fs := range r.sessions.live {
+		if fs.w.ss == old && !fs.closing {
+			t.Errorf("the session on the old ID %d is still open", old.ID)
+		}
+	}
+	r.sessions.mu.Unlock()
+	if r.sessions.usable(moved) == nil {
+		t.Errorf("no session open on %+v, want one under the new ID", moved)
 	}
 }
 
