@@ -8,6 +8,7 @@ import (
 
 	"github.com/cplieger/go/textsafe"
 	"github.com/cplieger/manade/internal/github"
+	"github.com/cplieger/manade/internal/hostapi"
 	"github.com/cplieger/manade/internal/pool"
 	"github.com/cplieger/manade/internal/store"
 )
@@ -138,7 +139,7 @@ func exit(h *store.HistoryTx, r *store.Run, x *store.Exit) error {
 	if r.Exit != "" {
 		return nil
 	}
-	r.Exit, r.ExitCode, r.ExitedAt = x.Reason, x.Code, x.At
+	r.Exit, r.ExitCode, r.ExitedAt, r.Usage = x.Reason, x.Code, x.At, x.Usage
 	if r.Host == "" {
 		r.Host = x.Host
 	}
@@ -167,7 +168,7 @@ func save(h *store.HistoryTx, r *store.Run) error {
 // exited writes x to the run of its runner, or keeps it until a job
 // message names the runner.
 func exited(h *store.HistoryTx, x *pool.RunnerExit) error {
-	kept := store.Exit{At: x.At, Code: x.Code, Host: x.Host, Runner: x.Runner, Reason: string(x.Reason), Diag: x.Diag}
+	kept := store.Exit{At: x.At, Code: x.Code, Usage: usage(x.Usage), Host: x.Host, Runner: x.Runner, Reason: string(x.Reason), Diag: x.Diag}
 	if x.Log != nil {
 		kept.Log = logTail(x.Log)
 	}
@@ -185,6 +186,14 @@ func exited(h *store.HistoryTx, x *pool.RunnerExit) error {
 		return err
 	}
 	return save(h, &r)
+}
+
+// usage is a host's usage report as a run keeps it, nil for none.
+func usage(u *hostapi.Usage) *store.Usage {
+	if u == nil {
+		return nil
+	}
+	return &store.Usage{CPUMS: u.CPU.Milliseconds(), RanMS: u.Ran.Milliseconds(), PeakMemory: u.PeakMemory}
 }
 
 // listed closes as lost every open run of host whose runner runners does

@@ -477,7 +477,7 @@ func (s *supervisor) serve(rctx context.Context, cancel context.CancelCauseFunc,
 	sv := s.newServed(s.running.cfg, h)
 	s.served.Store(sv)
 	s.warnNoMemoryLimit(sv, cg)
-	if err := s.build(rctx, h, sv, cg); err != nil {
+	if err := s.build(rctx, h, sv, cg, ms); err != nil {
 		return err
 	}
 	s.hold(rctx, cancel)
@@ -497,8 +497,9 @@ func (s *supervisor) warnNoMemoryLimit(sv *served, cg *platform.Cgroup) {
 
 // build makes the image manager, the runner record and the prober, and
 // loads the probe image and the daemon's runner containers. ctx is the
-// host's run, which each runner's work runs under.
-func (s *supervisor) build(ctx context.Context, h *config.Host, sv *served, cg *platform.Cgroup) error {
+// host's run, which each runner's work runs under; ms are the host's
+// mounts.
+func (s *supervisor) build(ctx context.Context, h *config.Host, sv *served, cg *platform.Cgroup, ms []platform.Mount) error {
 	s.images = images.New(&images.Config{
 		Daemon: s.dk, Host: h, RegistryAuth: s.self.RegistryAuth, Lookup: lookupRegistry, ByName: s.net.gitHubName, Log: s.log,
 		Keep:    images.Keep{Runner: func(n string) bool { return s.runners.holds(n) }, ProbeLeftover: func(r string) bool { return s.prober.Leftover(r) }},
@@ -512,8 +513,14 @@ func (s *supervisor) build(ctx context.Context, h *config.Host, sv *served, cg *
 			return fmt.Errorf("the host's cpuset %q: %w", cg.CPUSet, err)
 		}
 	}
+	runnerCgroups, err := platform.OpenRunnerCgroups(platform.System, ms, jobspec.CgroupDir)
+	if err != nil {
+		return err
+	}
 	jobs := &jobDaemon{Client: s.dk, network: jobNetworkSpec(s.net.Subnet, s.net.Job6), log: s.log}
-	s.runners = newRunners(ctx, &runnersConfig{Daemon: jobs, Images: s.images, Served: sv, Log: s.log, CPUs: cpus, DataFree: dataFree})
+	s.runners = newRunners(ctx, &runnersConfig{
+		Daemon: jobs, Images: s.images, Served: sv, Log: s.log, CPUs: cpus, DataFree: dataFree, Cgroups: runnerCgroups,
+	})
 	if err := s.runners.load(ctx); err != nil {
 		return err
 	}

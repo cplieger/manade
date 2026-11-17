@@ -130,8 +130,8 @@ func TestJobNetworkRecreated(t *testing.T) {
 	})
 	t.Run("byARunner", func(t *testing.T) {
 		h.inner("network", "rm", "manade")
-		if code, logs := h.run(t, "tiny", 5*time.Minute); code != 0 {
-			t.Fatalf("exit %d with the job network removed; logs:\n%s", code, logs)
+		if r, logs := h.run(t, "tiny", 5*time.Minute); *r.ExitCode != 0 {
+			t.Fatalf("exit %d with the job network removed; logs:\n%s", *r.ExitCode, logs)
 		}
 		h.inner("network", "inspect", "manade")
 	})

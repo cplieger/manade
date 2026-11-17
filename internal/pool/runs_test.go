@@ -74,6 +74,9 @@ func TestARunnersExitReachesTheRunHistory(t *testing.T) {
 			if string(x.Log) != wantLog || string(x.Diag) != wantDiag {
 				t.Errorf("evidence = %q and %q, want %q and %q", x.Log, x.Diag, wantLog, wantDiag)
 			}
+			if x.Usage == nil || *x.Usage != exitUsage {
+				t.Errorf("usage = %+v, want the host's report %+v", x.Usage, exitUsage)
+			}
 		})
 	}
 	t.Run("idle", func(t *testing.T) {
@@ -128,7 +131,8 @@ func TestAnExitNoRecordHeldReachesTheRunHistory(t *testing.T) {
 	r.restart()
 	r.pass()
 	got := r.runs.exitOf(name)
-	if len(got) != 1 || got[0].Reason != ExitFailed || got[0].Code == nil || *got[0].Code != 137 || string(got[0].Diag) != "diag of "+name {
-		t.Errorf("exits of %s = %+v, want one failed with code 137 and its _diag tar", name, got)
+	if len(got) != 1 || got[0].Reason != ExitFailed || got[0].Code == nil || *got[0].Code != 137 || string(got[0].Diag) != "diag of "+name ||
+		got[0].Usage == nil || *got[0].Usage != exitUsage {
+		t.Errorf("exits of %s = %+v, want one failed with code 137, its _diag tar and its usage", name, got)
 	}
 }

@@ -212,8 +212,9 @@ func (h *host) inner(args ...string) string {
 }
 
 // run starts a runner of profile, waits for it to exit within, and answers
-// its exit code and log tail; the runner is deleted when t ends.
-func (h *host) run(t *testing.T, profile string, within time.Duration) (code int, logs string) {
+// it as the host lists it exited, and its log tail; the runner is deleted
+// when t ends.
+func (h *host) run(t *testing.T, profile string, within time.Duration) (exited hostapi.Runner, logs string) {
 	t.Helper()
 	name := "manadetest-" + profile + "-" + randHex(t)
 	req := &hostapi.RunnerRequest{Profile: profile, RunnerName: name, Scope: "acme/app", JITConfig: "unused", RunnerID: 1}
@@ -242,12 +243,12 @@ func (h *host) run(t *testing.T, profile string, within time.Duration) (code int
 				if err != nil {
 					t.Fatalf("logs of %s: %v", name, err)
 				}
-				return *r.ExitCode, string(out)
+				return r, string(out)
 			}
 		}
 	}
 	t.Fatalf("runner %s did not exit within %s", name, within)
-	return 0, ""
+	return hostapi.Runner{}, ""
 }
 
 // settings is host default's section: its hosts entry host, serving

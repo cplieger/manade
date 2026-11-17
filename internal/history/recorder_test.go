@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/cplieger/manade/internal/github"
+	"github.com/cplieger/manade/internal/hostapi"
 	"github.com/cplieger/manade/internal/pool"
 	"github.com/cplieger/manade/internal/store"
 )
@@ -288,6 +289,57 @@ func equalRun(a, b *store.Run) bool {
 
 func equalRollup(a, b *store.Rollup) bool {
 	return a.Zone == b.Zone && a.Date == b.Date && a.Scope == b.Scope && a.Profile == b.Profile && a.Host == b.Host && a.Repo == b.Repo &&
-		a.Jobs == b.Jobs && a.RunnerMS == b.RunnerMS && maps.Equal(a.Results, b.Results) && maps.Equal(a.Exits, b.Exits) &&
+		a.Jobs == b.Jobs && a.RunnerMS == b.RunnerMS && a.CPUMS == b.CPUMS && a.PeakMemory == b.PeakMemory && maps.Equal(a.Results, b.Results) && maps.Equal(a.Exits, b.Exits) &&
 		slices.Equal(a.Wait, b.Wait) && slices.Equal(a.Duration, b.Duration)
+}
+
+// usageExit is runner name's completed exit at at, reporting cpu of CPU
+// time over a 5-minute life and a peak of peak.
+func usageExit(name string, cpu time.Duration, peak int64, at time.Time) *pool.RunnerExit {
+	x := exitOf(name, pool.ExitCompleted, 0, at)
+	x.Usage = &hostapi.Usage{CPU: cpu, Ran: 5*time.Minute + 1500*time.Microsecond, PeakMemory: peak}
+	return x
+}
+
+// A runner's usage lands on its run in whole milliseconds, kept with an
+// exit that came first, and its day's rollup adds the CPU time and keeps
+// the highest peak, once each.
+func TestUsageReachesTheRunAndItsRollup(t *testing.T) {
+	at := queued
+	rec, st := recorder(t, &at)
+	write(t, rec, "nas", message(github.Started, 1, "r1", ""))
+	write(t, rec, "nas", message(github.Completed, 1, "r1", "succeeded"))
+	rec.Exited(t.Context(), usageExit("r1", 90*time.Second+400*time.Microsecond, 300<<20, queued.Add(6*time.Minute)))
+	rec.Exited(t.Context(), usageExit("r2", 30*time.Second, 200<<20, queued.Add(7*time.Minute)))
+	write(t, rec, "nas", message(github.Started, 2, "r2", ""))
+	write(t, rec, "nas", message(github.Completed, 2, "r2", "succeeded"))
+	rec.Exited(t.Context(), usageExit("r1", time.Hour, 1<<30, queued.Add(8*time.Minute)))
+	for _, tc := range []struct {
+		name string
+		want store.Usage
+		id   uint64
+	}{
+		{name: "an exit after its messages", id: 1, want: store.Usage{CPUMS: 90000, RanMS: 300001, PeakMemory: 300 << 20}},
+		{name: "an exit kept until its message", id: 2, want: store.Usage{CPUMS: 30000, RanMS: 300001, PeakMemory: 200 << 20}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, _ := run(t, st, tc.id)
+			if r.Usage == nil || *r.Usage != tc.want {
+				t.Errorf("usage = %+v, want %+v", r.Usage, tc.want)
+			}
+		})
+	}
+	t.Run("rollup", func(t *testing.T) {
+		u, _ := rollup(t, st, midnight(queued, "UTC"), "nas")
+		if u.CPUMS != 120000 || u.PeakMemory != 300<<20 {
+			t.Errorf("rollup CPU %d ms, peak %d; want 120000 ms and the highest 300 MiB", u.CPUMS, u.PeakMemory)
+		}
+	})
+	t.Run("an exit with no usage", func(t *testing.T) {
+		write(t, rec, "nas", message(github.Started, 3, "r3", ""))
+		rec.Exited(t.Context(), exitOf("r3", pool.ExitFailed, 1, queued.Add(9*time.Minute)))
+		if r, _ := run(t, st, 3); r.Usage != nil {
+			t.Errorf("usage = %+v, want none", r.Usage)
+		}
+	})
 }

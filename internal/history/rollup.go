@@ -87,6 +87,10 @@ func add(u *store.Rollup, r *store.Run, p uint8) {
 	}
 	if p&pieceExit != 0 {
 		u.Exits = inc(u.Exits, r.Exit)
+		if r.Usage != nil {
+			u.CPUMS += r.Usage.CPUMS
+			u.PeakMemory = max(u.PeakMemory, r.Usage.PeakMemory)
+		}
 	}
 }
 

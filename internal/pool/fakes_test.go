@@ -209,12 +209,16 @@ func (*fakeHost) Events(ctx context.Context, _ func(*hostapi.Event)) error {
 	return ctx.Err()
 }
 
-// exit ends runner name's container with code.
+// exitUsage is what every runner the fake host ends reports it used.
+var exitUsage = hostapi.Usage{CPU: 90 * time.Second, Ran: 5 * time.Minute, PeakMemory: 300 << 20}
+
+// exit ends runner name's container with code, reporting exitUsage.
 func (f *fakeHost) exit(name string, code int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if r := f.runs[name]; r != nil && r.State == hostapi.StateRunning {
-		r.State, r.ExitCode = hostapi.StateExited, &code
+		u := exitUsage
+		r.State, r.ExitCode, r.Usage = hostapi.StateExited, &code, &u
 	}
 }
 

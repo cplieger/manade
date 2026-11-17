@@ -460,10 +460,25 @@ type Runner struct {
 	RemovedBy string `json:"removed_by,omitempty"`
 	// Orphans are containers of this runner's name that outlived its
 	// failed entry; its DELETE removes them.
-	Orphans   []string `json:"orphans,omitempty"`
-	Limits    Limits   `json:"limits"`
-	RunnerID  int64    `json:"runner_id"`
-	OOMKilled bool     `json:"oom_killed"`
+	Orphans []string `json:"orphans,omitempty"`
+	// Usage is an exited runner's, read from its own cgroup; nil when the
+	// host found none.
+	Usage     *Usage `json:"usage,omitempty"`
+	Limits    Limits `json:"limits"`
+	RunnerID  int64  `json:"runner_id"`
+	OOMKilled bool   `json:"oom_killed"`
+}
+
+// Usage is what a runner used over its container's life.
+type Usage struct {
+	// CPU is its processes' CPU time; Ran is its container's start to its
+	// exit, the span CPU covers.
+	CPU time.Duration `json:"cpu_ns"`
+	Ran time.Duration `json:"ran_ns"`
+	// PeakMemory is the highest working set sampled while it ran, or its
+	// cgroup's watermark after an OOM kill or with no sample; 0 when
+	// neither was read.
+	PeakMemory int64 `json:"peak_memory,omitempty"`
 }
 
 // RunnerAnswer is a POST /v1/runners answer.

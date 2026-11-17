@@ -535,7 +535,7 @@ func (g *generation) act(ctx context.Context, i int, a *action) bool {
 // the runner.
 func (g *generation) closeExited(ctx context.Context, a *action) {
 	h := a.r.host
-	ev, ok := g.endContainer(ctx, h, a.r.name, a.reason, a.lr.ExitCode)
+	ev, ok := g.endContainer(ctx, h, &a.lr, a.reason)
 	if !ok {
 		return
 	}
@@ -680,16 +680,17 @@ func (g *generation) exited(ctx context.Context, host, name string, reason ExitR
 	}
 	x := &RunnerExit{At: g.now(), Host: host, Runner: name, Reason: reason}
 	if ev != nil {
-		x.Code, x.Log, x.Diag = ev.code, ev.log, ev.diag
+		x.Code, x.Usage, x.Log, x.Diag = ev.code, ev.usage, ev.log, ev.diag
 	}
 	g.d.Runs.Exited(ctx, x)
 }
 
-// endContainer removes an ended runner's container on host h, reading an
+// endContainer removes ended runner lr's container on host h, reading an
 // unclean exit's log tail first and its _diag tar with the removal, and
 // reports whether the container is gone.
-func (g *generation) endContainer(ctx context.Context, h int, name string, reason ExitReason, code *int) (evidence, bool) {
-	ev := evidence{code: code}
+func (g *generation) endContainer(ctx context.Context, h int, lr *hostapi.Runner, reason ExitReason) (evidence, bool) {
+	name := lr.Name
+	ev := evidence{code: lr.ExitCode, usage: lr.Usage}
 	keep := unclean(reason)
 	if keep {
 		var err error

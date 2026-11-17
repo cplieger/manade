@@ -100,7 +100,7 @@ func finishUp(t *testing.T, s *supervisor) (run context.Context) {
 	s.served.Store(sv)
 	s.prober = probe.NewRunner(&probe.Config{Log: s.log, Host: s.probeHost})
 	s.images = images.New(&images.Config{Host: s.running.host, Log: s.log, Profiles: sv.Profiles})
-	s.runners = newRunners(t.Context(), &runnersConfig{Served: sv, Images: s.images, Log: s.log})
+	s.runners = newRunners(t.Context(), &runnersConfig{Served: sv, Images: s.images, Log: s.log, Cgroups: newFakeCgroups()})
 	run, s.cancelRun = context.WithCancelCause(t.Context())
 	s.sectionMu.Lock()
 	s.phase.Store(phaseUp)

@@ -56,9 +56,9 @@ func TestImages(t *testing.T) {
 	})
 	for _, name := range images {
 		t.Run(name, func(t *testing.T) {
-			code, logs := h.run(t, name, 20*time.Minute)
-			if code != 0 || !strings.Contains(logs, "manade-runner "+name+" smoke: ok") {
-				t.Fatalf("exit %d, logs:\n%s", code, logs)
+			r, logs := h.run(t, name, 20*time.Minute)
+			if *r.ExitCode != 0 || !strings.Contains(logs, "manade-runner "+name+" smoke: ok") {
+				t.Fatalf("exit %d, logs:\n%s", *r.ExitCode, logs)
 			}
 		})
 	}

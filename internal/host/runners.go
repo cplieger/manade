@@ -119,6 +119,7 @@ type runnerSet struct {
 	// egress holds starts for a change of egress posture, nil when none is
 	// held for a change pending or failed.
 	egress *egressHold
+	meter  *meter
 	log    *slog.Logger
 	work   sync.WaitGroup
 	gen    uint64
@@ -182,6 +183,8 @@ type runnersConfig struct {
 	Log    *slog.Logger
 	// DataFree answers the data volume's free bytes.
 	DataFree func() (uint64, error)
+	// Cgroups are the runners' own cgroups, their usage's source.
+	Cgroups usageCgroups
 	// CPUs is the host's effective cpuset on a pinning host; nil on a host
 	// with CFS quota.
 	CPUs []int
@@ -195,7 +198,7 @@ func newRunners(ctx context.Context, cfg *runnersConfig) *runnerSet {
 		daemon: cfg.Daemon, images: cfg.Images, served: cfg.Served, log: cfg.Log, dataFree: cfg.DataFree,
 		records: map[string]*record{}, ctrs: map[string]*hostapi.Container{},
 		last: map[string]hostapi.Runner{}, subs: map[chan hostapi.Runner]struct{}{},
-		wrote: map[string]uint64{}, reading: map[uint64]int{}, base: ctx,
+		wrote: map[string]uint64{}, reading: map[uint64]int{}, base: ctx, meter: newMeter(cfg.Cgroups, cfg.Log),
 	}
 	if cfg.CPUs != nil {
 		r.pins = newPins(cfg.CPUs)
@@ -322,7 +325,6 @@ func (r *runnerSet) load(ctx context.Context) error {
 		return fmt.Errorf("listing the host's runner containers: %w", err)
 	}
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	if r.pins != nil {
 		for name, c := range r.ctrs {
 			if cpus, ok := parseCPUSet(c.Limits.CPUSet); ok && holdsCPUs(c.State) {
@@ -333,6 +335,8 @@ func (r *runnerSet) load(ctx context.Context) error {
 	for name := range r.ctrs {
 		r.last[name], _ = r.listed(name)
 	}
+	r.mu.Unlock()
+	r.meter.sweep(r.holdsCgroup)
 	return nil
 }
 
@@ -342,6 +346,7 @@ func (r *runnerSet) run(ctx context.Context) {
 	var wg sync.WaitGroup
 	wg.Go(func() { r.follow(ctx) })
 	wg.Go(func() { r.poll(ctx) })
+	wg.Go(func() { r.sample(ctx) })
 	wg.Wait()
 	r.work.Wait()
 }
@@ -373,11 +378,39 @@ func (r *runnerSet) poll(ctx context.Context) {
 	}
 }
 
+// sample reads each running runner's working set every sampleEvery until
+// ctx ends.
+func (r *runnerSet) sample(ctx context.Context) {
+	t := time.NewTicker(sampleEvery)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			r.mu.Lock()
+			var names []string
+			for name, c := range r.ctrs {
+				if c.State == docker.StateRunning {
+					names = append(names, name)
+				}
+			}
+			r.mu.Unlock()
+			r.meter.sample(names)
+		}
+	}
+}
+
 // exited reads the container whose die event arrived, then publishes the
 // change and releases what its runner held.
 func (r *runnerSet) exited(ctx context.Context, id string) {
 	begun := r.beginRead()
 	ctr, found, err := r.daemon.InspectContainer(ctx, id)
+	var c *hostapi.Container
+	ok := false
+	if err == nil && found {
+		c, ok = r.view(&ctr)
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	defer r.endRead(begun)
@@ -385,8 +418,7 @@ func (r *runnerSet) exited(ctx context.Context, id string) {
 		r.log.Warn("Reading an exited runner's container failed; the next list reads it", "container", id, "error", err)
 		return
 	}
-	c, ok := fromDocker(&ctr)
-	if !found || !ok || !r.putNewer(c, begun) {
+	if !ok || !r.putNewer(c, begun) {
 		return
 	}
 	r.liftOnExit()
@@ -472,6 +504,15 @@ func (r *runnerSet) sync(ctx context.Context) {
 	}
 	r.publishAll()
 	r.checkFreed(false)
+	r.meter.sweep(r.holdsCgroup)
+}
+
+// holdsCgroup reports a runner the host records or has a container of,
+// whose cgroup a sweep keeps.
+func (r *runnerSet) holdsCgroup(name string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.records[name] != nil || r.ctrs[name] != nil
 }
 
 func (r *runnerSet) publishAll() {
@@ -536,7 +577,10 @@ func (r *runnerSet) read(ctx context.Context, old map[string]*hostapi.Container)
 		if err != nil {
 			return nil, err
 		}
-		if c, ok := fromDocker(&ctr); found && ok {
+		if !found {
+			continue
+		}
+		if c, ok := r.view(&ctr); ok {
 			now[name] = c
 		}
 	}
@@ -558,6 +602,16 @@ func (r *runnerSet) swap(now map[string]*hostapi.Container, begun uint64) {
 		}
 	}
 	r.ctrs = now
+}
+
+// view is ctr as the host's view holds it: an ended container that ran
+// carries its usage. It reads the runner's cgroup, so r.mu is not held.
+func (r *runnerSet) view(ctr *docker.Container) (*hostapi.Container, bool) {
+	c, ok := fromDocker(ctr)
+	if ok && stage(c.State) == 2 && !c.StartedAt.IsZero() {
+		c.Usage = r.meter.ended(c)
+	}
+	return c, ok
 }
 
 // fromDocker is a labelled runner container as a list reads it; false for
@@ -1107,13 +1161,18 @@ func (r *runnerSet) create(ctx context.Context, rr *record, req *docker.CreateRe
 func (r *runnerSet) inspect(ctx context.Context, id string) (state string, found bool, err error) {
 	begun := r.beginRead()
 	ctr, found, err := r.daemon.InspectContainer(ctx, id)
+	var c *hostapi.Container
+	ok := false
+	if err == nil && found {
+		c, ok = r.view(&ctr)
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	defer r.endRead(begun)
 	if err != nil || !found {
 		return "", false, err
 	}
-	if c, ok := fromDocker(&ctr); ok {
+	if ok {
 		r.putNewer(c, begun)
 	}
 	return ctr.State.Status, true, nil
@@ -1209,6 +1268,7 @@ func (r *runnerSet) remove(ctx context.Context, name string, diag bool) ([]byte,
 	}
 	r.changed(name)
 	r.mu.Unlock()
+	r.meter.forget(name)
 	if vol != "" {
 		if err := r.daemon.RemoveOwnedVolume(ctx, vol); err != nil {
 			r.log.Warn("Removing a deleted runner's docker volume failed; the tidy pass removes it", "runner", name, "error", err)

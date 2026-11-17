@@ -376,6 +376,7 @@ type runnersTest struct {
 	r   *runnerSet
 	d   *fakeRunnerDaemon
 	img *fakeImages
+	cg  *fakeCgroups
 	// free is the data volume's free bytes; failReads is how many reads of
 	// them fail next; reading, when set, runs at each read.
 	free      *atomic.Uint64
@@ -387,9 +388,9 @@ type runnersTest struct {
 // pinning host.
 func newRunnersTest(t *testing.T, cpus []int, setup func(d *fakeRunnerDaemon)) *runnersTest {
 	t.Helper()
-	old, oldGap := pendingRetry, freeReadGap
-	pendingRetry, freeReadGap = 10*time.Millisecond, time.Millisecond
-	t.Cleanup(func() { pendingRetry, freeReadGap = old, oldGap })
+	old, oldGap, oldSample := pendingRetry, freeReadGap, sampleEvery
+	pendingRetry, freeReadGap, sampleEvery = 10*time.Millisecond, time.Millisecond, time.Millisecond
+	t.Cleanup(func() { pendingRetry, freeReadGap, sampleEvery = old, oldGap, oldSample })
 	d := newFakeRunnerDaemon()
 	if setup != nil {
 		setup(d)
@@ -397,9 +398,10 @@ func newRunnersTest(t *testing.T, cpus []int, setup func(d *fakeRunnerDaemon)) *
 	img := &fakeImages{notReady: map[string]hostapi.ProfileStatus{}}
 	free, failReads, reading := &atomic.Uint64{}, &atomic.Int32{}, &atomic.Pointer[func()]{}
 	free.Store(1 << 30)
+	cg := newFakeCgroups()
 	ctx, cancel := context.WithCancel(context.Background())
 	r := newRunners(ctx, &runnersConfig{
-		Daemon: d, Images: img, Served: testServed(cpus != nil), Log: slog.New(slog.DiscardHandler), CPUs: cpus,
+		Daemon: d, Images: img, Served: testServed(cpus != nil), Log: slog.New(slog.DiscardHandler), CPUs: cpus, Cgroups: cg,
 		DataFree: func() (uint64, error) {
 			if fn := reading.Load(); fn != nil {
 				(*fn)()
@@ -419,7 +421,7 @@ func newRunnersTest(t *testing.T, cpus []int, setup func(d *fakeRunnerDaemon)) *
 	done := make(chan struct{})
 	go func() { r.run(ctx); close(done) }()
 	t.Cleanup(func() { cancel(); <-done })
-	return &runnersTest{r: r, d: d, img: img, free: free, failReads: failReads, reading: reading}
+	return &runnersTest{r: r, d: d, img: img, cg: cg, free: free, failReads: failReads, reading: reading}
 }
 
 func waitFor(t *testing.T, what string, ok func() bool) {
@@ -1438,7 +1440,7 @@ func TestWorkRunsUnderTheHostsRunFromTheStart(t *testing.T) {
 	d := newFakeRunnerDaemon()
 	d.gate = make(chan struct{})
 	ctx, cancel := context.WithCancel(t.Context())
-	r := newRunners(ctx, &runnersConfig{Daemon: d, Images: &fakeImages{}, Served: testServed(false), Log: slog.New(slog.DiscardHandler)})
+	r := newRunners(ctx, &runnersConfig{Daemon: d, Images: &fakeImages{}, Served: testServed(false), Log: slog.New(slog.DiscardHandler), Cgroups: newFakeCgroups()})
 	if _, err := r.accept(t.Context(), request("r1", "small")); err != nil {
 		t.Fatal(err)
 	}

@@ -25,7 +25,9 @@ type Run struct {
 	// first counted piece: Day starts in DayZone.
 	Day      time.Time `json:"day,omitzero"`
 	ExitCode *int      `json:"exit_code,omitempty"`
-	Scope    string    `json:"scope"`
+	// Usage is what the runner used, from its host's exit report.
+	Usage *Usage `json:"usage,omitempty"`
+	Scope string `json:"scope"`
 	// Repository is owner/name.
 	Repository  string `json:"repository"`
 	WorkflowRef string `json:"workflow_ref,omitempty"`
@@ -50,6 +52,14 @@ type Run struct {
 	Counted uint8 `json:"counted,omitempty"`
 }
 
+// Usage is what a run's runner used over its container's life (§5.3.1),
+// in whole milliseconds; PeakMemory is 0 when its host read none.
+type Usage struct {
+	CPUMS      int64 `json:"cpu_ms"`
+	RanMS      int64 `json:"ran_ms"`
+	PeakMemory int64 `json:"peak_memory,omitempty"`
+}
+
 // age is when a run leaves the history: its end, or its first message
 // while open.
 func (r *Run) age() time.Time {
@@ -71,6 +81,7 @@ type Blob struct {
 type Exit struct {
 	At     time.Time `json:"at"`
 	Code   *int      `json:"code,omitempty"`
+	Usage  *Usage    `json:"usage,omitempty"`
 	Host   string    `json:"host"`
 	Reason string    `json:"reason"`
 	Log    string    `json:"log,omitempty"`
@@ -98,20 +109,23 @@ func dayBytes(day time.Time) []byte {
 }
 
 // Rollup is one day's runs of one scope, profile, host and repository.
-// Wait and Duration count runs per interval of the duration ladder.
+// Wait and Duration count runs per interval of the duration ladder; CPUMS
+// sums the runs' CPU time and PeakMemory is the highest of their peaks.
 type Rollup struct {
-	Results  map[string]int64 `json:"results,omitempty"`
-	Exits    map[string]int64 `json:"exits,omitempty"`
-	Zone     string           `json:"zone"`
-	Date     string           `json:"date"`
-	Scope    string           `json:"scope"`
-	Profile  string           `json:"profile"`
-	Host     string           `json:"host,omitempty"`
-	Repo     string           `json:"repository"`
-	Wait     []int64          `json:"wait,omitempty"`
-	Duration []int64          `json:"duration,omitempty"`
-	Jobs     int64            `json:"jobs"`
-	RunnerMS int64            `json:"runner_ms,omitempty"`
+	Results    map[string]int64 `json:"results,omitempty"`
+	Exits      map[string]int64 `json:"exits,omitempty"`
+	Zone       string           `json:"zone"`
+	Date       string           `json:"date"`
+	Scope      string           `json:"scope"`
+	Profile    string           `json:"profile"`
+	Host       string           `json:"host,omitempty"`
+	Repo       string           `json:"repository"`
+	Wait       []int64          `json:"wait,omitempty"`
+	Duration   []int64          `json:"duration,omitempty"`
+	Jobs       int64            `json:"jobs"`
+	RunnerMS   int64            `json:"runner_ms,omitempty"`
+	CPUMS      int64            `json:"cpu_ms,omitempty"`
+	PeakMemory int64            `json:"peak_memory,omitempty"`
 }
 
 // Cut is the zone the rollups are cut in, since At.

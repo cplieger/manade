@@ -34,7 +34,9 @@ type Container struct {
 	Profile string
 	Scope   string
 	// State is the container's Docker state.
-	State     string
+	State string
+	// Usage is an ended container's, nil while it runs or when unread.
+	Usage     *Usage
 	Limits    Limits
 	RunnerID  int64
 	ExitCode  int
@@ -104,7 +106,7 @@ func fromContainer(c *Container, run *Runner) {
 		run.State = StateRunning
 	case docker.StateExited, docker.StateDead, docker.StateRemoving:
 		code := c.ExitCode
-		run.State, run.ExitCode, run.ExitedAt, run.OOMKilled = StateExited, &code, c.FinishedAt, c.OOMKilled
+		run.State, run.ExitCode, run.ExitedAt, run.OOMKilled, run.Usage = StateExited, &code, c.FinishedAt, c.OOMKilled, c.Usage
 	default:
 		word, _ := textsafe.SanitizeSingleLineCapped(c.State, stateWordLimit, "…")
 		run.State, run.Reason = StateFailed, reasonUnknownState+" "+strconv.Quote(word)

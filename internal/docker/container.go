@@ -57,17 +57,20 @@ type HostConfig struct {
 	LogConfig   LogConfig         `json:"LogConfig"`
 	NetworkMode string            `json:"NetworkMode,omitempty"`
 	Runtime     string            `json:"Runtime,omitempty"`
-	CpusetCpus  string            `json:"CpusetCpus,omitempty"`
-	Mounts      []Mount           `json:"Mounts,omitempty"`
-	CapAdd      []string          `json:"CapAdd,omitempty"`
-	CapDrop     []string          `json:"CapDrop,omitempty"`
-	SecurityOpt []string          `json:"SecurityOpt,omitempty"`
-	GroupAdd    []string          `json:"GroupAdd,omitempty"`
-	Memory      int64             `json:"Memory,omitempty"`
-	MemorySwap  int64             `json:"MemorySwap,omitempty"`
-	NanoCPUs    int64             `json:"NanoCpus,omitempty"`
-	ShmSize     int64             `json:"ShmSize,omitempty"`
-	Privileged  bool              `json:"Privileged,omitempty"`
+	// CgroupParent is the cgroup the container's own is made under, the
+	// daemon's default when empty.
+	CgroupParent string   `json:"CgroupParent,omitempty"`
+	CpusetCpus   string   `json:"CpusetCpus,omitempty"`
+	Mounts       []Mount  `json:"Mounts,omitempty"`
+	CapAdd       []string `json:"CapAdd,omitempty"`
+	CapDrop      []string `json:"CapDrop,omitempty"`
+	SecurityOpt  []string `json:"SecurityOpt,omitempty"`
+	GroupAdd     []string `json:"GroupAdd,omitempty"`
+	Memory       int64    `json:"Memory,omitempty"`
+	MemorySwap   int64    `json:"MemorySwap,omitempty"`
+	NanoCPUs     int64    `json:"NanoCpus,omitempty"`
+	ShmSize      int64    `json:"ShmSize,omitempty"`
+	Privileged   bool     `json:"Privileged,omitempty"`
 }
 
 // LogConfig is the container's log driver and its options.

@@ -134,7 +134,7 @@ func (g *generation) endListed(ctx context.Context, i int, lr *hostapi.Runner) b
 		return g.remove(ctx, i, lr.Name)
 	}
 	reason := recordlessExit(lr)
-	ev, ok := g.endContainer(ctx, i, lr.Name, reason, lr.ExitCode)
+	ev, ok := g.endContainer(ctx, i, lr, reason)
 	if ok {
 		g.exited(ctx, g.hosts[i].cfg.Name, lr.Name, reason, &ev)
 	}
