@@ -22,7 +22,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cplieger/forgeapi/v2"
+	"github.com/cplieger/forgeapi/v3"
 	"github.com/cplieger/go/httpcache"
 	"github.com/cplieger/go/httpclient"
 	"github.com/cplieger/manade/internal/r5/config"

@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/cplieger/forgeapi/v2"
-	"github.com/cplieger/forgeapi/v2/creds"
+	"github.com/cplieger/forgeapi/v3"
+	"github.com/cplieger/forgeapi/v3/creds"
 	"github.com/cplieger/manade/internal/r5/config"
 	"github.com/cplieger/manade/internal/r5/obs"
 )

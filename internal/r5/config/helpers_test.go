@@ -9,7 +9,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/cplieger/forgeapi/v2/creds"
+	"github.com/cplieger/forgeapi/v3/creds"
 )
 
 const header = `capacity: {cpus: 16, memory: 64GiB}

@@ -18,7 +18,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cplieger/forgeapi/v2/creds"
+	"github.com/cplieger/forgeapi/v3/creds"
 	"github.com/cplieger/go/envx"
 	"github.com/cplieger/go/filesafe"
 	"github.com/cplieger/go/slogx"
