@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -116,8 +117,10 @@ func TestControlPlaneHealthInTheStoresOutage(t *testing.T) {
 		{httpserver.OutageFormat, "the store cannot open: its file was written by another version of manade, or is not manade's file"},
 		{httpserver.OutageNewer, "the store cannot open: its file was written by a newer version of manade"},
 		{httpserver.OutageUnreadable, "the store cannot open: its file cannot be read"},
+		{httpserver.OutageUnwritable, "the store cannot open"},
+		{"", "the store cannot open"},
 	} {
-		t.Run(string(tc.class), func(t *testing.T) {
+		t.Run(cmp.Or(string(tc.class), "unclassed"), func(t *testing.T) {
 			var h cpHealth
 			h.outage(tc.class)
 			if code, reasons := healthz(t, &h); code != http.StatusServiceUnavailable || !slices.Equal(reasons, []string{tc.want}) {

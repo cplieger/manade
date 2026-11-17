@@ -2,6 +2,7 @@ package main
 
 import (
 	"net/http"
+	"slices"
 	"sync/atomic"
 
 	"github.com/cplieger/go/health/v2"
@@ -35,12 +36,15 @@ func (h *cpHealth) ready(p *cpParts) { h.parts.Store(p) }
 // the file cannot open; the starting reason gives way to it.
 func (h *cpHealth) outage(class httpserver.OutageClass) { h.failed.Store(&class) }
 
-// outageReasons is the fixed reason of each class an open of the store
-// fails with.
-var outageReasons = []struct {
+// outageReason is one stored outage class's fixed /healthz reason.
+type outageReason struct {
 	class  httpserver.OutageClass
 	reason string
-}{
+}
+
+// outageReasons is the fixed reason of each class an open of the store
+// fails with; any other class answers the unclassed reason.
+var outageReasons = []outageReason{
 	{httpserver.OutageDamaged, "the store cannot open: its file is damaged"},
 	{httpserver.OutageFormat, "the store cannot open: its file was written by another version of manade, or is not manade's file"},
 	{httpserver.OutageNewer, "the store cannot open: its file was written by a newer version of manade"},
@@ -70,13 +74,19 @@ func (h *cpHealth) checks() []health.Check {
 			return !ph.Booted || read(ph)
 		})
 	}
-	outage := make([]health.Check, 0, len(outageReasons))
+	outage := make([]health.Check, 0, len(outageReasons)+1)
 	for _, o := range outageReasons {
 		outage = append(outage, health.Check{Signal: health.SignalFunc(func() bool {
 			c := h.failed.Load()
 			return c == nil || *c != o.class
 		}), Reason: o.reason})
 	}
+	// Fails closed: a class bolttable adds, or none, would otherwise pass
+	// every check while the control plane serves nothing.
+	outage = append(outage, health.Check{Signal: health.SignalFunc(func() bool {
+		c := h.failed.Load()
+		return c == nil || slices.ContainsFunc(outageReasons, func(o outageReason) bool { return o.class == *c })
+	}), Reason: "the store cannot open"})
 	return append([]health.Check{
 		{Signal: health.SignalFunc(func() bool {
 			if h.failed.Load() != nil {
