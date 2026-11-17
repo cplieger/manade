@@ -323,9 +323,11 @@ type fakeGitHub struct {
 	ids    map[setKey]int
 	// varErr answers every variable call when set.
 	varErr error
-	// ensureHold, when set, runs at the start of each ensure, outside mu.
-	ensureHold func()
-	mu         sync.Mutex
+	// ensureHold, when set, runs at the start of each ensure, outside mu;
+	// with ensureBlock, each ensure answers only once its context ends.
+	ensureHold  func()
+	ensureBlock bool
+	mu          sync.Mutex
 	// jitFail refuses each JIT config; ensureFail, each ensure.
 	jitFail, ensureFail bool
 }
@@ -388,12 +390,16 @@ func (g *fakeGitHub) takeOps() []string {
 	return out
 }
 
-func (g *fakeGitHub) Ensure(_ context.Context, _ *config.Config, sc *config.Scope) ([]github.ScaleSet, error) {
+func (g *fakeGitHub) Ensure(ctx context.Context, _ *config.Config, sc *config.Scope) ([]github.ScaleSet, error) {
 	g.mu.Lock()
-	hold := g.ensureHold
+	hold, block := g.ensureHold, g.ensureBlock
 	g.mu.Unlock()
 	if hold != nil {
 		hold()
+	}
+	if block {
+		<-ctx.Done()
+		return nil, ctx.Err()
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()

@@ -14,7 +14,7 @@ const (
 )
 
 // applyLease is the longest one settings revision may take to apply: its
-// ensures, each bounded by ensureTimeout, and the boot pass.
+// ensures, bounded together by ensureTimeout, and the boot pass.
 const applyLease = 10 * time.Minute
 
 // shutdownTimeout bounds the shutdown inside the shipped compose file's

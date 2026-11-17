@@ -1,6 +1,9 @@
 package pool
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -101,5 +104,65 @@ func TestHealthAppliedFollowsTheApply(t *testing.T) {
 	<-done
 	if h := r.reg.Health(); !h.Applied {
 		t.Errorf("health %+v once the apply ended, want Applied", h)
+	}
+}
+
+// A GitHub that never answers holds an install's ensures for one
+// ensureTimeout together, whatever the scope count: the generation boots
+// with the unanswered scopes not served and the apply stays within its
+// lease.
+func TestEnsuresThatHangShareOneTimeout(t *testing.T) {
+	old := ensureTimeout
+	ensureTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { ensureTimeout = old })
+	r := quietRig(t, oneHost())
+	next := cloneConfig(r.cfg)
+	var added []string
+	for i := range 12 {
+		sc := poolConfig(nil, nil, fmt.Sprintf("acme/repo%d", i)).Scopes[0]
+		sc.DefaultProfile = "small"
+		next.Scopes = append(next.Scopes, sc)
+		added = append(added, sc.Key)
+	}
+	r.gh.set(func(g *fakeGitHub) { g.ensureBlock = true })
+	// One real ensureTimeout reads as one minute on the pool's clock.
+	start := time.Now()
+	scale := int64(time.Minute / ensureTimeout)
+	r.reg.now = func() time.Time { return epoch.Add(time.Duration(scale * int64(time.Since(start)))) }
+	done := make(chan struct{})
+	notApplied := make(chan Health, 1)
+	go func() {
+		for {
+			select {
+			case <-done:
+				return
+			case <-time.After(5 * time.Millisecond):
+				if h := r.reg.Health(); !h.Applied {
+					select {
+					case notApplied <- h:
+					default:
+					}
+				}
+			}
+		}
+	}()
+	r.apply(next)
+	took := time.Since(start)
+	close(done)
+	if took > 3*ensureTimeout {
+		t.Errorf("the install took %v with 12 hanging ensures, want about one ensureTimeout (%v)", took, ensureTimeout)
+	}
+	select {
+	case h := <-notApplied:
+		t.Errorf("health %+v during the install, want Applied throughout", h)
+	default:
+	}
+	if r.reg.current() != r.p || !r.p.health(r.reg.now()).Booted {
+		t.Error("the generation did not boot")
+	}
+	for _, key := range added {
+		if err := r.p.scopes[key].ensureErr; !errors.Is(err, context.DeadlineExceeded) {
+			t.Errorf("scope %s ensure error = %v, want the round's deadline", key, err)
+		}
 	}
 }

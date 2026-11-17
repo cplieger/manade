@@ -14,14 +14,20 @@ import (
 
 	"github.com/cplieger/manade/internal/config"
 	"github.com/cplieger/manade/internal/github"
+	"golang.org/x/sync/errgroup"
 )
 
 const (
-	// ensureTimeout bounds one scope's scale-set ensure; ensureRetry
-	// spaces the ensures of a scope whose last one failed.
-	ensureTimeout = time.Minute
-	ensureRetry   = time.Minute
+	// ensureRetry spaces the rounds of scopes whose last ensure failed.
+	ensureRetry = time.Minute
+	// ensureLimit is how many scopes' ensures run at once.
+	ensureLimit = 4
 )
+
+// ensureTimeout bounds one round of scale-set ensures, every scope's
+// together, so a GitHub that never answers delays an install by it once
+// whatever the scope count; a test seam.
+var ensureTimeout = time.Minute
 
 // generation is the pool for one settings revision: its settings, its
 // ledger and queue, its per-host loops and its start worker. Its records
@@ -167,11 +173,29 @@ func (g *generation) keepSets(old *generation) {
 // reason, and the ensure loop retries it: no failure stops a generation
 // from booting.
 func (g *generation) ensure(ctx context.Context) {
+	var due []*scope
 	for i := range g.cfg.Scopes {
 		if sc := g.scopes[g.cfg.Scopes[i].Key]; g.lacksSets(sc) {
-			g.ensureScope(ctx, sc)
+			due = append(due, sc)
 		}
 	}
+	g.ensureAll(ctx, due)
+}
+
+// ensureAll ensures each of due, ensureLimit at a time, within one
+// ensureTimeout; a scope unanswered by then fails with the deadline.
+func (g *generation) ensureAll(ctx context.Context, due []*scope) {
+	ectx, cancel := context.WithTimeout(ctx, ensureTimeout)
+	defer cancel()
+	var eg errgroup.Group
+	eg.SetLimit(ensureLimit)
+	for _, sc := range due {
+		eg.Go(func() error {
+			g.ensureScope(ctx, ectx, sc)
+			return nil
+		})
+	}
+	_ = eg.Wait()
 }
 
 // lacksSets reports a profile serving sc with no scale set recorded, or
@@ -190,11 +214,10 @@ func (g *generation) lacksSets(sc *scope) bool {
 	return false
 }
 
-// ensureScope ensures sc's scale sets and records them, or the failure.
-func (g *generation) ensureScope(ctx context.Context, sc *scope) {
-	ectx, cancel := context.WithTimeout(ctx, ensureTimeout)
+// ensureScope ensures sc's scale sets within ectx and records them under
+// ctx, or the failure.
+func (g *generation) ensureScope(ctx, ectx context.Context, sc *scope) {
 	sets, err := g.gh.ScaleSets.Ensure(ectx, g.cfg, sc.cfg)
-	cancel()
 	if err == nil {
 		g.reg.record(ctx, sets)
 	}
@@ -263,9 +286,7 @@ func (g *generation) retryEnsure(ctx context.Context) bool {
 		}
 	}
 	g.mu.Unlock()
-	for _, sc := range due {
-		g.ensureScope(ctx, sc)
-	}
+	g.ensureAll(ctx, due)
 	return len(due) > 0
 }
 
