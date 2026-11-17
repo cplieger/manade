@@ -19,17 +19,28 @@ var (
 	ss     = github.ScaleSet{Scope: "acme", Profile: "small", ID: 3}
 )
 
+// openStore answers an open store that the test's end closes.
 func openStore(t *testing.T) *store.Store {
 	t.Helper()
-	st, err := store.Open(filepath.Join(t.TempDir(), store.File), store.Options{Build: "test", Log: slog.New(slog.DiscardHandler)})
-	if err != nil {
-		t.Fatal(err)
-	}
+	st := newStore(t)
 	t.Cleanup(func() {
 		if err := st.Close(); err != nil {
 			t.Error(err)
 		}
 	})
+	return st
+}
+
+// newStore answers an open store the test closes itself.
+func newStore(t *testing.T) *store.Store {
+	t.Helper()
+	st, err := store.New(filepath.Join(t.TempDir(), store.File), store.Options{Build: "test", Log: slog.New(slog.DiscardHandler)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Open(); err != nil {
+		t.Fatal(err)
+	}
 	return st
 }
 

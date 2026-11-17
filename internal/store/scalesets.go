@@ -28,7 +28,7 @@ func scaleSetKey(scope, profile string) []byte {
 // ScaleSets answers every recorded scale set, ordered by scope and profile.
 func (s *Store) ScaleSets(ctx context.Context) ([]ScaleSet, error) {
 	var out []ScaleSet
-	err := s.db.View(ctx, func(r *bolttable.ReadTx) error {
+	err := s.view(ctx, func(r *bolttable.ReadTx) error {
 		return scaleSets.Scan(r, bolttable.Range{}, func(_ []byte, v *ScaleSet) (bool, error) {
 			out = append(out, *v)
 			return true, nil

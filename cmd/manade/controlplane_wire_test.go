@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"log/slog"
 	"path/filepath"
 	"slices"
@@ -15,9 +16,22 @@ import (
 	"github.com/cplieger/manade/internal/store"
 )
 
+// openStoreAt locks and opens the store at path, as the control plane
+// does.
+func openStoreAt(path string) (*store.Store, error) {
+	st, err := store.New(path, store.Options{})
+	if err != nil {
+		return nil, err
+	}
+	if err := st.Open(); err != nil {
+		return nil, errors.Join(err, st.Close())
+	}
+	return st, nil
+}
+
 func openStore(t *testing.T) *store.Store {
 	t.Helper()
-	st, err := store.Open(filepath.Join(t.TempDir(), store.File), store.Options{})
+	st, err := openStoreAt(filepath.Join(t.TempDir(), store.File))
 	if err != nil {
 		t.Fatal(err)
 	}

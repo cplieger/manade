@@ -5,6 +5,7 @@ import (
 	"sync/atomic"
 
 	"github.com/cplieger/go/health/v2"
+	"github.com/cplieger/go/httpserver/v2"
 	"github.com/cplieger/manade/internal/pool"
 )
 
@@ -21,12 +22,30 @@ type cpParts struct {
 // parts are set, every other check passes, so the starting reason stands
 // alone.
 type cpHealth struct {
-	parts    atomic.Pointer[cpParts]
+	parts atomic.Pointer[cpParts]
+	// failed is why the store cannot open, nil while it has not failed.
+	failed   atomic.Pointer[httpserver.OutageClass]
 	draining atomic.Bool
 }
 
 // ready hands the checks their parts.
 func (h *cpHealth) ready(p *cpParts) { h.parts.Store(p) }
+
+// outage holds the control plane in its store's outage, class the reason
+// the file cannot open; the starting reason gives way to it.
+func (h *cpHealth) outage(class httpserver.OutageClass) { h.failed.Store(&class) }
+
+// outageReasons is the fixed reason of each class an open of the store
+// fails with.
+var outageReasons = []struct {
+	class  httpserver.OutageClass
+	reason string
+}{
+	{httpserver.OutageDamaged, "the store cannot open: its file is damaged"},
+	{httpserver.OutageFormat, "the store cannot open: its file was written by another version of manade, or is not manade's file"},
+	{httpserver.OutageNewer, "the store cannot open: its file was written by a newer version of manade"},
+	{httpserver.OutageUnreadable, "the store cannot open: its file cannot be read"},
+}
 
 // BeginDrain makes /healthz answer 503 for good; call it when the
 // shutdown begins.
@@ -51,8 +70,18 @@ func (h *cpHealth) checks() []health.Check {
 			return !ph.Booted || read(ph)
 		})
 	}
-	return []health.Check{
+	outage := make([]health.Check, 0, len(outageReasons))
+	for _, o := range outageReasons {
+		outage = append(outage, health.Check{Signal: health.SignalFunc(func() bool {
+			c := h.failed.Load()
+			return c == nil || *c != o.class
+		}), Reason: o.reason})
+	}
+	return append([]health.Check{
 		{Signal: health.SignalFunc(func() bool {
+			if h.failed.Load() != nil {
+				return true
+			}
 			p := h.parts.Load()
 			return p != nil && p.pool().Booted
 		}), Reason: "the control plane is starting: its store has not opened or its first pool generation has not booted"},
@@ -64,5 +93,5 @@ func (h *cpHealth) checks() []health.Check {
 		{Signal: set(func(p *cpParts) bool { return p.pool().Applied }), Reason: "a settings change has been applying for more than 10 minutes"},
 		{Signal: set(func(p *cpParts) bool { return p.recorder.Healthy() }), Reason: "the history has not written its queued messages for 2 minutes"},
 		{Signal: set(func(p *cpParts) bool { return p.housekeeper.Healthy() }), Reason: "the housekeeper has not finished a run for 2 hours"},
-	}
+	}, outage...)
 }

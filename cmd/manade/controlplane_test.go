@@ -134,7 +134,7 @@ func TestControlPlaneHoldsTheStoreUntilStopped(t *testing.T) {
 	t.Setenv("DATA_DIR", dir)
 	sock := useSocket(t)
 	out, stop := startControlPlane(t)
-	if _, err := store.Open(path, store.Options{}); !errors.Is(err, bolttable.ErrLocked) {
+	if _, err := openStoreAt(path); !errors.Is(err, bolttable.ErrLocked) {
 		t.Errorf("Open while the control plane runs = %v, want ErrLocked", err)
 	}
 	if fi, err := os.Lstat(sock); err != nil || fi.Mode()&os.ModeSocket == 0 || fi.Mode().Perm() != 0o600 {
@@ -146,7 +146,7 @@ func TestControlPlaneHoldsTheStoreUntilStopped(t *testing.T) {
 	if _, err := os.Lstat(sock); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("hosts socket after the stop: %v, want it removed", err)
 	}
-	s, err := store.Open(path, store.Options{})
+	s, err := openStoreAt(path)
 	if err != nil {
 		t.Fatalf("the store stayed held after the stop: %v", err)
 	}
@@ -188,19 +188,22 @@ func TestControlPlaneAnswersItsHosts(t *testing.T) {
 
 func TestControlPlaneRefusesToStart(t *testing.T) {
 	held := t.TempDir()
-	s, err := store.Open(filepath.Join(held, store.File), store.Options{})
+	s, err := openStoreAt(filepath.Join(held, store.File))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
-	for name, dataDir := range map[string]string{"relative DATA_DIR": "data", "store held by another process": held} {
-		t.Run(name, func(t *testing.T) {
-			t.Setenv("DATA_DIR", dataDir)
+	for _, tc := range []struct{ name, dataDir, logs string }{
+		{"relative DATA_DIR", "data", "DATA_DIR"},
+		{"store held by another process", held, "file=" + filepath.Join(held, store.File)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("DATA_DIR", tc.dataDir)
 			t.Setenv("OPS_LISTEN_ADDR", "127.0.0.1:0")
 			useSocket(t)
 			var out bytes.Buffer
-			if code := serveControlPlane(t.Context(), &out); code != 1 {
-				t.Errorf("serveControlPlane = %d, want 1; log:\n%s", code, out.String())
+			if code := serveControlPlane(t.Context(), &out); code != 1 || !strings.Contains(out.String(), tc.logs) {
+				t.Errorf("serveControlPlane = %d, want 1 naming %q; log:\n%s", code, tc.logs, out.String())
 			}
 		})
 	}
@@ -218,7 +221,7 @@ func TestControlPlaneRefusesToStart(t *testing.T) {
 		if code := serveControlPlane(t.Context(), &out); code != 1 || !strings.Contains(out.String(), "could not listen for its hosts") {
 			t.Errorf("serveControlPlane = %d, want 1 naming the socket; log:\n%s", code, out.String())
 		}
-		st, err := store.Open(filepath.Join(dir, store.File), store.Options{})
+		st, err := openStoreAt(filepath.Join(dir, store.File))
 		if err != nil {
 			t.Fatalf("the store stayed held after the refused start: %v", err)
 		}

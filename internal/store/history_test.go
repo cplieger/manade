@@ -124,7 +124,7 @@ func TestTrimJournal(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			s := mustOpen(t, testPath(t), "v1.0.0-dev.1")
 			defer mustClose(t, s)
-			if err := s.db.Update(t.Context(), func(tx *bolttable.Tx) error {
+			if err := s.live.Update(t.Context(), func(tx *bolttable.Tx) error {
 				for i, subject := range []string{"a", "b", "c", "d"} {
 					if err := write(tx, &Entry{At: t0.Add(time.Duration(i) * time.Hour), Subject: subject, Action: ActionScaleSetRecordDropped}); err != nil {
 						return err

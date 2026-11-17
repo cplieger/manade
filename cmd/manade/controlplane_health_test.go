@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/cplieger/go/health/v2"
+	"github.com/cplieger/go/httpserver/v2"
 	"github.com/cplieger/manade/internal/pool"
 )
 
@@ -101,6 +102,32 @@ func TestControlPlaneHealthWhileStarting(t *testing.T) {
 	p.store = health.SignalFunc(func() bool { return false })
 	if _, reasons := healthz(t, &h); !slices.Equal(reasons, []string{reasonStarting, reasonStore}) {
 		t.Errorf("reasons with the store failing at boot = %q, want starting and the store's", reasons)
+	}
+}
+
+// A store that cannot open answers its class's reason alone, in place of
+// starting, and with draining once the shutdown begins.
+func TestControlPlaneHealthInTheStoresOutage(t *testing.T) {
+	for _, tc := range []struct {
+		class httpserver.OutageClass
+		want  string
+	}{
+		{httpserver.OutageDamaged, "the store cannot open: its file is damaged"},
+		{httpserver.OutageFormat, "the store cannot open: its file was written by another version of manade, or is not manade's file"},
+		{httpserver.OutageNewer, "the store cannot open: its file was written by a newer version of manade"},
+		{httpserver.OutageUnreadable, "the store cannot open: its file cannot be read"},
+	} {
+		t.Run(string(tc.class), func(t *testing.T) {
+			var h cpHealth
+			h.outage(tc.class)
+			if code, reasons := healthz(t, &h); code != http.StatusServiceUnavailable || !slices.Equal(reasons, []string{tc.want}) {
+				t.Errorf("/healthz = %d %q, want 503 with only %q", code, reasons, tc.want)
+			}
+			h.BeginDrain()
+			if _, reasons := healthz(t, &h); !slices.Equal(reasons, []string{reasonDraining, tc.want}) {
+				t.Errorf("reasons through the drain = %q, want draining and %q", reasons, tc.want)
+			}
+		})
 	}
 }
 

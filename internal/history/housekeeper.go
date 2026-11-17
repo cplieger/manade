@@ -3,6 +3,7 @@ package history
 import (
 	"cmp"
 	"context"
+	"errors"
 	"log/slog"
 	"sync/atomic"
 	"time"
@@ -67,7 +68,10 @@ func (k *Housekeeper) Healthy() bool {
 func (k *Housekeeper) run(ctx context.Context) {
 	k.log.Info("Housekeeping started")
 	if err := k.keep(ctx, k.now()); err != nil {
-		if ctx.Err() == nil {
+		switch {
+		case errors.Is(err, store.ErrClosed):
+			k.log.Info("Housekeeping was skipped, since the store is not open, so it runs again in an hour")
+		case ctx.Err() == nil:
 			k.log.Warn("Housekeeping failed, so it runs again in an hour", "error", err)
 		}
 		return

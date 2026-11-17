@@ -23,13 +23,34 @@ func testPath(t *testing.T) string {
 	return filepath.Join(t.TempDir(), File)
 }
 
+// open locks and opens the file at path as build, answering the open's
+// error with the store still locked.
+func open(t *testing.T, path, build string) (*Store, error) {
+	t.Helper()
+	s, err := New(path, Options{Build: build, Log: slog.New(slog.DiscardHandler)})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	return s, s.Open()
+}
+
 func mustOpen(t *testing.T, path, build string) *Store {
 	t.Helper()
-	s, err := Open(path, Options{Build: build})
+	s, err := open(t, path, build)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	return s
+}
+
+// pinned answers the store's open DB.
+func pinned(t *testing.T, s *Store) *bolttable.DB {
+	t.Helper()
+	db, err := s.live.Pin()
+	if err != nil {
+		t.Fatalf("Pin: %v", err)
+	}
+	return db
 }
 
 func mustClose(t *testing.T, s *Store) {
@@ -41,7 +62,7 @@ func mustClose(t *testing.T, s *Store) {
 
 func stats(t *testing.T, s *Store) bolttable.Stats {
 	t.Helper()
-	st, err := s.db.Stats(t.Context())
+	st, err := pinned(t, s).Stats(t.Context())
 	if err != nil {
 		t.Fatalf("Stats: %v", err)
 	}
@@ -90,7 +111,7 @@ func readRaw(t *testing.T, s *Store, key string) (json.RawMessage, bool) {
 	t.Helper()
 	var raw json.RawMessage
 	var found bool
-	err := s.db.View(t.Context(), func(r *bolttable.ReadTx) (err error) {
+	err := s.live.View(t.Context(), func(r *bolttable.ReadTx) (err error) {
 		raw, found, err = meta.Get(r, []byte(key))
 		return err
 	})
@@ -104,7 +125,7 @@ func readRaw(t *testing.T, s *Store, key string) (json.RawMessage, bool) {
 func journalRows(t *testing.T, s *Store) []Entry {
 	t.Helper()
 	var out []Entry
-	err := s.db.View(t.Context(), func(r *bolttable.ReadTx) error {
+	err := s.live.View(t.Context(), func(r *bolttable.ReadTx) error {
 		return journal.Scan(r, bolttable.Range{}, func(_ uint64, e *Entry) (bool, error) {
 			out = append(out, *e)
 			return true, nil
@@ -119,7 +140,7 @@ func journalRows(t *testing.T, s *Store) []Entry {
 func readStampOf(t *testing.T, s *Store) stamp {
 	t.Helper()
 	var st stamp
-	err := s.db.View(t.Context(), func(r *bolttable.ReadTx) error {
+	err := s.live.View(t.Context(), func(r *bolttable.ReadTx) error {
 		var found bool
 		var err error
 		st, found, err = readStamp(r)
@@ -221,12 +242,15 @@ func TestNamespaceDigestsArePinned(t *testing.T) {
 	}
 }
 
-func TestOpenRefusesASecondHolder(t *testing.T) {
+func TestNewRefusesASecondHolder(t *testing.T) {
 	path := testPath(t)
 	s := mustOpen(t, path, "v1.0.0-dev.1")
-	_, err := Open(path, Options{Build: "v1.0.0-dev.2"})
-	if !errors.Is(err, bolttable.ErrLocked) {
-		t.Errorf("a second Open = %v, want ErrLocked", err)
+	_, err := New(path, Options{Build: "v1.0.0-dev.2"})
+	if !errors.Is(err, bolttable.ErrLocked) || !strings.Contains(err.Error(), path) {
+		t.Errorf("a second New = %v, want ErrLocked naming %s", err, path)
+	}
+	if _, ok := bolttable.OpenFailure(err); ok {
+		t.Errorf("a held lock is classed as an outage: %v", err)
 	}
 	mustClose(t, s)
 	mustClose(t, mustOpen(t, path, "v1.0.0-dev.2"))
@@ -260,79 +284,93 @@ func TestOpenCompletesAFileLackingANamespace(t *testing.T) {
 	}
 }
 
-// A refused file is left byte for byte as it was: no compaction, no
-// namespace created, no stamp rewritten, and its lock free.
+// A refused file is left byte for byte as it was, its lock file too: no
+// compaction, no namespace created, no stamp rewritten. The store keeps the
+// lock until Close, and a newer build's stamp is refused whatever else the
+// file holds.
 func TestOpenRefusesALaterFileUnchanged(t *testing.T) {
 	lowCompaction(t)
 	for _, tc := range []struct {
-		name, stamp string
-		later       map[string]string
-		want        []string
+		name, stamp, class string
+		later              map[string]string
+		want               []string
 	}{
-		{"laterFormat", `{"format":2,"build":"v2.0.0"}`, nil, []string{"v2.0.0 wrote", "format 2", "v1.0.0-dev.9", "format 1", "run v2.0.0 or later"}},
-		{"laterFormatUnknownBuild", `{"format":2}`, nil, []string{"of an unknown build", "format 2", "run a newer build or later"}},
-		{"undeclaredNamespace", `{"format":1,"build":"v1.4.0"}`, map[string]string{"k": `{}`}, []string{"later"}},
+		{"laterFormat", `{"format":2,"build":"v2.0.0"}`, "newer", nil, []string{"v2.0.0 wrote", "format 2", "v1.0.0-dev.9", "format 1", "run v2.0.0 or later"}},
+		{"laterFormatUnknownBuild", `{"format":2}`, "newer", nil, []string{"of an unknown build", "format 2", "run a newer build or later"}},
+		{"laterFormatWithANamespaceItAdded", `{"format":2,"build":"v2.0.0"}`, "newer", map[string]string{"k": `{}`}, []string{"format 2"}},
+		{"undeclaredNamespace", `{"format":1,"build":"v1.4.0"}`, "format", map[string]string{"k": `{}`}, []string{"later"}},
+		{"stampThatDoesNotDecode", `"v1.4.0"`, "damaged", nil, []string{"meta store"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			path := testPath(t)
 			freePages(t, path)
 			writeFile(t, path, map[string]string{"store": tc.stamp}, tc.later)
-			before, err := os.ReadFile(path)
-			if err != nil {
-				t.Fatal(err)
-			}
-			_, err = Open(path, Options{Build: "v1.0.0-dev.9"})
+			before := readFile(t, path)
+			lock := path + ".lock"
+			lockBefore := readFile(t, lock)
+			s, err := open(t, path, "v1.0.0-dev.9")
 			if err == nil {
 				t.Fatal("Open succeeded")
 			}
-			for _, want := range tc.want {
+			for _, want := range append(tc.want, path) {
 				if !strings.Contains(err.Error(), want) {
 					t.Errorf("error %q does not name %q", err, want)
 				}
 			}
-			after, err := os.ReadFile(path)
-			if err != nil {
-				t.Fatal(err)
+			if class, _ := bolttable.OpenFailure(err); class != tc.class {
+				t.Errorf("OpenFailure = %q, want %q: %v", class, tc.class, err)
 			}
-			if !bytes.Equal(after, before) {
-				t.Errorf("the refused open changed the file: %d bytes, was %d", len(after), len(before))
+			if got := errors.Is(err, bolttable.ErrNewerBuild); got != (tc.class == "newer") {
+				t.Errorf("errors.Is(ErrNewerBuild) = %v for %v", got, err)
 			}
+			if !bytes.Equal(readFile(t, path), before) {
+				t.Error("the refused open changed the file")
+			}
+			if !bytes.Equal(readFile(t, lock), lockBefore) {
+				t.Error("the refused open changed the lock file")
+			}
+			if _, err := bolttable.LockPath(path, 0); !errors.Is(err, bolttable.ErrLocked) {
+				t.Errorf("the refused store let its lock go before Close: %v", err)
+			}
+			mustClose(t, s)
 			lockFree(t, path)
 		})
 	}
 }
 
-// A later build may stamp the file between checkStamp and the lock; the
-// start's own read refuses it then.
-func TestStartRefusesALaterStamp(t *testing.T) {
-	path := testPath(t)
-	writeFile(t, path, map[string]string{"store": `{"format":2,"build":"v2.0.0"}`}, nil)
-	lock, err := bolttable.LockPath(path, 0)
+// A brand-new file, absent or empty, has nothing to inspect: its first
+// open creates it and writes the stamp.
+func TestOpenStampsABrandNewFile(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		write func(t *testing.T, path string)
+	}{
+		{"absent", func(*testing.T, string) {}},
+		{"empty", func(t *testing.T, path string) {
+			if err := os.WriteFile(path, nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := testPath(t)
+			tc.write(t, path)
+			s := mustOpen(t, path, "v1.0.0-dev.4")
+			defer mustClose(t, s)
+			if got := readStampOf(t, s); got != (stamp{Format: 1, Build: "v1.0.0-dev.4"}) {
+				t.Errorf("stamp = %+v, want format 1 and build v1.0.0-dev.4", got)
+			}
+		})
+	}
+}
+
+func readFile(t *testing.T, path string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = lock.Release() }()
-	if _, err := start(path, lock, "v1.0.0-dev.9", slog.Default()); err == nil || !strings.Contains(err.Error(), "format 2") {
-		t.Fatalf("start = %v, want a refusal naming format 2", err)
-	}
-	if err := lock.Release(); err != nil {
-		t.Fatal(err)
-	}
-	db, err := bolttable.OpenReadOnly(path, schema, bolttable.ReadOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	err = db.View(t.Context(), func(r *bolttable.ReadTx) error {
-		raw, _, err := meta.Get(r, stampKey)
-		if err == nil && string(raw) != `{"format":2,"build":"v2.0.0"}` {
-			t.Errorf("the refused start rewrote the stamp to %s", raw)
-		}
-		return err
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	return b
 }
 
 // Within a format a row only gains optional fields: one an older build
@@ -395,16 +433,26 @@ func TestOpenCompactsPastItsThresholds(t *testing.T) {
 	t.Run("below", func(t *testing.T) {
 		s := mustOpen(t, path, "v1.0.0-dev.2")
 		defer mustClose(t, s)
-		if s.db.OpenReport().Compacted {
+		if pinned(t, s).OpenReport().Compacted {
 			t.Error("compacted a file with under 64 MiB free")
 		}
 	})
 	t.Run("past", func(t *testing.T) {
 		lowCompaction(t)
-		s := mustOpen(t, path, "v1.0.0-dev.2")
+		log, rec := capture.New()
+		s, err := New(path, Options{Build: "v1.0.0-dev.2", Log: log})
+		if err != nil {
+			t.Fatal(err)
+		}
 		defer mustClose(t, s)
-		if !s.db.OpenReport().Compacted {
+		if err := s.Open(); err != nil {
+			t.Fatal(err)
+		}
+		if !pinned(t, s).OpenReport().Compacted {
 			t.Fatal("did not compact a file past the thresholds")
+		}
+		if rec.CountLevel(slog.LevelInfo, "The store was compacted at open") != 1 {
+			t.Errorf("the open did not log its compaction: %v", rec.Messages())
 		}
 		after, err := os.Stat(path)
 		if err != nil {

@@ -7,7 +7,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cplieger/go/slogx/capture"
 	"github.com/cplieger/manade/internal/config"
+	"github.com/cplieger/manade/internal/github"
 	"github.com/cplieger/manade/internal/hostapi"
 	"github.com/cplieger/manade/internal/pool"
 	"github.com/cplieger/manade/internal/store"
@@ -90,6 +92,51 @@ func TestAStateIsWrittenAtEachChange(t *testing.T) {
 			t.Errorf("events = %v, want the unchanged state skipped and ready added", got)
 		}
 	})
+}
+
+// What the history last recorded of a host is read from the file at each
+// observation, never kept from an earlier one, so a record another write
+// changed, or a file swapped in, decides what is new.
+func TestAnObservationReadsTheFile(t *testing.T) {
+	at := queued
+	rec, st := recorder(t, &at)
+	log, logs := capture.New()
+	rec.log = log
+	rec.writeState(t.Context(), "nas", at, "ready", "")
+	rec.writeState(t.Context(), "nas", at, "ready", "")
+	if err := st.UpdateHistory(t.Context(), func(h *store.HistoryTx) error {
+		return h.PutHostSeen("nas", &store.HostSeen{State: "disconnected"})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rec.writeState(t.Context(), "nas", at.Add(time.Second), "ready", "")
+	if got, want := events(t, st, "nas"), []string{"state/ready", "state/ready"}; !equal(got, want) {
+		t.Errorf("events = %v, want %v", got, want)
+	}
+	if n := logs.CountLevel(slog.LevelWarn, ""); n != 0 {
+		t.Errorf("an observation that records nothing warned %d times: %v", n, logs.Messages())
+	}
+}
+
+// A write on a closed store is a skipped one: nothing is warned of.
+func TestAClosedStoreSkipsTheRecordersWrites(t *testing.T) {
+	at := queued
+	st := newStore(t)
+	log, logs := capture.New()
+	rec := NewRecorder(st, log)
+	rec.now = func() time.Time { return at }
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	rec.writeState(t.Context(), "nas", at, "ready", "")
+	rec.writeStatus(t.Context(), "nas", at, &facts{instance: "i1"})
+	rec.Exited(t.Context(), &pool.RunnerExit{Host: "nas", Runner: "r1", Reason: pool.ExitCompleted})
+	rec.Listed(t.Context(), "nas", nil)
+	m := message(github.Started, 7, "r1", "")
+	rec.write(t.Context(), &jobMsg{at: at, ss: ss, host: "nas", e: m})
+	if n := logs.CountLevel(slog.LevelWarn, ""); n != 0 {
+		t.Errorf("a closed store's writes warned %d times: %v", n, logs.Messages())
+	}
 }
 
 // status is a host's status with instance inst, policy hash policy, the

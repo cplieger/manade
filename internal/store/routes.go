@@ -21,7 +21,7 @@ type Route struct {
 // Routes answers every scope's route record, ordered by scope.
 func (s *Store) Routes(ctx context.Context) ([]Route, error) {
 	var out []Route
-	err := s.db.View(ctx, func(r *bolttable.ReadTx) error {
+	err := s.view(ctx, func(r *bolttable.ReadTx) error {
 		return routes.Scan(r, bolttable.Range{}, func(_ []byte, v *Route) (bool, error) {
 			out = append(out, *v)
 			return true, nil

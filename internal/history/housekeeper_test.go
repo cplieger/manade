@@ -3,11 +3,11 @@ package history
 import (
 	"context"
 	"log/slog"
-	"path/filepath"
 	"strconv"
 	"testing"
 	"time"
 
+	"github.com/cplieger/go/slogx/capture"
 	"github.com/cplieger/manade/internal/config"
 	"github.com/cplieger/manade/internal/github"
 	"github.com/cplieger/manade/internal/pool"
@@ -99,14 +99,15 @@ func TestHousekeeperDue(t *testing.T) {
 	}
 }
 
-func TestAFailedHousekeepingRunMovesNoDeadline(t *testing.T) {
+// A run over a closed store is skipped, as a writer on its own schedule
+// skips a tick: it moves no deadline and warns of nothing.
+func TestASkippedHousekeepingRunMovesNoDeadline(t *testing.T) {
 	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
-	st, err := store.Open(filepath.Join(t.TempDir(), store.File), store.Options{Build: "test", Log: slog.New(slog.DiscardHandler)})
-	if err != nil {
-		t.Fatal(err)
-	}
+	st := newStore(t)
 	cfg := settings(7*day, 2*day)
 	k := housekeeper(st, &cfg)
+	log, rec := capture.New()
+	k.log = log
 	k.now = func() time.Time { return now }
 	k.run(t.Context())
 	due := k.Due()
@@ -116,6 +117,12 @@ func TestAFailedHousekeepingRunMovesNoDeadline(t *testing.T) {
 	now = now.Add(time.Hour)
 	k.run(t.Context())
 	if !k.Due().Equal(due) {
-		t.Errorf("Due = %v after a failed run, want it kept at %v", k.Due(), due)
+		t.Errorf("Due = %v after a skipped run, want it kept at %v", k.Due(), due)
+	}
+	if rec.CountLevel(slog.LevelInfo, "Housekeeping was skipped") != 1 {
+		t.Errorf("no skipped line; logged %v", rec.Messages())
+	}
+	if n := rec.CountLevel(slog.LevelWarn, ""); n != 0 {
+		t.Errorf("a skipped run warned %d times; logged %v", n, rec.Messages())
 	}
 }

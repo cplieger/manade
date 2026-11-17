@@ -3,6 +3,7 @@ package history
 import (
 	"cmp"
 	"context"
+	"errors"
 	"maps"
 	"slices"
 	"time"
@@ -93,13 +94,17 @@ func probeOf(host string, at time.Time, rep *hostapi.ProbeReport, failure string
 }
 
 func (rec *Recorder) writeState(ctx context.Context, host string, at time.Time, state, detail string) {
-	rec.observe(ctx, host, "Writing a host's state to the history failed", func(s *store.HostSeen) ([]store.HostEvent, *store.Probe) {
+	rec.observe(ctx, host, "Writing a host's state to the history failed", stateChange(host, at, state, detail))
+}
+
+func stateChange(host string, at time.Time, state, detail string) observation {
+	return func(s *store.HostSeen) ([]store.HostEvent, *store.Probe) {
 		if s.State == state && s.Detail == detail {
 			return nil, nil
 		}
 		s.State, s.Detail = state, detail
 		return []store.HostEvent{{At: at, Host: host, Kind: store.HostEventState, State: state, Detail: detail}}, nil
-	})
+	}
 }
 
 func (rec *Recorder) writeStatus(ctx context.Context, host string, at time.Time, f *facts) {
@@ -165,58 +170,66 @@ func (rec *Recorder) writeProbe(ctx context.Context, p *store.Probe) {
 // observe applies fn to a copy of what the history last recorded of host
 // and writes, in one transaction, the events and the probe it answers and
 // the copy, when any of them is new.
-func (rec *Recorder) observe(ctx context.Context, host, failed string, fn func(*store.HostSeen) ([]store.HostEvent, *store.Probe)) {
+func (rec *Recorder) observe(ctx context.Context, host, failed string, fn observation) {
 	err := rec.observeErr(ctx, host, fn)
-	if err != nil && ctx.Err() == nil {
+	if err != nil && !skipped(ctx, err) {
 		rec.log.Warn(failed, "host", host, "error", err)
 	}
 }
 
-func (rec *Recorder) observeErr(ctx context.Context, host string, fn func(*store.HostSeen) ([]store.HostEvent, *store.Probe)) error {
-	cur, err := rec.seenOf(ctx, host)
-	if err != nil {
-		return err
-	}
-	next := *cur
-	next.Digests = maps.Clone(cur.Digests)
-	evs, p := fn(&next)
-	if len(evs) == 0 && p == nil && sameSeen(cur, &next) {
-		return nil
-	}
-	err = rec.st.UpdateHistory(ctx, func(h *store.HistoryTx) error {
-		for i := range evs {
-			if perr := h.PutHostEvent(&evs[i]); perr != nil {
-				return perr
-			}
+// observation changes a copy of what the history last recorded of a host
+// and answers the events and the probe the change records.
+type observation func(*store.HostSeen) ([]store.HostEvent, *store.Probe)
+
+// errUnchanged ends an observation that records nothing, rolling its
+// transaction back.
+var errUnchanged = errors.New("history: the observation records nothing new")
+
+// observeErr reads what the history last recorded of host in the
+// transaction that writes the change, keeping nothing of the file between
+// transactions, so a record another write changed, or a file swapped in,
+// decides what is new.
+func (rec *Recorder) observeErr(ctx context.Context, host string, fn observation) error {
+	rec.observed[host] = struct{}{}
+	err := rec.st.UpdateHistory(ctx, func(h *store.HistoryTx) error {
+		cur, _, err := h.HostSeen(host)
+		if err != nil {
+			return err
 		}
-		if p != nil {
-			if perr := h.PutProbe(p); perr != nil {
-				return perr
-			}
+		next, evs, p, changed := apply(&cur, fn)
+		if !changed {
+			return errUnchanged
 		}
-		return h.PutHostSeen(host, &next)
+		return putObserved(h, host, &next, evs, p)
 	})
-	if err == nil {
-		rec.seen[host] = &next
+	if errors.Is(err, errUnchanged) {
+		return nil
 	}
 	return err
 }
 
-// seenOf answers what the history last recorded of host, read from the
-// store once a process.
-func (rec *Recorder) seenOf(ctx context.Context, host string) (*store.HostSeen, error) {
-	if s := rec.seen[host]; s != nil {
-		return s, nil
+// putObserved writes an observation's events, probe and record.
+func putObserved(h *store.HistoryTx, host string, next *store.HostSeen, evs []store.HostEvent, p *store.Probe) error {
+	for i := range evs {
+		if err := h.PutHostEvent(&evs[i]); err != nil {
+			return err
+		}
 	}
-	var s store.HostSeen
-	if err := rec.st.UpdateHistory(ctx, func(h *store.HistoryTx) (err error) {
-		s, _, err = h.HostSeen(host)
-		return err
-	}); err != nil {
-		return nil, err
+	if p != nil {
+		if err := h.PutProbe(p); err != nil {
+			return err
+		}
 	}
-	rec.seen[host] = &s
-	return &s, nil
+	return h.PutHostSeen(host, next)
+}
+
+// apply answers fn's change to a copy of cur, and whether it records
+// anything.
+func apply(cur *store.HostSeen, fn observation) (next store.HostSeen, evs []store.HostEvent, p *store.Probe, changed bool) {
+	next = *cur
+	next.Digests = maps.Clone(cur.Digests)
+	evs, p = fn(&next)
+	return next, evs, p, len(evs) > 0 || p != nil || !sameSeen(cur, &next)
 }
 
 func sameSeen(a, b *store.HostSeen) bool {
@@ -224,12 +237,16 @@ func sameSeen(a, b *store.HostSeen) bool {
 		a.Proof == b.Proof && a.ProofFailure == b.ProofFailure && a.Restored == b.Restored && maps.Equal(a.Digests, b.Digests)
 }
 
-// stopped writes a gap at at for every host whose state this process
-// recorded.
+// stopped writes a gap at at for every host this process observed whose
+// recorded state is not already one.
 func (rec *Recorder) stopped(ctx context.Context, at time.Time) {
-	for _, host := range slices.Sorted(maps.Keys(rec.seen)) {
-		if rec.seen[host].State != "" {
-			rec.writeState(ctx, host, at, "", detailStopped)
-		}
+	for _, host := range slices.Sorted(maps.Keys(rec.observed)) {
+		gap := stateChange(host, at, "", detailStopped)
+		rec.observe(ctx, host, "Writing a host's state to the history failed", func(s *store.HostSeen) ([]store.HostEvent, *store.Probe) {
+			if s.State == "" {
+				return nil, nil
+			}
+			return gap(s)
+		})
 	}
 }

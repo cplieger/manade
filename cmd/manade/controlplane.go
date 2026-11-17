@@ -12,6 +12,7 @@ import (
 	"sync"
 	"syscall"
 
+	"github.com/cplieger/bolttable"
 	"github.com/cplieger/go/health/v2"
 	"github.com/cplieger/go/httpserver/v2"
 	"github.com/cplieger/go/slogx"
@@ -106,20 +107,39 @@ type cpRun struct {
 	log     *slog.Logger
 }
 
-// servePool holds the store open and runs the pool, its host listener,
-// its history and its housekeeping until ctx ends.
+// servePool holds the store's lock and runs the pool, its host listener,
+// its history and its housekeeping over the open store until ctx ends.
 func servePool(ctx context.Context, r *cpRun) int {
-	st, err := store.Open(filepath.Join(r.cfg.DataDir, store.File), store.Options{Log: r.log, Build: version})
+	path := filepath.Join(r.cfg.DataDir, store.File)
+	st, err := store.New(path, store.Options{Log: r.log, Build: version})
 	if err != nil {
-		r.log.Error("The control plane's store did not open", "error", err)
+		r.log.Error("The control plane could not take its store's lock", "file", path, "error", err)
 		return 1
 	}
-	code := serveStore(ctx, r, st)
+	code := serveOpen(ctx, r, st, path)
 	if err := st.Close(); err != nil {
-		r.log.Error("The control plane's store did not close cleanly", "error", err)
+		r.log.Error("The control plane's store did not close cleanly", "file", path, "error", err)
 		return 1
 	}
 	return code
+}
+
+// serveOpen opens st and serves it. A file that cannot open holds the
+// control plane in its outage until ctx ends: /healthz names the failure's
+// class, the log its error, and the file is left as it was.
+func serveOpen(ctx context.Context, r *cpRun, st *store.Store, path string) int {
+	err := st.Open()
+	if err == nil {
+		return serveStore(ctx, r, st)
+	}
+	// New holds the lock, so no open fails with ErrLocked, the one error
+	// OpenFailure does not class.
+	class, _ := bolttable.OpenFailure(err)
+	r.log.Error("The control plane's store cannot open, so the control plane serves nothing until the file is repaired or replaced and it restarts",
+		"file", path, "class", class, "error", err, "ops", r.ops.String())
+	r.health.outage(httpserver.OutageClass(class))
+	<-ctx.Done()
+	return 0
 }
 
 // serveStore runs the pool and its loops over st until ctx ends.

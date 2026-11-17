@@ -6,6 +6,7 @@ package history
 import (
 	"cmp"
 	"context"
+	"errors"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -49,11 +50,11 @@ type Recorder struct {
 	log       *slog.Logger
 	now       func() time.Time
 	q         chan func(context.Context)
-	// seen holds what the history last recorded of each host this process
-	// observed; only Run's writes touch it.
-	seen    map[string]*store.HostSeen
-	dropped atomic.Int64
-	qmu     sync.Mutex
+	// observed names every host this process observed; only Run's writes
+	// touch it.
+	observed map[string]struct{}
+	dropped  atomic.Int64
+	qmu      sync.Mutex
 }
 
 var _ pool.Runs = (*Recorder)(nil)
@@ -63,7 +64,7 @@ var _ pool.Runs = (*Recorder)(nil)
 func NewRecorder(st *store.Store, log *slog.Logger) *Recorder {
 	return &Recorder{
 		st: st, log: cmp.Or(log, slog.Default()), now: time.Now,
-		q: make(chan func(context.Context), queueSize), seen: map[string]*store.HostSeen{},
+		q: make(chan func(context.Context), queueSize), observed: map[string]struct{}{},
 	}
 }
 
@@ -153,14 +154,14 @@ func (rec *Recorder) written(ctx context.Context, w func(context.Context)) {
 
 func (rec *Recorder) write(ctx context.Context, m *jobMsg) {
 	err := rec.st.UpdateHistory(ctx, func(h *store.HistoryTx) error { return job(h, m) })
-	if err != nil && ctx.Err() == nil {
+	if err != nil && !skipped(ctx, err) {
 		rec.log.Warn("Writing a job message to the run history failed", "scope", m.ss.Scope, "request_id", m.e.RequestID, "error", err)
 	}
 }
 
 // Exited writes x to the run of its runner.
 func (rec *Recorder) Exited(ctx context.Context, x *pool.RunnerExit) {
-	if err := rec.st.UpdateHistory(ctx, func(h *store.HistoryTx) error { return exited(h, x) }); err != nil && ctx.Err() == nil {
+	if err := rec.st.UpdateHistory(ctx, func(h *store.HistoryTx) error { return exited(h, x) }); err != nil && !skipped(ctx, err) {
 		rec.log.Warn("Writing a runner's exit to the run history failed", "host", x.Host, "runner", x.Runner, "error", err)
 	}
 }
@@ -169,7 +170,13 @@ func (rec *Recorder) Exited(ctx context.Context, x *pool.RunnerExit) {
 // not hold.
 func (rec *Recorder) Listed(ctx context.Context, host string, runners []string) {
 	at := rec.now()
-	if err := rec.st.UpdateHistory(ctx, func(h *store.HistoryTx) error { return listed(h, host, runners, at) }); err != nil && ctx.Err() == nil {
+	if err := rec.st.UpdateHistory(ctx, func(h *store.HistoryTx) error { return listed(h, host, runners, at) }); err != nil && !skipped(ctx, err) {
 		rec.log.Warn("Closing the runs a host no longer holds failed", "host", host, "error", err)
 	}
+}
+
+// skipped reports a write err that is no fault: one the shutdown cut, or
+// one a closed store skipped.
+func skipped(ctx context.Context, err error) bool {
+	return ctx.Err() != nil || errors.Is(err, store.ErrClosed)
 }

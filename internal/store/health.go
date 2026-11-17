@@ -22,9 +22,9 @@ const writeClass = "write"
 
 // update runs fn in one write transaction and records its commit.
 func (s *Store) update(ctx context.Context, fn func(*bolttable.Tx) error) error {
-	err := s.db.Update(ctx, fn)
+	err := s.live.Update(ctx, fn)
 	s.writes.Record(writeClass, err)
-	return err
+	return closedAs(err)
 }
 
 // Healthy reports false once the store's writes have failed for longer
@@ -42,8 +42,12 @@ func (s *Store) WriteFailures() uint64 {
 
 // Size answers the file's size in bytes.
 func (s *Store) Size() (int64, error) {
-	sp, err := s.db.Space()
-	return sp.FileBytes, err
+	db, err := s.live.Pin()
+	if err != nil {
+		return 0, closedAs(err)
+	}
+	sp, err := db.Space()
+	return sp.FileBytes, closedAs(err)
 }
 
 // VolumeFree answers the bytes free to the control plane on the
