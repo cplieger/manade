@@ -228,6 +228,131 @@ func TestASessionFollowsItsScaleSetToANewID(t *testing.T) {
 	}
 }
 
+// tick runs one round of the ensure loop as runEnsure does.
+func (r *rig) tick() {
+	r.reg.record(context.Background(), nil)
+	if r.p.retryEnsure(context.Background()) {
+		r.reg.sync()
+	}
+}
+
+// storedSet answers the store's record of scope's scale set for profile.
+func (r *rig) storedSet(scope, profile string) github.ScaleSet {
+	r.records.mu.Lock()
+	defer r.records.mu.Unlock()
+	return r.records.sets[setKey{strings.ToLower(scope), profile}]
+}
+
+func (g *fakeGitHub) ensureCount() int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.ensures
+}
+
+// A record write that fails after an ensure is retried at the ensure
+// loop's next tick, with no second ensure, and an ensure answering the
+// recorded scale set writes nothing. Once a settings change drops the
+// scope, its scale set reads orphaned under the ID GitHub answered, both
+// before the write succeeds and after, and its dropped record is not
+// written again, whether its write was retried or not.
+func TestAFailedRecordWriteIsRetriedAtTheNextTick(t *testing.T) {
+	t.Parallel()
+	r := quietRig(t, oneHost())
+	lost := r.small().ss
+	r.gh.set(func(g *fakeGitHub) { g.idBase = 40 })
+	r.records.mu.Lock()
+	r.records.writeFails = 1
+	r.records.mu.Unlock()
+	r.reg.Lost(lost)
+	r.pass()
+	if id := r.small().ss.ID; id != 41 {
+		t.Fatalf("held ID %d after the ensure, want 41", id)
+	}
+	if rec := r.storedSet(app, "small"); rec.ID != 1 {
+		t.Fatalf("record %+v with the write refused, want the old ID 1 still stored", rec)
+	}
+	ensures := r.gh.ensureCount()
+	r.tick()
+	if rec := r.storedSet(app, "small"); rec.ID != 41 {
+		t.Errorf("record %+v after the next tick, want the new ID 41", rec)
+	}
+	if n := r.gh.ensureCount() - ensures; n != 0 {
+		t.Errorf("%d ensures at the tick, want the record written without one", n)
+	}
+	r.records.mu.Lock()
+	writes := r.records.writes
+	r.records.mu.Unlock()
+	r.reg.Lost(r.small().ss)
+	r.pass()
+	r.tick()
+	r.records.mu.Lock()
+	if n := r.records.writes - writes; n != 0 {
+		t.Errorf("%d record writes after an ensure answered the recorded scale set, want none", n)
+	}
+	r.records.mu.Unlock()
+	want := []Orphan{{Scope: app, Profile: "small", ID: 41}}
+	r.commit(func(cfg *config.Config) { cfg.Scopes = nil })
+	if snap := r.reg.Snapshot(); !slices.Equal(snap.Orphaned, want) {
+		t.Errorf("orphaned %+v once the scope is dropped, want %+v", snap.Orphaned, want)
+	}
+	r.gh.set(func(g *fakeGitHub) { g.gone[goneKey(app, 41)] = true })
+	r.recheck()
+	r.tick()
+	if rec := r.storedSet(app, "small"); rec != (github.ScaleSet{}) {
+		t.Errorf("record %+v after GitHub lost the orphan, want it dropped and not written again", rec)
+	}
+
+	r = quietRig(t, oneHost())
+	r.gh.set(func(g *fakeGitHub) { g.idBase = 40 })
+	r.reg.Lost(r.small().ss)
+	r.pass()
+	r.commit(func(cfg *config.Config) { cfg.Scopes = nil })
+	r.gh.set(func(g *fakeGitHub) { g.gone[goneKey(app, 41)] = true })
+	r.recheck()
+	r.tick()
+	if rec := r.storedSet(app, "small"); rec != (github.ScaleSet{}) {
+		t.Errorf("record %+v after a written orphan GitHub lost was dropped, want it not written again", rec)
+	}
+
+	r = quietRig(t, oneHost())
+	r.gh.set(func(g *fakeGitHub) { g.idBase = 40 })
+	r.records.mu.Lock()
+	r.records.writeFails = 1 << 20
+	r.records.mu.Unlock()
+	r.reg.Lost(r.small().ss)
+	r.pass()
+	r.commit(func(cfg *config.Config) { cfg.Scopes = nil })
+	if snap := r.reg.Snapshot(); !slices.Equal(snap.Orphaned, want) {
+		t.Errorf("orphaned %+v with the record unwritten, want %+v", snap.Orphaned, want)
+	}
+}
+
+// An ensure whose record read fails has its scale sets written at the
+// ensure loop's next tick once a read succeeds, with no second ensure.
+func TestAnEnsureUnrecordedForAFailedReadIsWrittenAtTheNextTick(t *testing.T) {
+	t.Parallel()
+	r := quietRig(t, oneHost())
+	r.gh.set(func(g *fakeGitHub) { g.idBase = 40 })
+	r.records.mu.Lock()
+	r.records.fail = true
+	r.records.mu.Unlock()
+	r.restart()
+	if id := r.small().ss.ID; id != 41 {
+		t.Fatalf("held ID %d after the boot's ensure, want 41", id)
+	}
+	r.records.mu.Lock()
+	r.records.fail = false
+	r.records.mu.Unlock()
+	ensures := r.gh.ensureCount()
+	r.tick()
+	if rec := r.storedSet(app, "small"); rec.ID != 41 {
+		t.Errorf("record %+v after the next tick, want the boot's ensured ID 41", rec)
+	}
+	if n := r.gh.ensureCount() - ensures; n != 0 {
+		t.Errorf("%d ensures at the tick, want the record written without one", n)
+	}
+}
+
 // At the visibility check the pool drops, with its journal row, the record
 // of each orphaned scale set GitHub no longer has, reading one of a scope
 // the settings dropped under the scope its key names. A served one, one

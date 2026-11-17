@@ -335,6 +335,8 @@ type fakeGitHub struct {
 	mu           sync.Mutex
 	// jitFail refuses each JIT config; ensureFail, each ensure.
 	jitFail, ensureFail bool
+	// ensures counts every ensure asked.
+	ensures int
 }
 
 func newFakeGitHub(cfg *config.Config) *fakeGitHub {
@@ -397,6 +399,7 @@ func (g *fakeGitHub) takeOps() []string {
 
 func (g *fakeGitHub) Ensure(ctx context.Context, _ *config.Config, sc *config.Scope) ([]github.ScaleSet, error) {
 	g.mu.Lock()
+	g.ensures++
 	hold, block := g.ensureHold, g.ensureBlock
 	g.mu.Unlock()
 	if hold != nil {
@@ -599,9 +602,11 @@ type fakeRecords struct {
 	routes map[string]Route
 	// drops is every record dropped, in order.
 	drops []github.ScaleSet
-	// fail refuses every read and write.
-	fail bool
-	mu   sync.Mutex
+	// fail refuses every read and write; writeFails refuses that many
+	// scale-set writes next. writes counts the scale-set writes made.
+	fail               bool
+	writeFails, writes int
+	mu                 sync.Mutex
 }
 
 func (f *fakeRecords) ScaleSets(context.Context) ([]github.ScaleSet, error) {
@@ -616,9 +621,11 @@ func (f *fakeRecords) ScaleSets(context.Context) ([]github.ScaleSet, error) {
 func (f *fakeRecords) RecordScaleSets(_ context.Context, sets []github.ScaleSet, _ time.Time) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.fail {
+	if f.fail || f.writeFails > 0 {
+		f.writeFails = max(f.writeFails-1, 0)
 		return errors.New("fake: the store refused the write")
 	}
+	f.writes++
 	for _, ss := range sets {
 		f.sets[keyOf(ss)] = ss
 	}

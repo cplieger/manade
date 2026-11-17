@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"log/slog"
+	"maps"
 	"slices"
 	"strings"
 	"sync"
@@ -115,8 +116,10 @@ type Registry struct {
 	pending *Settings
 	// sessions holds each open scale-set session by scope and profile.
 	sessions map[setKey]*session
-	// recorded holds the store's scale-set records once read, nil before.
-	recorded map[setKey]github.ScaleSet
+	// recorded holds the store's scale-set records once read, nil before;
+	// unrecorded, each scale set an ensure answered that is not written yet,
+	// the newest by scope and profile.
+	recorded, unrecorded map[setKey]github.ScaleSet
 	// routeRecs holds the store's route records by scope without case once
 	// read, nil before.
 	routeRecs map[string]Route
@@ -134,7 +137,8 @@ type Registry struct {
 	// in a generation after its successor copied it. smu guards spawn and
 	// sessions, and is never held while a generation's lock is taken or a
 	// session's close is waited on; syncMu serializes sync across that
-	// wait. rmu guards recorded and routeRecs and serializes their writes.
+	// wait. rmu guards recorded, unrecorded and routeRecs and serializes their
+	// writes.
 	mu                         sync.RWMutex
 	smu, syncMu, pmu, rmu, lmu sync.Mutex
 }
@@ -162,7 +166,7 @@ type want struct {
 // NewRegistry builds the pool for its first settings revision. It calls
 // nothing until Run.
 func NewRegistry(s *Settings, d *Deps) *Registry {
-	r := &Registry{d: *d, sessions: map[setKey]*session{}, unreadable: map[setKey]bool{}, listed: map[string]bool{}, changed: make(chan struct{}, 1), now: time.Now}
+	r := &Registry{d: *d, sessions: map[setKey]*session{}, unrecorded: map[setKey]github.ScaleSet{}, unreadable: map[setKey]bool{}, listed: map[string]bool{}, changed: make(chan struct{}, 1), now: time.Now}
 	r.d.Log = cmp.Or(r.d.Log, slog.Default())
 	r.pending = s
 	return r
@@ -404,16 +408,20 @@ func (r *Registry) Snapshot() Snapshot {
 	return g.snapshot()
 }
 
-// record writes the scale sets an ensure found or created into the
-// store's record, reading the record first if no read has succeeded. A
-// failed read or write is logged and retried at the next ensure.
+// record writes into the store's record the scale sets an ensure found or
+// created, with those an earlier call left unrecorded, reading the record
+// first if no read has succeeded. A failed read or write leaves them for
+// the next call, which the ensure loop makes every tick.
 func (r *Registry) record(ctx context.Context, sets []github.ScaleSet) {
 	r.rmu.Lock()
 	defer r.rmu.Unlock()
+	for _, ss := range sets {
+		r.unrecorded[keyOf(ss)] = ss
+	}
 	if r.recorded == nil {
 		got, err := r.d.Records.ScaleSets(ctx)
 		if err != nil {
-			r.d.Log.Warn("Reading the recorded scale sets failed, so none reads as orphaned until a read succeeds", "error", err)
+			r.d.Log.Warn("Reading the recorded scale sets failed, so none reads as orphaned and none ensured is recorded until a read succeeds", "error", err)
 			return
 		}
 		r.recorded = map[setKey]github.ScaleSet{}
@@ -422,8 +430,10 @@ func (r *Registry) record(ctx context.Context, sets []github.ScaleSet) {
 		}
 	}
 	var fresh []github.ScaleSet
-	for _, ss := range sets {
-		if r.recorded[keyOf(ss)] != ss {
+	for k, ss := range r.unrecorded {
+		if r.recorded[k] == ss {
+			delete(r.unrecorded, k)
+		} else {
 			fresh = append(fresh, ss)
 		}
 	}
@@ -431,11 +441,12 @@ func (r *Registry) record(ctx context.Context, sets []github.ScaleSet) {
 		return
 	}
 	if err := r.d.Records.RecordScaleSets(ctx, fresh, r.now()); err != nil {
-		r.d.Log.Warn("Recording ensured scale sets failed, so the next ensure records them", "error", err)
+		r.d.Log.Warn("Recording ensured scale sets failed, so the ensure loop's next tick records them", "error", err)
 		return
 	}
 	for _, ss := range fresh {
 		r.recorded[keyOf(ss)] = ss
+		delete(r.unrecorded, keyOf(ss))
 	}
 }
 
@@ -481,13 +492,19 @@ func (r *Registry) drop(ctx context.Context, ss github.ScaleSet) {
 	r.d.Log.Info("GitHub no longer has an orphaned scale set, so its record is dropped", "scope", ss.Scope, "profile", ss.Profile, "id", ss.ID)
 }
 
-// orphaned answers the recorded scale sets cfg would not ensure,
-// sorted by scope and profile; none before the record is read.
+// orphaned answers the recorded scale sets cfg would not ensure, each
+// under the ID of its newest ensure, sorted by scope and profile; none
+// before the record is read.
 func (r *Registry) orphaned(cfg *config.Config) []github.ScaleSet {
 	r.rmu.Lock()
 	defer r.rmu.Unlock()
+	if r.recorded == nil {
+		return nil
+	}
+	known := maps.Clone(r.recorded)
+	maps.Copy(known, r.unrecorded)
 	var out []github.ScaleSet
-	for _, ss := range r.recorded {
+	for _, ss := range known {
 		pr, ok := cfg.Profile(ss.Profile)
 		if !slices.ContainsFunc(cfg.Scopes, func(s config.Scope) bool { return strings.EqualFold(s.Key, ss.Scope) }) || !ok || !pr.Serves(ss.Scope) {
 			out = append(out, ss)
