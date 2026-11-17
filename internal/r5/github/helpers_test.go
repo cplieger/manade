@@ -22,7 +22,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cplieger/forgeapi/v2"
+	"github.com/cplieger/forgeapi/v3"
 	"github.com/cplieger/go/slogx/capture"
 	"github.com/cplieger/manade/internal/r5/config"
 	"github.com/cplieger/manade/internal/r5/obs"

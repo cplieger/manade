@@ -2,8 +2,8 @@ github.com/actions/scaleset v0.5.0 h1:IoE2xjt9cXyTndIrpz5pMoKpzV/fW2ECIEJc5xuHRb
 github.com/actions/scaleset v0.5.0/go.mod h1:LCtLcbityq9lCavtAK5l6ot7FwiQOfIsGB5027dfk6c=
 github.com/cplieger/bolttable v1.2.0-dev.2 h1:YHVPFCxLxt//Ea5DQQ8WFyWyjZEv2+bPCCNb0Knoxo4=
 github.com/cplieger/bolttable v1.2.0-dev.2/go.mod h1:KsoSRh8obPrBxWbTzwh7SRkd8oxA+DDkXxh7au/4NGs=
-github.com/cplieger/forgeapi/v2 v2.0.0 h1:xYwpa34gfKVtLYrTAhU7OBZO7/1mTMsz1qLOwYJP2Kc=
-github.com/cplieger/forgeapi/v2 v2.0.0/go.mod h1:NQTQ1VhjJxbh+qSuKKhlPtAg/T6nPwaRQDHFxcadqbk=
+github.com/cplieger/forgeapi/v3 v3.0.0-dev.1 h1:+9Ixz6Ey/eZ8LKR9gxluuk25Bx/G/BjcAakGC9MmPTg=
+github.com/cplieger/forgeapi/v3 v3.0.0-dev.1/go.mod h1:/n8tTsY6OkZHsnQOinlJ7MG5CnnaZ8Od6TQCpGdA9dY=
 github.com/cplieger/go/envx v1.1.0 h1:AfJm5r7oR3zHmpplYwpNQL6yB7b50bmNAaOAijeG9aM=
 github.com/cplieger/go/envx v1.1.0/go.mod h1:USzzGAzdJGsU8ZYRmVaMGvKzgEGDDhXvUUsckSv4VfM=
 github.com/cplieger/go/filesafe v1.1.0 h1:zCInOHIkszZQKNxIQvPgaFg592E5J27+/2hfbPmzEfA=
