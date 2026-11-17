@@ -184,7 +184,7 @@ func TestALostScaleSetFoundUnderItsIDReopensItsSession(t *testing.T) {
 		Config: cfg, GitHub: &GitHub{ScaleSets: gh, REST: gh, Sweep: gh}, Revision: 1,
 		Sections: map[string]string{"default": sectionHash(1)},
 	}, &Deps{
-		Links: &fakeLinks{hosts: []*fakeHost{newFakeHost(cfg, "default", sectionHash(1))}}, Metrics: newFakeMetrics(), Runs: newFakeRuns(), Settle: &fakeSettler{},
+		Links: &fakeLinks{hosts: []*fakeHost{newFakeHost(cfg, "default", sectionHash(1))}}, Metrics: newFakeMetrics(), Runs: newFakeRuns(), Hosts: newFakeHostLog(), Settle: &fakeSettler{},
 		Records: newRecords(), Routes: newRecords(), Log: slog.New(slog.DiscardHandler),
 	})
 	ctx, cancel := context.WithCancel(t.Context())

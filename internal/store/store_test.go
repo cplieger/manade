@@ -188,7 +188,7 @@ func TestOpenDeclaresItsNamespaces(t *testing.T) {
 	}
 	want := map[string][]string{
 		"github": {"scalesets", "routes"}, "journal": {"journal"}, "meta": {"meta"},
-		"history": {"runs", "runblobs", "exits"}, "rollups": {"rollups", "cut"},
+		"history": {"runs", "runblobs", "exits", "hostevents", "probes", "hostseen"},
 	}
 	if !maps.EqualFunc(got, want, slices.Equal) {
 		t.Errorf("namespaces = %v, want %v", got, want)

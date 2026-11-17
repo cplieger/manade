@@ -106,16 +106,6 @@ func days(lo, hi int64) func(string) (time.Duration, error) {
 	}
 }
 
-// parseZone loads an IANA time zone name. time.LoadLocation reads "" and
-// "Local" as zones of its own, which no setting names.
-func parseZone(raw string) (*time.Location, error) {
-	loc, err := time.LoadLocation(raw)
-	if err != nil || raw == "Local" {
-		return nil, invalid("want an IANA time zone name such as Europe/Paris", raw)
-	}
-	return loc, nil
-}
-
 func parseBool(raw string) (bool, error) {
 	switch raw {
 	case "true":

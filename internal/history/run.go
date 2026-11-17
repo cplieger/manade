@@ -65,7 +65,7 @@ func job(h *store.HistoryTx, ss github.ScaleSet, host string, e *github.Event, a
 		}
 	}
 	times(&r, e, at)
-	return save(h, &r)
+	return h.PutRun(&r)
 }
 
 // times takes e's start, once r has a runner, and a completion's result
@@ -157,14 +157,6 @@ func end(r *store.Run, at time.Time) {
 	}
 }
 
-// save rolls r's new pieces up and writes it.
-func save(h *store.HistoryTx, r *store.Run) error {
-	if err := roll(h, r); err != nil {
-		return err
-	}
-	return h.PutRun(r)
-}
-
 // exited writes x to the run of its runner, or keeps it until a job
 // message names the runner.
 func exited(h *store.HistoryTx, x *pool.RunnerExit) error {
@@ -185,7 +177,7 @@ func exited(h *store.HistoryTx, x *pool.RunnerExit) error {
 	if err := exit(h, &r, &kept); err != nil {
 		return err
 	}
-	return save(h, &r)
+	return h.PutRun(&r)
 }
 
 // usage is a host's usage report as a run keeps it, nil for none.
@@ -212,7 +204,7 @@ func listed(h *store.HistoryTx, host string, runners []string, at time.Time) err
 		}
 		r := &lost[i]
 		if err = exit(h, r, &store.Exit{At: at, Host: host, Reason: string(pool.ExitLost)}); err == nil {
-			err = save(h, r)
+			err = h.PutRun(r)
 		}
 	}
 	return err

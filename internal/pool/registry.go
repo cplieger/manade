@@ -96,6 +96,7 @@ type Deps struct {
 	Links   Links
 	Metrics Recorder
 	Runs    Runs
+	Hosts   HostHistory
 	Settle  settler
 	Records scaleSetRecords
 	Routes  routeRecords

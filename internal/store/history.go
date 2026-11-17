@@ -20,10 +20,7 @@ type Run struct {
 	// the run is open.
 	EndedAt time.Time `json:"ended_at,omitzero"`
 	// SeenAt is when the first message naming the run arrived.
-	SeenAt time.Time `json:"seen_at"`
-	// Day, DayZone and DayHost are the rollup the run counts in, set by its
-	// first counted piece: Day starts in DayZone.
-	Day      time.Time `json:"day,omitzero"`
+	SeenAt   time.Time `json:"seen_at"`
 	ExitCode *int      `json:"exit_code,omitempty"`
 	// Usage is what the runner used, from its host's exit report.
 	Usage *Usage `json:"usage,omitempty"`
@@ -36,8 +33,6 @@ type Run struct {
 	Event   string `json:"event,omitempty"`
 	Profile string `json:"profile"`
 	Host    string `json:"host,omitempty"`
-	DayZone string `json:"day_zone,omitempty"`
-	DayHost string `json:"day_host,omitempty"`
 	Runner  string `json:"runner,omitempty"`
 	// Result is GitHub's verdict on the job and ResultText its own word;
 	// Exit is the pool's verdict on the runner.
@@ -48,8 +43,6 @@ type Run struct {
 	DurationMS int64  `json:"duration_ms,omitempty"`
 	RunID      int64  `json:"run_id"`
 	ID         uint64 `json:"id"`
-	// Counted holds the rollup pieces already added, as the recorder's bits.
-	Counted uint8 `json:"counted,omitempty"`
 }
 
 // Usage is what a run's runner used over its container's life (§5.3.1),
@@ -89,55 +82,7 @@ type Exit struct {
 	Diag   []byte    `json:"diag,omitempty"`
 }
 
-// RollupKey names one rollup: a day, by its first instant in the zone it
-// was cut in, and the run's dimensions.
-type RollupKey struct {
-	Day                              time.Time
-	Scope, Profile, Host, Repository string
-}
-
-func (k *RollupKey) bytes() []byte {
-	b := dayBytes(k.Day)
-	for _, f := range []string{k.Scope, k.Profile, k.Host, k.Repository} {
-		b = append(append(b, f...), 0)
-	}
-	return b
-}
-
-func dayBytes(day time.Time) []byte {
-	return binary.BigEndian.AppendUint64(nil, uint64(day.Unix())) //nolint:gosec // a day before 1970 is no rollup's
-}
-
-// Rollup is one day's runs of one scope, profile, host and repository.
-// Wait and Duration count runs per interval of the duration ladder; CPUMS
-// sums the runs' CPU time and PeakMemory is the highest of their peaks.
-type Rollup struct {
-	Results    map[string]int64 `json:"results,omitempty"`
-	Exits      map[string]int64 `json:"exits,omitempty"`
-	Zone       string           `json:"zone"`
-	Date       string           `json:"date"`
-	Scope      string           `json:"scope"`
-	Profile    string           `json:"profile"`
-	Host       string           `json:"host,omitempty"`
-	Repo       string           `json:"repository"`
-	Wait       []int64          `json:"wait,omitempty"`
-	Duration   []int64          `json:"duration,omitempty"`
-	Jobs       int64            `json:"jobs"`
-	RunnerMS   int64            `json:"runner_ms,omitempty"`
-	CPUMS      int64            `json:"cpu_ms,omitempty"`
-	PeakMemory int64            `json:"peak_memory,omitempty"`
-}
-
-// Cut is the zone the rollups are cut in, since At.
-type Cut struct {
-	At   time.Time `json:"at"`
-	Zone string    `json:"zone"`
-}
-
-var cutKey = []byte("zone")
-
-// HistoryTx is one write transaction over the run history and its
-// rollups.
+// HistoryTx is one write transaction over the history.
 type HistoryTx struct{ tx *bolttable.Tx }
 
 // UpdateHistory runs fn in one write transaction.
@@ -185,18 +130,7 @@ func (h *HistoryTx) Runs(from time.Time, fn func(*Run) (bool, error)) error {
 // DeleteRunsBefore deletes every run, with its evidence, whose end, or
 // first message while open, is before cutoff.
 func (h *HistoryTx) DeleteRunsBefore(cutoff time.Time) error {
-	var ids []uint64
-	err := runsByAge.Scan(h.tx.Read(), bolttable.Range{To: ageBytes(cutoff)}, func(_ []byte, id uint64, _ []byte) (bool, error) {
-		ids = append(ids, id)
-		return true, nil
-	})
-	for _, id := range ids {
-		if err != nil {
-			break
-		}
-		err = h.DeleteRun(id)
-	}
-	return err
+	return deleteBefore(h.tx, runs, runsByAge, cutoff)
 }
 
 func (h *HistoryTx) visit(id uint64, fn func(*Run) (bool, error)) (bool, error) {
@@ -239,44 +173,6 @@ func (h *HistoryTx) DeleteExit(name string) error {
 	_, err := exits.Delete(h.tx, []byte(name))
 	return err
 }
-
-// Rollup answers the rollup k names.
-func (h *HistoryTx) Rollup(k *RollupKey) (Rollup, bool, error) {
-	return rollups.Get(h.tx.Read(), k.bytes())
-}
-
-// PutRollup writes r under k.
-func (h *HistoryTx) PutRollup(k *RollupKey, r *Rollup) error { return rollups.Put(h.tx, k.bytes(), r) }
-
-// DeleteRollups deletes every rollup whose day starts at or after from and
-// before to; a zero bound is none.
-func (h *HistoryTx) DeleteRollups(from, to time.Time) error {
-	rg := bolttable.Range{}
-	if !from.IsZero() {
-		rg.From = dayBytes(from)
-	}
-	if !to.IsZero() {
-		rg.To = dayBytes(to)
-	}
-	var keys [][]byte
-	err := rollups.Scan(h.tx.Read(), rg, func(k []byte, _ *Rollup) (bool, error) {
-		keys = append(keys, k)
-		return true, nil
-	})
-	for _, k := range keys {
-		if err != nil {
-			break
-		}
-		_, err = rollups.Delete(h.tx, k)
-	}
-	return err
-}
-
-// Cut answers the zone the rollups are cut in.
-func (h *HistoryTx) Cut() (Cut, bool, error) { return cuts.Get(h.tx.Read(), cutKey) }
-
-// PutCut records the zone the rollups are cut in.
-func (h *HistoryTx) PutCut(c *Cut) error { return cuts.Put(h.tx, cutKey, c) }
 
 // TrimJournal deletes the journal's rows older than before, and its oldest
 // beyond the newest keep.

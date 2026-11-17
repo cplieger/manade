@@ -2,8 +2,6 @@ package history
 
 import (
 	"context"
-	"maps"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -14,15 +12,8 @@ import (
 	"github.com/cplieger/manade/internal/store"
 )
 
-func TestDurationEdgesAreTheLadderToSevenDays(t *testing.T) {
-	if got := DurationEdges(); !slices.Equal(got, ladder) {
-		t.Errorf("DurationEdges = %v, want %v", got, ladder)
-	}
-}
-
 // A run's row is written at its assignment, gains its runner and host at
-// its start and its result and exit at its end, and its rollup counts
-// each piece once.
+// its start and its result and exit at its end.
 func TestARunFromAssignmentToEnd(t *testing.T) {
 	at := queued.Add(10 * time.Second)
 	rec, st := recorder(t, &at)
@@ -57,17 +48,6 @@ func TestARunFromAssignmentToEnd(t *testing.T) {
 			t.Errorf("row = %+v, want succeeded and completed, ended at its finish after 5 minutes", r)
 		}
 	})
-	t.Run("rollup", func(t *testing.T) {
-		u, found := rollup(t, st, midnight(queued, "UTC"), "nas")
-		want := store.Rollup{
-			Zone: "UTC", Date: "2026-11-16", Scope: "acme", Profile: "small", Host: "nas", Repo: "acme/app", Jobs: 1,
-			Results: map[string]int64{"succeeded": 1}, Exits: map[string]int64{"completed": 1},
-			Wait: bins(5), Duration: bins(8), RunnerMS: 300000,
-		}
-		if !found || !equalRollup(&u, &want) {
-			t.Errorf("rollup = %+v, %v; want %+v", u, found, want)
-		}
-	})
 }
 
 // GitHub's verdict on the job and the pool's on the runner are kept
@@ -99,12 +79,6 @@ func TestResultAndExitAreKeptApart(t *testing.T) {
 	t.Run("lostEndsAtItsExit", func(t *testing.T) {
 		if r, _ := run(t, st, 2); !r.EndedAt.Equal(queued.Add(2 * time.Minute)) {
 			t.Errorf("ended at %v, want the exit's %v", r.EndedAt, queued.Add(2*time.Minute))
-		}
-	})
-	t.Run("rollup", func(t *testing.T) {
-		u, _ := rollup(t, st, midnight(queued, "UTC"), "nas")
-		if u.Jobs != 2 || !maps.Equal(u.Results, map[string]int64{"failed": 2}) || !maps.Equal(u.Exits, map[string]int64{"completed": 1, "lost": 1}) {
-			t.Errorf("rollup = %+v, want 2 jobs, both failed, one completed and one lost", u)
 		}
 	})
 }
@@ -200,9 +174,6 @@ func TestCancels(t *testing.T) {
 	if !found || r.Result != "cancelled" || r.Host != "" || r.EndedAt.IsZero() {
 		t.Errorf("row = %+v, %v; want ended cancelled with no host", r, found)
 	}
-	if u, _ := rollup(t, st, midnight(queued, "UTC"), ""); u.Jobs != 1 || u.Wait != nil || u.Duration != nil {
-		t.Errorf("rollup = %+v, want one job with no wait or duration", u)
-	}
 }
 
 // Evidence is kept only for an exit that carries it: the log tail with its
@@ -287,12 +258,6 @@ func equalRun(a, b *store.Run) bool {
 		a.Runner == b.Runner && a.Host == b.Host && a.Result == b.Result && a.Exit == b.Exit && a.EndedAt.Equal(b.EndedAt)
 }
 
-func equalRollup(a, b *store.Rollup) bool {
-	return a.Zone == b.Zone && a.Date == b.Date && a.Scope == b.Scope && a.Profile == b.Profile && a.Host == b.Host && a.Repo == b.Repo &&
-		a.Jobs == b.Jobs && a.RunnerMS == b.RunnerMS && a.CPUMS == b.CPUMS && a.PeakMemory == b.PeakMemory && maps.Equal(a.Results, b.Results) && maps.Equal(a.Exits, b.Exits) &&
-		slices.Equal(a.Wait, b.Wait) && slices.Equal(a.Duration, b.Duration)
-}
-
 // usageExit is runner name's completed exit at at, reporting cpu of CPU
 // time over a 5-minute life and a peak of peak.
 func usageExit(name string, cpu time.Duration, peak int64, at time.Time) *pool.RunnerExit {
@@ -302,9 +267,8 @@ func usageExit(name string, cpu time.Duration, peak int64, at time.Time) *pool.R
 }
 
 // A runner's usage lands on its run in whole milliseconds, kept with an
-// exit that came first, and its day's rollup adds the CPU time and keeps
-// the highest peak, once each.
-func TestUsageReachesTheRunAndItsRollup(t *testing.T) {
+// exit that came first.
+func TestUsageReachesTheRun(t *testing.T) {
 	at := queued
 	rec, st := recorder(t, &at)
 	write(t, rec, "nas", message(github.Started, 1, "r1", ""))
@@ -329,12 +293,6 @@ func TestUsageReachesTheRunAndItsRollup(t *testing.T) {
 			}
 		})
 	}
-	t.Run("rollup", func(t *testing.T) {
-		u, _ := rollup(t, st, midnight(queued, "UTC"), "nas")
-		if u.CPUMS != 120000 || u.PeakMemory != 300<<20 {
-			t.Errorf("rollup CPU %d ms, peak %d; want 120000 ms and the highest 300 MiB", u.CPUMS, u.PeakMemory)
-		}
-	})
 	t.Run("an exit with no usage", func(t *testing.T) {
 		write(t, rec, "nas", message(github.Started, 3, "r3", ""))
 		rec.Exited(t.Context(), exitOf("r3", pool.ExitFailed, 1, queued.Add(9*time.Minute)))

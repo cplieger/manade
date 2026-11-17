@@ -36,6 +36,9 @@ type host struct {
 	// or none passed; failed, the one the last failed proof ran at. failure
 	// is why the last proof failed. instance is the supervisor st came from.
 	proved, instance, fprint, tried, probing, failed, failure string
+	// noted is the state last handed to the history, with notedDetail.
+	noted       HostState
+	notedDetail string
 	// ready holds, by profile index, the readiness st reports.
 	ready []bool
 	// seq numbers the host's POST answers and list beginnings, so a list
@@ -96,6 +99,7 @@ func (h *host) carry(o *host) {
 	h.proved, h.instance, h.fprint, h.tried, h.failure = o.proved, o.instance, o.fprint, o.tried, o.failure
 	h.provedAt, h.probing, h.probeUntil, h.failed = o.provedAt, o.probing, o.probeUntil, o.failed
 	h.reachable, h.judged, h.settled = o.reachable, o.judged, o.settled
+	h.noted, h.notedDetail = o.noted, o.notedDetail
 }
 
 // fingerprint is what a proof stands for in a status: the supervisor, its
@@ -127,6 +131,7 @@ func (g *generation) applyStatus(i int, st *hostapi.Status) {
 		wake(h.want)
 	}
 	g.d.Metrics.HostStatus(h.cfg.Name, st)
+	g.d.Hosts.Status(h.cfg.Name, g.now(), st)
 	g.served(i, was)
 }
 
@@ -170,9 +175,10 @@ func (g *generation) unreachable(i int, err error) {
 	g.served(i, was)
 }
 
-// served records a change of host i's serving; g.mu is held.
+// served records a change of host i's serving and state; g.mu is held.
 func (g *generation) served(i int, was bool) {
 	h := g.hosts[i]
+	g.noteState(i)
 	if now := h.serving(g.now()); now != was {
 		g.d.Metrics.HostServing(h.cfg.Name, now)
 		if now {
@@ -244,6 +250,10 @@ func (g *generation) proveHost(ctx context.Context, i int) {
 		h.proved, h.failed, h.failure = "", fp, why
 	}
 	g.d.Metrics.HostProved(h.cfg.Name, g.now(), rep, why == "")
+	if err != nil {
+		rep = nil
+	}
+	g.d.Hosts.Proved(h.cfg.Name, now, rep, why)
 	g.served(i, was)
 	g.gate()
 	g.poke()

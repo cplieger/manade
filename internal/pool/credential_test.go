@@ -136,7 +136,7 @@ func TestCredentialChangeClosesEverySessionBeforeOneOpens(t *testing.T) {
 	sections := map[string]string{"default": sectionHash(1)}
 	h := newFakeHost(cfg, "default", sectionHash(1))
 	reg := NewRegistry(&Settings{Config: cfg, GitHub: side(old), Revision: 1, Sections: sections}, &Deps{
-		Links: &fakeLinks{hosts: []*fakeHost{h}}, Metrics: newFakeMetrics(), Runs: newFakeRuns(), Settle: &fakeSettler{},
+		Links: &fakeLinks{hosts: []*fakeHost{h}}, Metrics: newFakeMetrics(), Runs: newFakeRuns(), Hosts: newFakeHostLog(), Settle: &fakeSettler{},
 		Records: newRecords(), Routes: newRecords(), Log: slog.New(slog.DiscardHandler),
 	})
 	ctx, cancel := context.WithCancel(t.Context())

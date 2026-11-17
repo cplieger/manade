@@ -83,22 +83,6 @@ func run(t *testing.T, st *store.Store, id uint64) (store.Run, bool) {
 	return r, found
 }
 
-// rollup answers the rollup of acme/app's small runs on host on the day
-// starting at day.
-func rollup(t *testing.T, st *store.Store, day time.Time, host string) (store.Rollup, bool) {
-	t.Helper()
-	var u store.Rollup
-	var found bool
-	k := store.RollupKey{Day: day, Scope: ss.Scope, Profile: ss.Profile, Host: host, Repository: "acme/app"}
-	if err := st.UpdateHistory(t.Context(), func(h *store.HistoryTx) (err error) {
-		u, found, err = h.Rollup(&k)
-		return err
-	}); err != nil {
-		t.Fatal(err)
-	}
-	return u, found
-}
-
 // blob answers run id's evidence.
 func blob(t *testing.T, st *store.Store, id uint64) (store.Blob, bool) {
 	t.Helper()
@@ -117,30 +101,8 @@ func blob(t *testing.T, st *store.Store, id uint64) (store.Blob, bool) {
 	return b, found
 }
 
-// ladder is §12.1's histogram edges in seconds: 0 s to 7 days.
-var ladder = []float64{0, 1, 2, 5, 10, 30, 60, 120, 300, 600, 1800, 3600, 7200, 21600, 43200, 86400, 259200, 604800}
-
-// bins answers the ladder's 17 intervals with one count in interval i.
-func bins(i int) []int64 {
-	b := make([]int64, len(ladder)-1)
-	b[i]++
-	return b
-}
-
-func settings(zone string, runs, evidence time.Duration) *config.Config {
-	loc, err := time.LoadLocation(zone)
-	if err != nil {
-		panic(err)
-	}
-	return &config.Config{TimeZone: loc, History: config.History{Runs: runs, Evidence: evidence}}
+func settings(runs, evidence time.Duration) *config.Config {
+	return &config.Config{History: config.History{Runs: runs, Evidence: evidence}}
 }
 
 const day = 24 * time.Hour
-
-func midnight(t time.Time, zone string) time.Time {
-	loc, err := time.LoadLocation(zone)
-	if err != nil {
-		panic(err)
-	}
-	return dayOf(t, loc)
-}

@@ -110,34 +110,6 @@ func TestDeleteRunsBeforeTakesTheirEvidence(t *testing.T) {
 	}
 }
 
-// DeleteRollups deletes the days starting in its range, whatever their
-// dimensions.
-func TestDeleteRollupsByDay(t *testing.T) {
-	s := mustOpen(t, testPath(t), "v1.0.0-dev.1")
-	defer mustClose(t, s)
-	keys := []RollupKey{
-		{Day: t0.Add(-48 * time.Hour), Scope: "acme/app", Profile: "small", Repository: "acme/app"},
-		{Day: t0.Add(-24 * time.Hour), Scope: "acme/app", Profile: "small", Host: "nas", Repository: "acme/app"},
-		{Day: t0, Scope: "acme", Profile: "large", Host: "nas", Repository: "acme/web"},
-	}
-	update(t, s, func(h *HistoryTx) error {
-		for i := range keys {
-			if err := h.PutRollup(&keys[i], &Rollup{Jobs: 1}); err != nil {
-				return err
-			}
-		}
-		return h.DeleteRollups(t0.Add(-24*time.Hour), t0)
-	})
-	update(t, s, func(h *HistoryTx) error {
-		for i, want := range []bool{true, false, true} {
-			if _, found, err := h.Rollup(&keys[i]); err != nil || found != want {
-				t.Errorf("rollup %d found = %v (%v), want %v", i, found, err, want)
-			}
-		}
-		return nil
-	})
-}
-
 // The journal keeps rows younger than its cutoff, and at most its newest
 // keep.
 func TestTrimJournal(t *testing.T) {

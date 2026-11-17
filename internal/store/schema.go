@@ -3,6 +3,7 @@ package store
 import (
 	"encoding/binary"
 	"encoding/json"
+	"time"
 
 	"github.com/cplieger/bolttable"
 )
@@ -31,19 +32,24 @@ var stampKey = []byte("store")
 // other byte for byte; journal holds one row per change to this file's
 // state, keyed in the order written.
 type tables struct {
-	meta         *bolttable.Table[[]byte, json.RawMessage]
-	scaleSets    *bolttable.Table[[]byte, ScaleSet]
-	routes       *bolttable.Table[[]byte, Route]
-	journal      *bolttable.Table[uint64, Entry]
-	journalCount *bolttable.Counter[uint64, Entry]
-	runs         *bolttable.Table[uint64, Run]
-	runsByRunner *bolttable.Index[uint64, Run]
-	runsOpen     *bolttable.Index[uint64, Run]
-	runsByAge    *bolttable.Index[uint64, Run]
-	blobs        *bolttable.Table[uint64, Blob]
-	exits        *bolttable.Table[[]byte, Exit]
-	rollups      *bolttable.Table[[]byte, Rollup]
-	cuts         *bolttable.Table[[]byte, Cut]
+	meta             *bolttable.Table[[]byte, json.RawMessage]
+	scaleSets        *bolttable.Table[[]byte, ScaleSet]
+	routes           *bolttable.Table[[]byte, Route]
+	journal          *bolttable.Table[uint64, Entry]
+	journalCount     *bolttable.Counter[uint64, Entry]
+	runs             *bolttable.Table[uint64, Run]
+	runsByRunner     *bolttable.Index[uint64, Run]
+	runsOpen         *bolttable.Index[uint64, Run]
+	runsByAge        *bolttable.Index[uint64, Run]
+	blobs            *bolttable.Table[uint64, Blob]
+	exits            *bolttable.Table[[]byte, Exit]
+	hostEvents       *bolttable.Table[uint64, HostEvent]
+	hostEventsByHost *bolttable.Index[uint64, HostEvent]
+	hostEventsByAge  *bolttable.Index[uint64, HostEvent]
+	probes           *bolttable.Table[uint64, Probe]
+	probesByHost     *bolttable.Index[uint64, Probe]
+	probesByAge      *bolttable.Index[uint64, Probe]
+	hostSeen         *bolttable.Table[[]byte, HostSeen]
 }
 
 var schema, declared = declare(bolttable.NewSchema(schemaName))
@@ -53,7 +59,10 @@ var (
 	journal, journalCount        = declared.journal, declared.journalCount
 	runs, runsByRunner, runsOpen = declared.runs, declared.runsByRunner, declared.runsOpen
 	runsByAge, blobs, exits      = declared.runsByAge, declared.blobs, declared.exits
-	rollups, cuts                = declared.rollups, declared.cuts
+	hostEvents, hostEventsByHost = declared.hostEvents, declared.hostEventsByHost
+	hostEventsByAge, hostSeen    = declared.hostEventsByAge, declared.hostSeen
+	probes, probesByHost         = declared.probes, declared.probesByHost
+	probesByAge                  = declared.probesByAge
 )
 
 // declare declares every namespace of this build in s.
@@ -80,10 +89,15 @@ func declare(s *bolttable.Schema) (*bolttable.Schema, *tables) {
 	}
 	t.exits = bolttable.Must(bolttable.Define(hist, prefixExits, "exits",
 		bolttable.BytesKey{}, bolttable.JSON[Exit](1), bolttable.TableOptions{}))
-	ru := bolttable.Must(s.Namespace("rollups"))
-	t.rollups = bolttable.Must(bolttable.Define(ru, prefixRollups, "rollups",
-		bolttable.BytesKey{}, bolttable.JSON[Rollup](1), bolttable.TableOptions{}))
-	t.cuts = bolttable.Must(bolttable.Define(ru, prefixCut, "cut",
-		bolttable.BytesKey{}, bolttable.JSON[Cut](1), bolttable.TableOptions{}))
+	t.hostEvents = bolttable.Must(bolttable.Define(hist, prefixHostEvents, "hostevents",
+		bolttable.Uint64Key{}, bolttable.JSON[HostEvent](1), bolttable.TableOptions{}))
+	t.hostEventsByHost, t.hostEventsByAge = timeIndexes(t.hostEvents, "hostevents",
+		func(e *HostEvent) string { return e.Host }, func(e *HostEvent) time.Time { return e.At })
+	t.probes = bolttable.Must(bolttable.Define(hist, prefixProbes, "probes",
+		bolttable.Uint64Key{}, bolttable.JSON[Probe](1), bolttable.TableOptions{}))
+	t.probesByHost, t.probesByAge = timeIndexes(t.probes, "probes",
+		func(p *Probe) string { return p.Host }, func(p *Probe) time.Time { return p.At })
+	t.hostSeen = bolttable.Must(bolttable.Define(hist, prefixHostSeen, "hostseen",
+		bolttable.BytesKey{}, bolttable.JSON[HostSeen](1), bolttable.TableOptions{}))
 	return s, &t
 }

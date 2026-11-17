@@ -49,11 +49,6 @@ func TestBuildDefaults(t *testing.T) {
 			t.Errorf("pool.runner_variable = %q, want MANADE_RUNNER", cfg.RunnerVariable)
 		}
 	})
-	t.Run("timeZone", func(t *testing.T) {
-		if cfg.TimeZone != time.UTC {
-			t.Errorf("pool.time_zone = %v, want UTC", cfg.TimeZone)
-		}
-	})
 	t.Run("history", func(t *testing.T) {
 		if want := (History{Runs: 90 * 24 * time.Hour, Evidence: 7 * 24 * time.Hour}); cfg.History != want {
 			t.Errorf("history = %+v, want %+v", cfg.History, want)
@@ -84,20 +79,13 @@ func TestParsePoolName(t *testing.T) {
 
 func TestParseHistorySettings(t *testing.T) {
 	cfg, err := Parse([]byte(object(jsonScopes, jsonHost, jsonProfile(""),
-		`"pool": {"time_zone": "Europe/Paris"}`, `"history": {"runs": "400d", "evidence": "1d"}`)), nil, nil)
+		`"history": {"runs": "400d", "evidence": "1d"}`)), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Run("timeZone", func(t *testing.T) {
-		if cfg.TimeZone.String() != "Europe/Paris" {
-			t.Errorf("pool.time_zone = %v, want Europe/Paris", cfg.TimeZone)
-		}
-	})
-	t.Run("history", func(t *testing.T) {
-		if want := (History{Runs: 400 * 24 * time.Hour, Evidence: 24 * time.Hour}); cfg.History != want {
-			t.Errorf("history = %+v, want %+v", cfg.History, want)
-		}
-	})
+	if want := (History{Runs: 400 * 24 * time.Hour, Evidence: 24 * time.Hour}); cfg.History != want {
+		t.Errorf("history = %+v, want %+v", cfg.History, want)
+	}
 }
 
 func TestParseRunnerVariable(t *testing.T) {
@@ -252,8 +240,6 @@ func TestBuildRefusals(t *testing.T) {
 		{"runnerVariableDigitFirst", withMember(`"pool": {"runner_variable": "2RUNNER"}`), []string{"pool.runner_variable: want letters, digits or underscores"}},
 		{"runnerVariableDash", withMember(`"pool": {"runner_variable": "MANADE-RUNNER"}`), []string{"pool.runner_variable: want letters, digits or underscores"}},
 		{"runnerVariableGitHub", withMember(`"pool": {"runner_variable": "github_runner"}`), []string{"pool.runner_variable: want letters, digits or underscores"}},
-		{"timeZoneUnknown", withMember(`"pool": {"time_zone": "Mars/Olympus"}`), []string{"pool.time_zone: want an IANA time zone name"}},
-		{"timeZoneLocal", withMember(`"pool": {"time_zone": "Local"}`), []string{"pool.time_zone: want an IANA time zone name"}},
 		{"runsBelow", withMember(`"history": {"runs": "6d"}`), []string{"history.runs: want whole days from 7d to 400d"}},
 		{"runsAbove", withMember(`"history": {"runs": "401d"}`), []string{"history.runs: want whole days from 7d to 400d"}},
 		{"runsHours", withMember(`"history": {"runs": "2160h"}`), []string{"history.runs: want whole days"}},

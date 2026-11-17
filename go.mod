@@ -25,7 +25,6 @@ require (
 
 require (
 	github.com/cplieger/go/jsonx v1.1.0 // indirect
-	github.com/cplieger/go/measure/v2 v2.0.0 // indirect
 	github.com/cplieger/go/ssrf v1.1.0 // indirect
 	github.com/cplieger/go/urlform v1.2.0 // indirect
 	github.com/golang-jwt/jwt/v5 v5.3.1 // indirect

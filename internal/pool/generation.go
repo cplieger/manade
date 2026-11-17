@@ -334,8 +334,11 @@ func (g *generation) takeOver(old *generation) {
 	at := make([]int, len(old.hosts))
 	for j, oh := range old.hosts {
 		at[j] = slices.IndexFunc(g.hosts, func(h *host) bool { return h.cfg.Name == oh.cfg.Name })
-		if at[j] >= 0 {
+		switch {
+		case at[j] >= 0:
 			g.hosts[at[j]].carry(oh)
+		case oh.noted != "":
+			g.d.Hosts.State(oh.cfg.Name, g.now(), "", DetailHostRemoved)
 		}
 	}
 	for _, ob := range old.l.books {

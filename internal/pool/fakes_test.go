@@ -668,6 +668,60 @@ func (f *fakeRuns) exitOf(name string) []RunnerExit {
 	return out
 }
 
+// fakeHostLog keeps what the pool hands the host history.
+type fakeHostLog struct {
+	states   []noted
+	proofs   []proved
+	statuses map[string]int
+	mu       sync.Mutex
+}
+
+// noted is one state handed over.
+type noted struct {
+	at                  time.Time
+	host, state, detail string
+}
+
+// proved is one proof handed over.
+type proved struct {
+	rep           *hostapi.ProbeReport
+	host, failure string
+}
+
+func newFakeHostLog() *fakeHostLog { return &fakeHostLog{statuses: map[string]int{}} }
+
+func (f *fakeHostLog) State(host string, at time.Time, state HostState, detail string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.states = append(f.states, noted{at: at, host: host, state: string(state), detail: detail})
+}
+
+func (f *fakeHostLog) Status(host string, _ time.Time, _ *hostapi.Status) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.statuses[host]++
+}
+
+func (f *fakeHostLog) Proved(host string, _ time.Time, rep *hostapi.ProbeReport, failure string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.proofs = append(f.proofs, proved{host: host, rep: rep, failure: failure})
+}
+
+// statesOf answers the states handed over for host, each as state or
+// state/detail.
+func (f *fakeHostLog) statesOf(host string) []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []string
+	for _, n := range f.states {
+		if n.host == host {
+			out = append(out, strings.TrimSuffix(n.state+"/"+n.detail, "/"))
+		}
+	}
+	return out
+}
+
 // rig is a pool over fake hosts and a fake GitHub, on a clock the test
 // moves, with a log the test can read. Its generations are installed in
 // line and run no loops, so each step runs where the test calls it.
@@ -685,10 +739,11 @@ type rig struct {
 	links   *fakeLinks
 	settler *fakeSettler
 	records *fakeRecords
-	// runs outlives a restart, as the store does.
-	runs  *fakeRuns
-	hosts []*fakeHost
-	rev   uint64
+	// runs and hostLog outlive a restart, as the store does.
+	runs    *fakeRuns
+	hostLog *fakeHostLog
+	hosts   []*fakeHost
+	rev     uint64
 }
 
 func newRig(t testing.TB, cfg *config.Config) *rig { return buildRig(t, cfg, &logBuf{}) }
@@ -698,7 +753,7 @@ func quietRig(t testing.TB, cfg *config.Config) *rig { return buildRig(t, cfg, &
 
 func buildRig(t testing.TB, cfg *config.Config, log *logBuf) *rig {
 	gh := newFakeGitHub(cfg)
-	r := &rig{t: t, now: epoch, cfg: cfg, gh: gh, side: sideOf(gh), log: log, rev: 1, settler: &fakeSettler{}, records: newRecords(), runs: newFakeRuns()}
+	r := &rig{t: t, now: epoch, cfg: cfg, gh: gh, side: sideOf(gh), log: log, rev: 1, settler: &fakeSettler{}, records: newRecords(), runs: newFakeRuns(), hostLog: newFakeHostLog()}
 	for i := range cfg.Hosts {
 		r.hosts = append(r.hosts, newFakeHost(cfg, cfg.Hosts[i].Name, sectionHash(r.rev)))
 	}
@@ -728,7 +783,7 @@ func (r *rig) settings() *Settings {
 func (r *rig) restart() {
 	r.m = newFakeMetrics()
 	r.reg = NewRegistry(r.settings(), &Deps{
-		Links: r.links, Metrics: r.m, Runs: r.runs, Settle: r.settler, Records: r.records, Routes: r.records,
+		Links: r.links, Metrics: r.m, Runs: r.runs, Hosts: r.hostLog, Settle: r.settler, Records: r.records, Routes: r.records,
 		Log: slog.New(slog.NewTextHandler(r.log, &slog.HandlerOptions{Level: slog.LevelDebug})),
 	})
 	r.reg.now = func() time.Time { return r.now }

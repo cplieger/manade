@@ -15,13 +15,12 @@ import (
 const (
 	keepEvery      = time.Hour
 	exitsFor       = 24 * time.Hour
-	rollupsFor     = 400 * 24 * time.Hour
+	hostsFor       = 30 * 24 * time.Hour
 	journalFor     = 400 * 24 * time.Hour
 	journalMaxRows = 20000
 )
 
-// Housekeeper applies the store's retention and cuts the rollups again
-// when the pool's time zone changed.
+// Housekeeper applies the history's retention.
 type Housekeeper struct {
 	st       *store.Store
 	settings func() *config.Config
@@ -51,26 +50,17 @@ func (k *Housekeeper) run(ctx context.Context) {
 	k.log.Info("Housekeeping finished")
 }
 
-// keep applies retention and the zone at now in one transaction.
+// keep applies retention at now in one transaction.
 func (k *Housekeeper) keep(ctx context.Context, now time.Time) error {
 	cfg := k.settings()
-	return k.st.UpdateHistory(ctx, func(h *store.HistoryTx) error {
-		cutoff := now.Add(-cfg.History.Runs).Truncate(time.Second)
-		if err := retain(h, cfg, cutoff, now); err != nil {
-			return err
-		}
-		recut, err := cutAgain(h, cfg.TimeZone, cutoff, now)
-		if recut {
-			k.log.Info("The rollups were cut again in the pool's time zone", "zone", cfg.TimeZone.String(), "from", cutoff.UTC().Format(time.RFC3339))
-		}
-		return err
-	})
+	return k.st.UpdateHistory(ctx, func(h *store.HistoryTx) error { return retain(h, cfg, now) })
 }
 
-// retain deletes runs ending before cutoff, and evidence, kept exits,
-// rollups and journal rows past their own retention at now.
-func retain(h *store.HistoryTx, cfg *config.Config, cutoff, now time.Time) error {
-	if err := h.DeleteRunsBefore(cutoff); err != nil {
+// retain deletes runs, evidence, kept exits, host events, probes and
+// journal rows past their retention at now, and forgets the hosts cfg no
+// longer holds.
+func retain(h *store.HistoryTx, cfg *config.Config, now time.Time) error {
+	if err := h.DeleteRunsBefore(now.Add(-cfg.History.Runs)); err != nil {
 		return err
 	}
 	var old []uint64
@@ -105,42 +95,31 @@ func retain(h *store.HistoryTx, cfg *config.Config, cutoff, now time.Time) error
 	if err != nil {
 		return err
 	}
-	if err := h.DeleteRollups(time.Time{}, now.Add(-rollupsFor)); err != nil {
+	if err := retainHosts(h, cfg, now); err != nil {
 		return err
 	}
 	return h.TrimJournal(now.Add(-journalFor), journalMaxRows)
 }
 
-// cutAgain cuts the rollups again in loc when they are cut in another
-// zone: each rollup whose day starts at or after cutoff is rebuilt from the
-// runs counted in it, and an older one keeps its zone. It reports whether
-// it cut.
-func cutAgain(h *store.HistoryTx, loc *time.Location, cutoff, now time.Time) (bool, error) {
-	cur, err := cutZone(h)
-	if err != nil || cur.String() == loc.String() {
-		return false, err
+func retainHosts(h *store.HistoryTx, cfg *config.Config, now time.Time) error {
+	if err := h.DeleteHostEventsBefore(now.Add(-hostsFor)); err != nil {
+		return err
 	}
-	if err := h.DeleteRollups(cutoff, time.Time{}); err != nil {
-		return false, err
+	if err := h.DeleteProbesBefore(now.Add(-hostsFor)); err != nil {
+		return err
 	}
-	var again []store.Run
-	if err := h.Runs(cutoff, func(r *store.Run) (bool, error) {
-		if r.Counted != 0 && !r.Day.Before(cutoff) {
-			again = append(again, *r)
+	var gone []string
+	err := h.HostsSeen(func(host string) (bool, error) {
+		if _, held := cfg.Host(host); !held {
+			gone = append(gone, host)
 		}
 		return true, nil
-	}); err != nil {
-		return false, err
-	}
-	for i := range again {
-		r := &again[i]
-		place(r, loc)
-		if err := rollIn(h, r, r.Counted); err != nil {
-			return false, err
+	})
+	for _, host := range gone {
+		if err != nil {
+			break
 		}
-		if err := h.PutRun(r); err != nil {
-			return false, err
-		}
+		err = h.DeleteHostSeen(host)
 	}
-	return true, h.PutCut(&store.Cut{At: now, Zone: loc.String()})
+	return err
 }
