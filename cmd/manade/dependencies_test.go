@@ -18,6 +18,7 @@ var allowedModules = []string{
 	"github.com/google/uuid",       // actions/scaleset
 	"go.yaml.in/yaml/v4",
 	"go.etcd.io/bbolt",  // bolttable
+	"golang.org/x/net",  // httpserver/v2, which parses a page shell's HTML
 	"golang.org/x/sync", // bolttable
 	"golang.org/x/sys",  // bolttable
 }

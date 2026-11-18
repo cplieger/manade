@@ -53,7 +53,7 @@ func (g *GitHub) Set() bool { return g.AppKey != nil || g.Token.Reveal() != "" }
 func LoadControlPlane() (*ControlPlane, error) {
 	cp := &ControlPlane{
 		DataDir: cmp.Or(envx.String("DATA_DIR"), "/data"),
-		OpsAddr: httpserver.OpsAddr(envx.String("OPS_LISTEN_ADDR"), defaultOpsAddr),
+		OpsAddr: httpserver.ListenAddr(envx.String("OPS_LISTEN_ADDR"), defaultOpsAddr),
 	}
 	var ok bool
 	cp.LogLevel, ok = slogx.ParseLevel(envx.String("LOG_LEVEL"), slog.LevelInfo)
