@@ -4,8 +4,8 @@ github.com/cplieger/bolttable v1.2.0-dev.6 h1:/xTdaoLZYmzuytiQ5S9YgGLnuXWN1yP0Tr
 github.com/cplieger/bolttable v1.2.0-dev.6/go.mod h1:4lndm8fkKoyR1RoCfDkeWg1rM9k8K9TJ6b73eqfNKoo=
 github.com/cplieger/forgeapi/v3 v3.0.0-dev.4 h1:AmDmWUPxmHn7xw2Vsja5HriHJpjHaZUc/cKBvllMW+8=
 github.com/cplieger/forgeapi/v3 v3.0.0-dev.4/go.mod h1:9BeBZAOxALG5o+oPVXoZPjJ9NsdhTQMcVAgwLWuz2wU=
-github.com/cplieger/go/chartdata v1.0.0-dev.9 h1:Ou6djRzApX49r5d+LTWQBOAgpPDClx23nvbR/bWjF8g=
-github.com/cplieger/go/chartdata v1.0.0-dev.9/go.mod h1:eoAeUO9equ44lghyWFJmmY8ldmNk2tyeiG66VNtX6HQ=
+github.com/cplieger/go/chartdata v1.0.0-dev.10 h1:qcjjJZBqg8KopIcUUH61gZU8IxHsA371KOQS7UMcc2c=
+github.com/cplieger/go/chartdata v1.0.0-dev.10/go.mod h1:l+UuVFa9t4+7af9tdPjuAx6YHGOvdSbvVsiIxIVDFFY=
 github.com/cplieger/go/envx v1.1.0 h1:AfJm5r7oR3zHmpplYwpNQL6yB7b50bmNAaOAijeG9aM=
 github.com/cplieger/go/envx v1.1.0/go.mod h1:USzzGAzdJGsU8ZYRmVaMGvKzgEGDDhXvUUsckSv4VfM=
 github.com/cplieger/go/filesafe v1.2.0-dev.1 h1:dAx3rSGWZaF4GfrL8a8tnBd7kHliXJ3RR+DFFePvaoE=
@@ -20,8 +20,8 @@ github.com/cplieger/go/httpclient v1.2.0 h1:E+lbIpiNkUkcq3fxdMDYn116cwx6tU1XWmn4
 github.com/cplieger/go/httpclient v1.2.0/go.mod h1:couTQSCNdgNwOotbaQREGcM4CjUKZJ4Bdb7FSkNwL8U=
 github.com/cplieger/go/httpserver v1.5.0 h1:z4ji5vpyd6mhR+FnFtzFBe9Mv6nOuVPWhcFv33YJL/o=
 github.com/cplieger/go/httpserver v1.5.0/go.mod h1:MuZxKRRjQG6DAJBO88cTGhVdhSCmBu2PMeA/DWRbiTQ=
-github.com/cplieger/go/httpserver/v2 v2.0.0-dev.3 h1:lQS+Y6FfV344HO15di9wes49KiJdJDWImEIrZf9WMFg=
-github.com/cplieger/go/httpserver/v2 v2.0.0-dev.3/go.mod h1:nSPC40ZyqeqTSQj5Tytr092CT494nWQiI4dhTGA/l5w=
+github.com/cplieger/go/httpserver/v2 v2.0.0-dev.4 h1:0zG3tTCBHmwOjjSwXrqbKZ9zXM0PoMA5Tl9QFkiekIw=
+github.com/cplieger/go/httpserver/v2 v2.0.0-dev.4/go.mod h1:JBXevsjiJP17//Y8mtWmkF6piUAXN8Ax/yEgFtlqiyg=
 github.com/cplieger/go/jsonx v1.1.0 h1:/XBHr3vJVqKYVDteO8cZEMAdTgmT3Df/SeyNw1pdak8=
 github.com/cplieger/go/jsonx v1.1.0/go.mod h1:ry6co0JYAadIhjHtkktBSK3to4YdtEak1P7mdmQlr7U=
 github.com/cplieger/go/measure v1.3.0-dev.1 h1:TEqZtk/CrcVMwhY56s9hobL1PV7uwgfJnk8e2K1U55M=
