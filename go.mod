@@ -8,7 +8,7 @@ require (
 	github.com/cplieger/forgeapi/v3 v3.0.0-dev.6
 	github.com/cplieger/go/chartdata v1.0.0-dev.12
 	github.com/cplieger/go/envx v1.1.0
-	github.com/cplieger/go/filesafe v1.2.0-dev.1
+	github.com/cplieger/go/filesafe v1.2.0-dev.2
 	github.com/cplieger/go/health v1.1.0
 	github.com/cplieger/go/health/v2 v2.0.0
 	github.com/cplieger/go/httpcache v1.1.0
