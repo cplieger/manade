@@ -1,7 +1,7 @@
 github.com/actions/scaleset v0.5.0 h1:IoE2xjt9cXyTndIrpz5pMoKpzV/fW2ECIEJc5xuHRbM=
 github.com/actions/scaleset v0.5.0/go.mod h1:LCtLcbityq9lCavtAK5l6ot7FwiQOfIsGB5027dfk6c=
-github.com/cplieger/bolttable v1.2.0-dev.8 h1:wyzTwv/3V3i8BZUbmTMa5lFnltrEzmd8GhyXyysWrso=
-github.com/cplieger/bolttable v1.2.0-dev.8/go.mod h1:6W5zJjLB9JaSuRVLlX+ykWcTik5ZpkFhMXNpVbg6nMA=
+github.com/cplieger/bolttable v1.2.0-dev.9 h1:g2utiixtJ8IRPOT2EDleLr5YNheeu97c6Z8KPaB1fIw=
+github.com/cplieger/bolttable v1.2.0-dev.9/go.mod h1:yTwiKbX1AwQo/r24asZqaUXuwl73s6f4M0YgnwbLhG8=
 github.com/cplieger/forgeapi/v3 v3.0.0-dev.5 h1:JQoCoUWWH4CjDWsqyQRLGnUFbCwEYmjyQk1bPtgvO2Q=
 github.com/cplieger/forgeapi/v3 v3.0.0-dev.5/go.mod h1:9BeBZAOxALG5o+oPVXoZPjJ9NsdhTQMcVAgwLWuz2wU=
 github.com/cplieger/go/chartdata v1.0.0-dev.11 h1:Yj2hHvtApd9BxoArVa22yJ5ToTsMC3Wh0Fw/nnOAm7k=
