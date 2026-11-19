@@ -4,8 +4,8 @@ github.com/cplieger/bolttable v1.2.0-dev.9 h1:g2utiixtJ8IRPOT2EDleLr5YNheeu97c6Z
 github.com/cplieger/bolttable v1.2.0-dev.9/go.mod h1:yTwiKbX1AwQo/r24asZqaUXuwl73s6f4M0YgnwbLhG8=
 github.com/cplieger/forgeapi/v3 v3.0.0-dev.5 h1:JQoCoUWWH4CjDWsqyQRLGnUFbCwEYmjyQk1bPtgvO2Q=
 github.com/cplieger/forgeapi/v3 v3.0.0-dev.5/go.mod h1:9BeBZAOxALG5o+oPVXoZPjJ9NsdhTQMcVAgwLWuz2wU=
-github.com/cplieger/go/chartdata v1.0.0-dev.11 h1:Yj2hHvtApd9BxoArVa22yJ5ToTsMC3Wh0Fw/nnOAm7k=
-github.com/cplieger/go/chartdata v1.0.0-dev.11/go.mod h1:l+UuVFa9t4+7af9tdPjuAx6YHGOvdSbvVsiIxIVDFFY=
+github.com/cplieger/go/chartdata v1.0.0-dev.12 h1:62s08ZRd+tUrMen+W1K0X9AYIZRTnDDTkRER+UICqjk=
+github.com/cplieger/go/chartdata v1.0.0-dev.12/go.mod h1:5cKYihYNWPUJyY375LhMGio2XzusJx4xfD6/1Tilz8o=
 github.com/cplieger/go/envx v1.1.0 h1:AfJm5r7oR3zHmpplYwpNQL6yB7b50bmNAaOAijeG9aM=
 github.com/cplieger/go/envx v1.1.0/go.mod h1:USzzGAzdJGsU8ZYRmVaMGvKzgEGDDhXvUUsckSv4VfM=
 github.com/cplieger/go/filesafe v1.2.0-dev.1 h1:dAx3rSGWZaF4GfrL8a8tnBd7kHliXJ3RR+DFFePvaoE=
