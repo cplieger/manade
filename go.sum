@@ -2,10 +2,10 @@ github.com/actions/scaleset v0.5.0 h1:IoE2xjt9cXyTndIrpz5pMoKpzV/fW2ECIEJc5xuHRb
 github.com/actions/scaleset v0.5.0/go.mod h1:LCtLcbityq9lCavtAK5l6ot7FwiQOfIsGB5027dfk6c=
 github.com/cplieger/bolttable v1.2.0-dev.8 h1:wyzTwv/3V3i8BZUbmTMa5lFnltrEzmd8GhyXyysWrso=
 github.com/cplieger/bolttable v1.2.0-dev.8/go.mod h1:6W5zJjLB9JaSuRVLlX+ykWcTik5ZpkFhMXNpVbg6nMA=
-github.com/cplieger/forgeapi/v3 v3.0.0-dev.4 h1:AmDmWUPxmHn7xw2Vsja5HriHJpjHaZUc/cKBvllMW+8=
-github.com/cplieger/forgeapi/v3 v3.0.0-dev.4/go.mod h1:9BeBZAOxALG5o+oPVXoZPjJ9NsdhTQMcVAgwLWuz2wU=
-github.com/cplieger/go/chartdata v1.0.0-dev.10 h1:qcjjJZBqg8KopIcUUH61gZU8IxHsA371KOQS7UMcc2c=
-github.com/cplieger/go/chartdata v1.0.0-dev.10/go.mod h1:l+UuVFa9t4+7af9tdPjuAx6YHGOvdSbvVsiIxIVDFFY=
+github.com/cplieger/forgeapi/v3 v3.0.0-dev.5 h1:JQoCoUWWH4CjDWsqyQRLGnUFbCwEYmjyQk1bPtgvO2Q=
+github.com/cplieger/forgeapi/v3 v3.0.0-dev.5/go.mod h1:9BeBZAOxALG5o+oPVXoZPjJ9NsdhTQMcVAgwLWuz2wU=
+github.com/cplieger/go/chartdata v1.0.0-dev.11 h1:Yj2hHvtApd9BxoArVa22yJ5ToTsMC3Wh0Fw/nnOAm7k=
+github.com/cplieger/go/chartdata v1.0.0-dev.11/go.mod h1:l+UuVFa9t4+7af9tdPjuAx6YHGOvdSbvVsiIxIVDFFY=
 github.com/cplieger/go/envx v1.1.0 h1:AfJm5r7oR3zHmpplYwpNQL6yB7b50bmNAaOAijeG9aM=
 github.com/cplieger/go/envx v1.1.0/go.mod h1:USzzGAzdJGsU8ZYRmVaMGvKzgEGDDhXvUUsckSv4VfM=
 github.com/cplieger/go/filesafe v1.2.0-dev.1 h1:dAx3rSGWZaF4GfrL8a8tnBd7kHliXJ3RR+DFFePvaoE=
@@ -26,8 +26,8 @@ github.com/cplieger/go/jsonx v1.1.0 h1:/XBHr3vJVqKYVDteO8cZEMAdTgmT3Df/SeyNw1pda
 github.com/cplieger/go/jsonx v1.1.0/go.mod h1:ry6co0JYAadIhjHtkktBSK3to4YdtEak1P7mdmQlr7U=
 github.com/cplieger/go/measure v1.3.0-dev.1 h1:TEqZtk/CrcVMwhY56s9hobL1PV7uwgfJnk8e2K1U55M=
 github.com/cplieger/go/measure v1.3.0-dev.1/go.mod h1:oH0qxNStRZYbEn3iHpXv/7jKcrjg/EzsxrhLhBK6BC0=
-github.com/cplieger/go/measure/v2 v2.1.0-dev.1 h1:YV0IKDITW9IZr0uOaLzdx5OlNBw/C/zVQ9DQAQ4t4Vo=
-github.com/cplieger/go/measure/v2 v2.1.0-dev.1/go.mod h1:gG4hr0jum0sVWiAppZwHPdvHNIVPBbryOCxzCoPSo84=
+github.com/cplieger/go/measure/v2 v2.1.0-dev.2 h1:Y0zNUFSubYyBdMqS1MpDX5x2qc7Rdr3dnQf/isRAWvI=
+github.com/cplieger/go/measure/v2 v2.1.0-dev.2/go.mod h1:gG4hr0jum0sVWiAppZwHPdvHNIVPBbryOCxzCoPSo84=
 github.com/cplieger/go/pathinside v1.1.0 h1:INqhQezkPwf/gA4fGxVuTBvV4bh4CedFGKm36c+GeIQ=
 github.com/cplieger/go/pathinside v1.1.0/go.mod h1:fIyGk/T2XYqVLJ5/cXOFkjk202Mwbdu0aXhH7Ky1/kI=
 github.com/cplieger/go/scheduler v1.1.0 h1:AzmRDvZ/wEEwK7Ab5Uz0Pa5Xx67oWndalpVknoWsGDQ=
