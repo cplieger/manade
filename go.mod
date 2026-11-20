@@ -4,7 +4,7 @@ go 1.27.4
 
 require (
 	github.com/actions/scaleset v0.5.0
-	github.com/cplieger/bolttable v1.2.0-dev.14
+	github.com/cplieger/bolttable v1.2.0-dev.15
 	github.com/cplieger/forgeapi/v3 v3.0.0-dev.8
 	github.com/cplieger/go/chartdata v1.0.0-dev.12
 	github.com/cplieger/go/envx v1.1.0
