@@ -2,8 +2,8 @@ github.com/actions/scaleset v0.5.0 h1:IoE2xjt9cXyTndIrpz5pMoKpzV/fW2ECIEJc5xuHRb
 github.com/actions/scaleset v0.5.0/go.mod h1:LCtLcbityq9lCavtAK5l6ot7FwiQOfIsGB5027dfk6c=
 github.com/cplieger/bolttable v1.2.0-dev.15 h1:JIHU4Vfzg65t/P6UTYodlRlitXllguRofCbrJQU62dg=
 github.com/cplieger/bolttable v1.2.0-dev.15/go.mod h1:G733O9xkaDJXjrlD02lsTAEd4wCPIVa1ky+7CBS9Fms=
-github.com/cplieger/forgeapi/v3 v3.0.0-dev.8 h1:3rj1A8D65gvkbMFqDInMKIs3TEvn4yYf8Uqnd78ot/M=
-github.com/cplieger/forgeapi/v3 v3.0.0-dev.8/go.mod h1:riCO7bvo+YaWjqkv7sYhHkpFICwV9ZqiXxgsApZspNw=
+github.com/cplieger/forgeapi/v3 v3.0.0-dev.10 h1:a+wkg3VxnebJYr2mlzIqnijpuJZSgurP2Kc+z8tphu0=
+github.com/cplieger/forgeapi/v3 v3.0.0-dev.10/go.mod h1:UmaUCuJ6+tQGNu8Va7QKGu0Lr38lzibV0kNoyegIE+8=
 github.com/cplieger/go/chartdata v1.0.0-dev.12 h1:62s08ZRd+tUrMen+W1K0X9AYIZRTnDDTkRER+UICqjk=
 github.com/cplieger/go/chartdata v1.0.0-dev.12/go.mod h1:5cKYihYNWPUJyY375LhMGio2XzusJx4xfD6/1Tilz8o=
 github.com/cplieger/go/envx v1.1.0 h1:AfJm5r7oR3zHmpplYwpNQL6yB7b50bmNAaOAijeG9aM=
@@ -20,8 +20,8 @@ github.com/cplieger/go/httpclient v1.2.0 h1:E+lbIpiNkUkcq3fxdMDYn116cwx6tU1XWmn4
 github.com/cplieger/go/httpclient v1.2.0/go.mod h1:couTQSCNdgNwOotbaQREGcM4CjUKZJ4Bdb7FSkNwL8U=
 github.com/cplieger/go/httpserver v1.5.0 h1:z4ji5vpyd6mhR+FnFtzFBe9Mv6nOuVPWhcFv33YJL/o=
 github.com/cplieger/go/httpserver v1.5.0/go.mod h1:MuZxKRRjQG6DAJBO88cTGhVdhSCmBu2PMeA/DWRbiTQ=
-github.com/cplieger/go/httpserver/v2 v2.0.0-dev.12 h1:AkVlSx8x7nYGwHsg2hcdLEgM/OSJ6dY93/ktamHroWk=
-github.com/cplieger/go/httpserver/v2 v2.0.0-dev.12/go.mod h1:7RaYglupSd53mWuL1RQGPxmUhQ/sCS9y1XpJIrXKF+A=
+github.com/cplieger/go/httpserver/v2 v2.0.0-dev.13 h1:XZl3Ld2sMcS5I1gTlfrsFROOzSQnKwR9umje8jjCI9w=
+github.com/cplieger/go/httpserver/v2 v2.0.0-dev.13/go.mod h1:w6gBJDFGQjaYD9/9ozzKk4zY5xYQAdQCmrg2RpsRLcE=
 github.com/cplieger/go/jsonx v1.1.0 h1:/XBHr3vJVqKYVDteO8cZEMAdTgmT3Df/SeyNw1pdak8=
 github.com/cplieger/go/jsonx v1.1.0/go.mod h1:ry6co0JYAadIhjHtkktBSK3to4YdtEak1P7mdmQlr7U=
 github.com/cplieger/go/masked v1.0.0-dev.1 h1:Do4+avpvVJP//Jm4LLH1y468Rxrz966dAgESVp/z7wU=
